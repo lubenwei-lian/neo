@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.IO;
 using System.Text.Json;
 using Neo.Core;
 using Neo.Core.Core;
@@ -15,6 +16,17 @@ public static class AppUpdateService
 
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+
+    /// 本机安装的构建时间（= neo.dll 的最后写入时间）。
+    /// 同版本号换资产时，版本比较看不出差别，需要靠它与 release 里的 build-info.json 比较。
+    public static DateTime LocalBuildTime
+    {
+        get
+        {
+            try { return File.GetLastWriteTime(Assembly.GetExecutingAssembly().Location); }
+            catch { return DateTime.MinValue; }
+        }
+    }
 
     public sealed record UpdateInfo(
         bool Ok,
@@ -51,8 +63,37 @@ public static class AppUpdateService
         var (tag, asset) = r;
         var latest = tag.Replace("desktop-", "", StringComparison.OrdinalIgnoreCase).TrimStart('v', 'V');
         var hasNew = CompareVersions(latest, CurrentVersion) > 0;
-        LogBus.App($"更新检查完成：最新 {tag}（当前 {CurrentVersion}）→ {(hasNew ? "发现新版本" : "已是最新版本")}");
-        return new UpdateInfo(true, hasNew, tag, "", asset.DownloadUrl, asset.Name, asset.SizeBytes, "");
+        var notes = "";
+
+        // 同版本号换资产：版本比较看不出来，再读 release 里的 build-info.json 比构建时间。
+        // 只有「构建时间明显更新（>2 分钟）」才算新构建，避免时区/精度抖动误报。
+        if (!hasNew)
+        {
+            try
+            {
+                var biText = await GitHubChannel.FetchTextAssetAsync(
+                    RepoOwner, RepoName, tag, "build-info.json", preferProxy, ct);
+                if (!string.IsNullOrWhiteSpace(biText))
+                {
+                    using var doc = JsonDocument.Parse(biText);
+                    if (doc.RootElement.TryGetProperty("build", out var be)
+                        && DateTime.TryParse(be.GetString(), null,
+                            System.Globalization.DateTimeStyles.RoundtripKind, out var buildAt))
+                    {
+                        if (buildAt.ToUniversalTime() > LocalBuildTime.ToUniversalTime().AddMinutes(2))
+                        {
+                            hasNew = true;
+                            notes = "同版本新构建";
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        LogBus.App($"更新检查完成：最新 {tag}（当前 {CurrentVersion}，构建 {LocalBuildTime:yyyy-MM-dd HH:mm}）→ "
+                   + (hasNew ? (notes.Length > 0 ? "发现同版本新构建" : "发现新版本") : "已是最新版本"));
+        return new UpdateInfo(true, hasNew, tag, notes, asset.DownloadUrl, asset.Name, asset.SizeBytes, "");
     }
 
     /// 需要按发布资产的体积做二次校验时改用下面带 expectedSize 的重载。

@@ -55,6 +55,22 @@ public static class LogBus
         lock (Gate) _lines.Clear();
     }
 
+    /// 内核重复警告去重：xray 每次启动都会刷 20~30 条完全相同的
+    /// "The feature WebSocket transport ... is deprecated"，
+    /// 落盘后把真正有用的行淹没。这里把「去掉时间戳/请求 id 后相同」的行折叠：
+    /// 只保留首条，之后在第 2/5/10/50/100/… 次时写一条「（已重复 N 次）」。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _coreSeen = new();
+    private static readonly HashSet<int> _repeatMilestones = new() { 2, 5, 10, 50, 100, 500, 1000, 5000, 10000 };
+
+    private static string CoreKey(string raw)
+    {
+        var t = System.Text.RegularExpressions.Regex.Replace(
+            raw, @"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?\s*", "");
+        // 去掉 [123456789] 这类每次请求都不同的 id，否则同一句告警无法判重
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"\[\d+\]", "[#]");
+        return t.Trim();
+    }
+
     public static void Core(string raw)
     {
         var s = raw.ToLowerInvariant();
@@ -66,7 +82,16 @@ public static class LogBus
             : s.Contains("[warning]") || s.Contains("[warn]") || s.Contains("warn[") ? "Warning"
             : s.Contains("[debug]") || s.Contains("debu[") ? "Debug"
             : "Info";
-        Add(new LogEntry { Time = DateTime.Now, Level = level, Text = "[内核] " + raw }, fromCore: true);
+        var key = CoreKey(raw);
+        var count = _coreSeen.AddOrUpdate(key, 1, (_, v) => v + 1);
+        if (_coreSeen.Count > 5000) _coreSeen.Clear();   // 兜底，避免极端情况下无限增长
+        if (count > 1 && !_repeatMilestones.Contains(count)) return;
+        Add(new LogEntry
+        {
+            Time = DateTime.Now,
+            Level = level,
+            Text = "[内核] " + raw + (count > 1 ? $"（同一告警已重复 {count} 次）" : ""),
+        }, fromCore: true);
     }
 
     public static void App(string text, string level = "Info")

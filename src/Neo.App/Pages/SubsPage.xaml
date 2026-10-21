@@ -102,7 +102,14 @@
                         <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
                         <TextBlock Text="用量趋势" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
                     </StackPanel>
-                    <TextBlock Text="近 30 日" FontSize="11" Foreground="{ThemeResource NeoAccent}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Button x:Name="BtnExportUsage" Style="{StaticResource GhostBtn}" Click="OnExportUsageClick"
+                                AutomationProperties.AutomationId="BtnExportUsage"
+                                ToolTipService.ToolTip="导出每日用量明细（CSV，最近 60 天）">
+                            <TextBlock Text="导出 CSV" FontSize="11" />
+                        </Button>
+                        <TextBlock Text="近 30 日" FontSize="11" Foreground="{ThemeResource NeoAccent}" VerticalAlignment="Center" />
+                    </StackPanel>
                 </Grid>
 
                 <TextBlock x:Name="TrendWeekHint" Text="最近 7 天 · 顶格 20 GB/日" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="0,0,0,8" />

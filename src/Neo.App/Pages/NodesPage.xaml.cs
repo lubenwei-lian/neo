@@ -1,12 +1,14 @@
 using System.Linq;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Neo.App.Services;
 using Neo.App.Ui;
 using Neo.Core;
 using Neo.Core.Core;
 using Neo.Core.Models;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.UI;
 
 namespace Neo.App.Pages;
@@ -24,6 +26,11 @@ public sealed partial class NodesPage : UserControl
     /// null = 本进程内还没跑过真连测速（节点上的延迟可能来自 DelayCache 缓存）。
     private DateTime? _lastRealTestAt;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _resizeTrailTimer;
+    // 节点列表筛选：只看可用 / 只看未测 / 限定地区（空 = 全部）
+    private bool _onlyAvailable;
+    private bool _onlyUntested;
+    private string _regionFilter = "";
+    private Neo.App.Ui.PopupList? _filterList;
 
     public NodesPage()
     {
@@ -34,8 +41,18 @@ public sealed partial class NodesPage : UserControl
         {
             RebuildList();
             try { Ui.Ripple.Attach(RealTestBtn, App.MainWindowInstance?.RippleLayerHost); } catch { }
-            TryAutoDetectLocations();
+            // 自动检测只在「页面真正可见」时触发（见 Visibility 回调），
+            // 不在启动阶段就把 60+ 个节点全查一遍。
         };
+        // 页面切到可见时才做「真实 IP」自动检测：避免启动时后台就把 60+ 节点全查一遍。
+        try
+        {
+            RegisterPropertyChangedCallback(VisibilityProperty, (_, _) =>
+            {
+                if (Visibility == Visibility.Visible) TryAutoDetectLocations();
+            });
+        }
+        catch { }
         _resizeTrailTimer = DispatcherQueue.CreateTimer();
         _resizeTrailTimer.Interval = TimeSpan.FromMilliseconds(160);
         _resizeTrailTimer.IsRepeating = false;
@@ -72,7 +89,12 @@ public sealed partial class NodesPage : UserControl
     private void ApplyFilter()
     {
         var q = SearchBox.Text.Trim().ToLowerInvariant();
-        var list = q.Length == 0 ? _tiles : _tiles.Where(t => t.SearchText.Contains(q)).ToList();
+        IEnumerable<NodeTile> qry = _tiles;
+        if (q.Length > 0) qry = qry.Where(t => t.SearchText.Contains(q));
+        if (_onlyAvailable) qry = qry.Where(t => t.RealValue > 0);
+        if (_onlyUntested) qry = qry.Where(t => t.RealValue <= 0);
+        if (_regionFilter.Length > 0) qry = qry.Where(t => NodeGrouper.RegionOf(t.Node.Name) == _regionFilter);
+        var list = qry.ToList();
 
         var cur = AppState.CurrentNode;
         foreach (var t in list)
@@ -282,6 +304,84 @@ public sealed partial class NodesPage : UserControl
         ApplyFilter();
     }
 
+    /// 只补测「未测/超时/失败」的节点（日常维护用，几秒就能跑完）。
+    private async void OnRetestFailedClick(object sender, RoutedEventArgs e)
+    {
+        if (_realTesting) { _realCts?.Cancel(); return; }
+        var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
+        var failed = list.Where(t => t.RealValue <= 0).ToList();
+        if (failed.Count == 0)
+        {
+            LogBus.App("补测：当前列表没有未测/失败的节点", "Debug");
+            return;
+        }
+        await RunBatchAsync(failed);
+    }
+
+    /// 筛选菜单：全部 / 只看可用 / 只看未测 / 按地区。
+    private void OnFilterTapped(object sender, RoutedEventArgs e)
+    {
+        _filterList ??= new Neo.App.Ui.PopupList();
+        _filterList.ClearItems();
+        _filterList.AddItem("全部节点", null, () =>
+        {
+            _onlyAvailable = false; _onlyUntested = false; _regionFilter = "";
+            FilterBtnText.Text = "筛选"; ApplyFilter();
+        });
+        _filterList.AddItem("只看可用（延迟 > 0）", null, () =>
+        {
+            _onlyAvailable = true; _onlyUntested = false;
+            FilterBtnText.Text = "只看可用"; ApplyFilter();
+        });
+        _filterList.AddItem("只看未测/失败", null, () =>
+        {
+            _onlyUntested = true; _onlyAvailable = false;
+            FilterBtnText.Text = "只看未测"; ApplyFilter();
+        });
+        _filterList.AddSeparator();
+        var regions = AppState.Nodes.Select(n => NodeGrouper.RegionOf(n.Name)).Distinct().OrderBy(r => r).ToList();
+        foreach (var r in regions)
+        {
+            var region = r;
+            _filterList.AddItem("地区：" + NodeGrouper.RegionDisplay(region), null, () =>
+            {
+                _regionFilter = region; _onlyAvailable = false; _onlyUntested = false;
+                FilterBtnText.Text = NodeGrouper.RegionDisplay(region); ApplyFilter();
+            });
+        }
+        _filterList.AddDisabled("筛选只影响显示，不影响连接与并发组队");
+        Neo.App.Ui.PopupList.ShowBelow(_filterList, FilterBtn, 220);
+    }
+
+    /// 卡片右键：复制常用信息（名称 / 服务器 / 实测出口 IP）。
+    private void OnTileRightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.DataContext is not NodeTile tile) return;
+        var flyout = new MenuFlyout();
+        void AddItem(string text, string value)
+        {
+            var mi = new MenuFlyoutItem { Text = text };
+            mi.Click += (_, _) =>
+            {
+                try
+                {
+                    var dp = new DataPackage();
+                    dp.SetText(value);
+                    Clipboard.SetContent(dp);
+                    Clipboard.Flush();
+                    LogBus.App($"已复制：{text}", "Debug");
+                }
+                catch { }
+            };
+            flyout.Items.Add(mi);
+        }
+        AddItem("复制节点名称", tile.Node.Name);
+        AddItem("复制服务器地址", $"{tile.Node.Server}:{tile.Node.Port}");
+        if (!string.IsNullOrEmpty(tile.Node.ExitIp)) AddItem("复制实测出口 IP", tile.Node.ExitIp!);
+        flyout.ShowAt(fe, new FlyoutShowOptions { Position = e.GetPosition(fe) });
+        e.Handled = true;
+    }
+
     private async void OnRealTestClick(object sender, RoutedEventArgs e)
     {
         if (_realTesting)
@@ -307,6 +407,7 @@ public sealed partial class NodesPage : UserControl
             {
                 n.ExitCountry = loc.Country;
                 n.ExitIp = loc.Ip;
+                if (!string.IsNullOrEmpty(loc.Country)) LocationCache.Set(n, loc.Country, loc.Ip);
             }
     }
 
@@ -320,11 +421,14 @@ public sealed partial class NodesPage : UserControl
         _geoAutoTried = true;
         try
         {
-            var nodes = AppState.Nodes.ToList();
+            var all = AppState.Nodes.ToList();
+            if (all.Count == 0) return;
+            // 12 小时内的检测结果直接复用；只补测「没有新鲜缓存、也没在本次进程测过」的节点。
+            var nodes = all.Where(n =>
+                string.IsNullOrEmpty(n.ExitCountry) && !LocationCache.TryGet(n, out _, out _)).ToList();
             if (nodes.Count == 0) return;
-            if (nodes.All(n => !string.IsNullOrEmpty(n.ExitCountry))) return;
 
-            LogBus.App("真实 IP 显示已开启：后台检测节点出口位置…");
+            LogBus.App($"真实 IP 显示：后台检测 {nodes.Count} 个节点的出口位置（缓存 12 小时内跳过）…");
             var map = await RealDelayTester.DetectExitLocationsAsync(
                 nodes, NeoPaths.RuntimeDir,
                 onResult: (node, country, ip) => _ = DispatcherQueue.TryEnqueue(() =>
@@ -338,9 +442,10 @@ public sealed partial class NodesPage : UserControl
             // 检测期间订阅刷新可能重建了节点对象：按稳定 NodeKey 回填到**当前**列表，
             // 否则结果全落在旧对象上、界面永远不显示（实测踩到过）。
             ApplyLocations(map);
-            var ok = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
+            var detected = map.Values.Count(v => !string.IsNullOrEmpty(v.Country));
+            var known = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
             RebuildList();
-            LogBus.App($"真实 IP 显示：出口检测完成 {ok}/{nodes.Count}（超时的节点保持未检测）");
+            LogBus.App($"真实 IP 显示：本次检测 {nodes.Count} 个（成功 {detected}）；当前已显示 {known}/{AppState.Nodes.Count}");
         }
         catch (Exception ex)
         {

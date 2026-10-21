@@ -905,7 +905,7 @@ public static class AppState
             merged.Add(n);
         }
         merged.AddRange(_subNodes);
-        foreach (var n in merged) DelayCache.Apply(n);
+        foreach (var n in merged) { DelayCache.Apply(n); LocationCache.Apply(n); }
         Nodes = merged;
         if (CurrentNode != null && !Nodes.Contains(CurrentNode) && (curKey != null || curName != null))
         {

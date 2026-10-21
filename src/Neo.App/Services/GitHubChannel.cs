@@ -168,6 +168,35 @@ public static class GitHubChannel
         return url[s..e];
     }
 
+    /// 取某个 tag 下的小文本资产（build-info.json / .sha256 之类）。
+    /// 三路（socks / 系统代理 / 直连）依次尝试，取不到返回 null。
+    public static async Task<string?> FetchTextAssetAsync(string owner, string repo, string tag,
+        string assetName, bool preferProxy, CancellationToken ct = default)
+    {
+        try
+        {
+            var assets = await GetAssetsAsync(owner, repo, tag, preferProxy, ct);
+            var asset = assets.FirstOrDefault(a => string.Equals(a.Name, assetName, StringComparison.OrdinalIgnoreCase));
+            if (asset == null) return null;
+            foreach (var kind in Order(preferProxy))
+            {
+                try
+                {
+                    using var handler = MakeHandler(kind);
+                    using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
+                    var text = await client.GetStringAsync(asset.DownloadUrl, ct);
+                    if (!string.IsNullOrEmpty(text)) return text;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { }
+        return null;
+    }
+
     /// 取某 tag 下的**真实资产清单**。端点 `releases/expanded_assets/{tag}` 是
     /// GitHub 前端渲染 release 资产列表的分片 HTML，**不是 REST API、不受配额限制**。
     /// 取不到时返回空表（调用方无需判 null）。

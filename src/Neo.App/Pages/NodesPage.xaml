@@ -37,6 +37,8 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -92,7 +94,25 @@
                 </StackPanel>
             </Button>
 
-            <TextBlock Grid.Column="5" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="10.5"
+            <Button Grid.Column="5" Style="{StaticResource ToolBtn}" Click="OnRetestFailedClick"
+                    AutomationProperties.AutomationId="RetestFailedBtn"
+                    ToolTipService.ToolTip="只测未测/超时的节点（日常维护更快）">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                    <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                    <TextBlock Text="补测" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="FilterBtn" Grid.Column="6" Style="{StaticResource ToolBtn}" Click="OnFilterTapped"
+                    AutomationProperties.AutomationId="FilterBtn"
+                    ToolTipService.ToolTip="按可用状态 / 地区筛选节点">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                    <TextBlock Text="&#xE71C;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                    <TextBlock x:Name="FilterBtnText" Text="筛选" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+
+            <TextBlock Grid.Column="7" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="10.5"
                        Foreground="{ThemeResource NeoText2}">
                 <Run x:Name="NodeCountRun" Text="共 0 个节点 · 已按延迟排序" />
             </TextBlock>
@@ -133,7 +153,7 @@
                                     BorderBrush="{x:Bind CardBorder, Mode=OneWay}"
                                     BorderThickness="{x:Bind CardThickness, Mode=OneWay}"
                                     ToolTipService.ToolTip="{x:Bind Tooltip, Mode=OneWay}"
-                                                                        Tapped="OnTileTapped" PointerEntered="OnTileEnter" PointerExited="OnTileLeave">
+                                                                        Tapped="OnTileTapped" RightTapped="OnTileRightTapped" PointerEntered="OnTileEnter" PointerExited="OnTileLeave">
                                 <Grid Padding="10,8,8,8" RowSpacing="3" ColumnSpacing="7">
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />

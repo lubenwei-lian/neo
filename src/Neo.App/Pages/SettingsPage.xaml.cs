@@ -213,7 +213,8 @@ public sealed partial class SettingsPage : UserControl
     {
         _pendingUpdate = info;
         BtnDownloadUpdate.Visibility = Visibility.Visible;
-        UpdateStatusText.Text = $"发现新版本 {info.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
+        var isNewBuild = (info.Notes ?? "").Contains("新构建", StringComparison.Ordinal);
+        UpdateStatusText.Text = $"发现{(isNewBuild ? "同版本新构建" : "新版本")} {info.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
     }
 
     // B方案：自动检查发现新版本时弹公告对话框，展示更新说明并允许直接下载更新。
@@ -229,7 +230,7 @@ public sealed partial class SettingsPage : UserControl
         var extra = string.IsNullOrEmpty(notes) ? "" : $"\n\n更新说明：\n{notes}";
         var dlg = new ContentDialog
         {
-            Title = "发现新版本",
+            Title = (info.Notes ?? "").Contains("新构建", StringComparison.Ordinal) ? "发现新构建" : "发现新版本",
             Content = new TextBlock
             {
                 Text = $"neo {info.LatestTag} 已发布（当前 {AppUpdateService.CurrentVersion}）。{extra}",
@@ -323,7 +324,7 @@ public sealed partial class SettingsPage : UserControl
 
             _pendingUpdate = r;
             BtnDownloadUpdate.Visibility = Visibility.Visible;
-            UpdateStatusText.Text = $"发现新版本 {r.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
+            UpdateStatusText.Text = $"发现{((r.Notes ?? "").Contains("新构建", StringComparison.Ordinal) ? "同版本新构建" : "新版本")} {r.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
         }
         finally
         {
@@ -990,6 +991,101 @@ public sealed partial class SettingsPage : UserControl
         await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
     }
 
+    /// 导出诊断包：最近日志 + 版本/内核/分流信息 + 脱敏后的配置，打包成 zip。
+    private async void OnExportDiagnosticsClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var outDir = System.IO.Path.Combine(NeoPaths.DataDir, "diagnostics");
+            System.IO.Directory.CreateDirectory(outDir);
+            var zipPath = System.IO.Path.Combine(outDir, $"neo-diagnostic-{stamp}.zip");
+            var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "neo-diag-" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(tmp);
+            try
+            {
+                var logDst = System.IO.Path.Combine(tmp, "logs");
+                System.IO.Directory.CreateDirectory(logDst);
+                foreach (var f in System.IO.Directory.GetFiles(NeoPaths.LogDir, "neo-*.log")
+                             .OrderByDescending(f => f).Take(3))
+                    System.IO.File.Copy(f, System.IO.Path.Combine(logDst, System.IO.Path.GetFileName(f)), true);
+
+                var buildAt = File.GetLastWriteTime(typeof(SettingsPage).Assembly.Location);
+                var info = new System.Text.StringBuilder();
+                info.AppendLine($"neo {AppUpdateService.CurrentVersion}");
+                info.AppendLine($"构建时间：{buildAt:yyyy-MM-dd HH:mm:ss}");
+                info.AppendLine($"系统：{Environment.OSVersion}");
+                info.AppendLine($"xray：{ConnectionService.XrayVersion ?? "?"}");
+                try { info.AppendLine($"sing-box：{ConnectionService.SingBoxVersion ?? "?"}"); } catch { }
+                info.AppendLine($"代理模式：{AppState.State.ProxyMode} · TUN={AppState.State.UseTun} · 多节点={AppState.State.MultiNodeEnabled}({AppState.State.MultiNodeMax})");
+                info.AppendLine($"分流：国内直连={AppState.State.BypassCn} 广告拦截={AppState.State.BlockAds} DNS={AppState.State.DnsServer} 日志级别={AppState.State.LogLevel}");
+                info.AppendLine($"系统代理：{SystemProxy.IsEnabled}");
+                System.IO.File.WriteAllText(System.IO.Path.Combine(tmp, "info.txt"), info.ToString());
+
+                // 配置脱敏：去掉订阅 URL / 手动节点链接 / 节点键（含服务器地址）
+                try
+                {
+                    var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(
+                        System.Text.Json.JsonSerializer.Serialize(AppState.State, opts));
+                    if (node is System.Text.Json.Nodes.JsonObject obj)
+                    {
+                        obj.Remove("SubscriptionUrl");
+                        obj.Remove("ManualLinks");
+                        obj.Remove("LastNodeKey");
+                        if (obj["Subscriptions"] is System.Text.Json.Nodes.JsonArray subs)
+                            foreach (var sub in subs)
+                                if (sub is System.Text.Json.Nodes.JsonObject so) so["Url"] = "";
+                    }
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(tmp, "state.redacted.json"),
+                        node?.ToJsonString(opts) ?? "{}");
+                }
+                catch { }
+
+                System.IO.Compression.ZipFile.CreateFromDirectory(tmp, zipPath);
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(tmp, true); } catch { }
+            }
+            LogBus.App($"诊断包已导出：{zipPath}");
+            await ShowSettingsInfo("导出诊断", $"已生成诊断包（日志 + 版本信息，配置已脱敏）：\n\n{zipPath}");
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("导出诊断", ex);
+            await ShowSettingsInfo("导出诊断", "导出失败：" + ex.Message);
+        }
+    }
+
+    /// 恢复默认设置（保留订阅、节点、当前节点与窗口位置）。
+    private async void OnResetSettingsClick(object sender, RoutedEventArgs e)
+    {
+        var res = await ShowDialogAsync(
+            "恢复默认设置",
+            "将把界面、代理、分流、测速、多节点等设置恢复为默认值。\n\n订阅、节点、当前所选节点和窗口位置保留。",
+            "取消", "恢复默认");
+        if (res != ContentDialogResult.Primary) return;
+
+        var st = AppState.State;
+        st.ProxyMode = "rule";
+        st.BypassPrivate = true; st.BypassCn = true; st.BlockAds = true; st.AllowLan = false;
+        st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
+        st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
+        st.FailoverEnabled = true; st.MultiNodeEnabled = true; st.MultiNodeMax = 8;
+        st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
+        st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;
+        st.AutoCheckUpdate = true; st.UpdateCheckTime = "12:00"; st.GameDirectEnabled = true;
+        AppState.Save();
+        AppState.NotifyUiSettingsChanged();
+        RefreshState();
+        if (ConnectionService.IsConnected)
+        {
+            try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
+        }
+        LogBus.App("设置已恢复默认（订阅/节点/窗口位置保留）");
+        await ShowSettingsInfo("恢复默认设置", "已恢复默认设置。");
+    }
     private void RefreshState()
     {
         _syncing = true;
@@ -1067,7 +1163,7 @@ public sealed partial class SettingsPage : UserControl
         try
         {
             var bi = File.GetLastWriteTime(typeof(SettingsPage).Assembly.Location);
-            AboutBuildText.Text = $"{bi:yyyy.MM.dd} · win-x64";
+            AboutBuildText.Text = $"{bi:yyyy.MM.dd HH:mm} · win-x64";
         }
         catch { }
     }

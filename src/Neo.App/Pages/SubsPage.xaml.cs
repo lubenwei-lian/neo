@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Neo.App.Services;
 using Neo.App.Ui;
+using Neo.Core;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.UI;
 
@@ -694,7 +695,47 @@ public sealed partial class SubsPage : UserControl
         PaintTrend();
     }
 
-    /// 把 7 日 / 30 日两条趋势画出来。列与格子在首次进入时建一次，之后只改格子的亮灭样式
+    /// 导出每日用量明细（CSV，最近 60 天）。文件落在 data 目录，弹窗给出完整路径。
+    private async void OnExportUsageClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var days = 60;
+            var bytes = UsageTracker.DailySeries(days);
+            var today = DateTime.Now.Date;
+            var dir = NeoPaths.DataDir;
+            var path = System.IO.Path.Combine(dir, $"usage-export-{DateTime.Now:yyyyMMdd-HHmmss}.csv");
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("日期,字节,GB");
+            for (var i = 0; i < days; i++)
+            {
+                var d = today.AddDays(i - (days - 1));
+                sb.AppendLine($"{d:yyyy-MM-dd},{bytes[i]},{(bytes[i] / 1024.0 / 1024 / 1024):F3}");
+            }
+            System.IO.File.WriteAllText(path, sb.ToString());
+            LogBus.App($"用量明细已导出：{path}");
+            var dlg = new ContentDialog
+            {
+                Title = "导出完成",
+                Content = new TextBlock
+                {
+                    Text = $"已导出最近 {days} 天用量明细：\n{path}",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12.5,
+                    IsTextSelectionEnabled = true,
+                },
+                CloseButtonText = "知道了",
+                XamlRoot = XamlRoot,
+            };
+            await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("导出用量明细", ex);
+        }
+    }
+
+    /// 把 7 日 / 30 日两条趋势画出来。    /// 把 7 日 / 30 日两条趋势画出来。列与格子在首次进入时建一次，之后只改格子的亮灭样式
     /// （列数固定为 7 / 30，不会变）。
     /// 同样的 20 GB/日 顶格，每格代表 5 GB。
     private void PaintTrend()
@@ -704,16 +745,18 @@ public sealed partial class SubsPage : UserControl
         var week = UsageTracker.DailySeries(7);
         var month = UsageTracker.DailySeries(30);
 
-        // 汇总行：今日 / 峰值 / 日均（原先只有一句静态的「顶格 20 GB/日」）
+        // 汇总行：合计 / 日均 / 今日 / 峰值（带日期）
+        var today = DateTime.Now.Date;
         long wPeak = 0, wSum = 0;
         foreach (var v in week) { if (v > wPeak) wPeak = v; wSum += v; }
-        TrendWeekHint.Text = $"最近 7 天 · 今日 {UsageTracker.Format(week[^1])} · 峰值 {UsageTracker.Format(wPeak)} · 每列 1 天，满格 20 GB（每格 2.5 GB）";
-        long mPeak = 0;
-        foreach (var v in month) if (v > mPeak) mPeak = v;
-        TrendMonthHint.Text = $"最近 30 天 · 峰值 {UsageTracker.Format(mPeak)} · 每列 1 天，满格 20 GB（每格 5 GB）";
+        var wPeakDate = today.AddDays(Array.IndexOf(week, wPeak) - 6);
+        TrendWeekHint.Text = $"最近 7 天 · 合计 {UsageTracker.Format(wSum)} · 日均 {UsageTracker.Format(wSum / 7)} · 今日 {UsageTracker.Format(week[^1])} · 峰值 {UsageTracker.Format(wPeak)}（{wPeakDate:M/d}）";
+        long mPeak = 0, mSum = 0;
+        foreach (var v in month) { if (v > mPeak) mPeak = v; mSum += v; }
+        var mPeakDate = today.AddDays(Array.IndexOf(month, mPeak) - 29);
+        TrendMonthHint.Text = $"最近 30 天 · 合计 {UsageTracker.Format(mSum)} · 日均 {UsageTracker.Format(mSum / 30)} · 峰值 {UsageTracker.Format(mPeak)}（{mPeakDate:M/d}）· 每列 1 天，满格 20 GB";
 
         // 每列 tooltip：日期 + 当天用量（格子太小，不悬停看不到具体值）
-        var today = DateTime.Now.Date;
         for (int i = 0; i < _weekCols.Count && i < week.Length; i++)
             ToolTipService.SetToolTip(_weekCols[i], $"{today.AddDays(i - (week.Length - 1)):M月d日} · {UsageTracker.Format(week[i])}");
         for (int i = 0; i < _monthCols.Count && i < month.Length; i++)
