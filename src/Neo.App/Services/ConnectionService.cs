@@ -1365,24 +1365,98 @@ public static class ConnectionService
         }
     }
 
-    /// 节点吞吐缓存（Kbps）。键 = AppState.NodeKey（稳定标识），30 分钟内复用，
-    /// 避免每次连接/重连都重新跑一轮下载探测。
+    /// 节点吞吐缓存（Kbps）。键 = AppState.NodeKey（稳定标识）。
+    ///   连接流程会**同步等待**吞吐探测（8 节点 × 256KB × 2 次，最坏十几秒），
+    ///   而进程内缓存一重启就没了 —— 每次重启后的第一次连接都要重付一次，
+    ///   用户体感就是「连接要等 15~25 秒」。所以这里把结果按 NodeKey 落盘（TTL 6 小时），
+    ///   重启后直接复用；启动自动测速的末尾会预热「上次节点所在组」，把首次连接也变快。
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Kbps, DateTime At)> _speedCache = new();
+    private static readonly TimeSpan SpeedCacheTtl = TimeSpan.FromHours(6);
+    private static readonly object _speedCacheDiskLock = new();
+    private static bool _speedCacheLoaded;
+
+    private sealed class SpeedEntry
+    {
+        public int Kbps { get; set; }
+        public long AtUnix { get; set; }
+    }
+
+    private static string SpeedCachePath => Path.Combine(NeoPaths.DataDir, "speed-cache.json");
+
+    private static void EnsureSpeedCacheLoaded()
+    {
+        if (_speedCacheLoaded) return;
+        lock (_speedCacheDiskLock)
+        {
+            if (_speedCacheLoaded) return;
+            _speedCacheLoaded = true;
+            try
+            {
+                if (!File.Exists(SpeedCachePath)) return;
+                var entries = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, SpeedEntry>>(
+                    File.ReadAllText(SpeedCachePath));
+                if (entries == null) return;
+                var now = DateTime.UtcNow;
+                foreach (var kv in entries)
+                {
+                    if (kv.Value == null || kv.Value.Kbps <= 0) continue;
+                    var at = DateTimeOffset.FromUnixTimeSeconds(kv.Value.AtUnix).UtcDateTime;
+                    if (now - at < SpeedCacheTtl) _speedCache[kv.Key] = (kv.Value.Kbps, at);
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void SaveSpeedCache()
+    {
+        try
+        {
+            lock (_speedCacheDiskLock)
+            {
+                var now = DateTime.UtcNow;
+                var entries = new Dictionary<string, SpeedEntry>();
+                foreach (var kv in _speedCache)
+                {
+                    if (now - kv.Value.At >= SpeedCacheTtl) continue;
+                    entries[kv.Key] = new SpeedEntry
+                    {
+                        Kbps = kv.Value.Kbps,
+                        AtUnix = new DateTimeOffset(kv.Value.At).ToUnixTimeSeconds(),
+                    };
+                }
+                var tmp = SpeedCachePath + ".tmp";
+                File.WriteAllText(tmp, System.Text.Json.JsonSerializer.Serialize(entries));
+                File.Move(tmp, SpeedCachePath, overwrite: true);
+            }
+        }
+        catch { }
+    }
+
+    /// 缓存命中判定：内存/落盘共用同一个 6 小时 TTL（落盘加载时已按 TTL 过滤）。
+    private static bool TryGetCachedSpeed(NodeItem node, out int kbps)
+    {
+        kbps = 0;
+        EnsureSpeedCacheLoaded();
+        if (!_speedCache.TryGetValue(AppState.NodeKey(node), out var cached)) return false;
+        if (DateTime.UtcNow - cached.At >= SpeedCacheTtl) return false;
+        kbps = cached.Kbps;
+        return true;
+    }
 
     /// 会拿到大量份额，浏览时每条连接抽签，抽到它就卡（Steam/推特慢的直接原因，
     /// 做法：RealDelayTester.MeasureSpeedBatchAsync（临时内核 + 每节点独立 socks 端口，
     /// 每节点下 256KB 折算 Kbps）。返回顺序与 group 一致；测不出 = 0（ComputeWeights 只给最低 1 份）。
     private static async Task<List<int>> GetGroupSpeedsAsync(IReadOnlyList<NodeItem> group)
     {
+        EnsureSpeedCacheLoaded();
         var speeds = new int[group.Count];
         var missing = new List<int>();
         for (var i = 0; i < group.Count; i++)
         {
-            var key = AppState.NodeKey(group[i]);
-            if (_speedCache.TryGetValue(key, out var cached)
-                && DateTime.UtcNow - cached.At < TimeSpan.FromMinutes(30))
+            if (TryGetCachedSpeed(group[i], out var cached))
             {
-                speeds[i] = cached.Kbps;
+                speeds[i] = cached;
             }
             else
             {
@@ -1393,7 +1467,9 @@ public static class ConnectionService
         if (missing.Count == 0) return speeds.ToList();
 
         LogBus.App($"多节点并发：正在探测 {missing.Count} 个节点的真实吞吐（权重依据）…", "Debug");
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        // 15 秒预算：正常 8 节点并行 ~6-12 秒；个别节点极慢时不至于把连接拖到 25 秒，
+        // 超预算的部分本次按延迟加权（下次启动预热会补上）。
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var map = await RealDelayTester.MeasureSpeedBatchAsync(
             missing.Select(i => group[i]).ToList(), NeoPaths.RuntimeDir, ct: cts.Token);
 
@@ -1409,9 +1485,46 @@ public static class ConnectionService
                 ok++;
             }
         }
+        if (ok > 0) SaveSpeedCache();
         LogBus.App($"多节点并发：吞吐探测完成 {ok}/{missing.Count} 个成功"
                    + (ok < missing.Count ? "（测不出速度的节点只拿最低份额）" : ""));
         return speeds.ToList();
+    }
+
+    /// 启动预热：为「上次使用的节点」所在的多节点组提前测吞吐并落盘，
+    /// 用户点连接时直接命中缓存，不必在连接流程里同步等探测。
+    /// 由 StartupSpeedTest 在「启动自动测速」完成后调用（开关关闭时不预热）。
+    public static async Task WarmSpeedCacheAsync()
+    {
+        try
+        {
+            if (!AppState.State.MultiNodeEnabled) return;
+            if (string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)) return;
+            if (IsConnected || IsConnecting) return;
+            var node = AppState.CurrentNode ?? AppState.Nodes.FirstOrDefault();
+            if (node == null) return;
+
+            List<NodeItem> group;
+            try
+            {
+                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 16));
+            }
+            catch { return; }
+            if (group.Count < 2) return;
+
+            EnsureSpeedCacheLoaded();
+            var missing = group.Count(n => !TryGetCachedSpeed(n, out _));
+            if (missing == 0) return;
+
+            LogBus.App($"启动预热：正在测 {missing} 个节点的吞吐（让首次连接不必等待）…", "Debug");
+            var sw = Stopwatch.StartNew();
+            await GetGroupSpeedsAsync(group);
+            LogBus.App($"启动预热完成：吞吐缓存已更新 · 耗时 {sw.Elapsed.TotalSeconds:F1}s", "Debug");
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"启动预热失败（不影响使用）：[{ex.GetType().Name}] {ex.Message}", "Debug");
+        }
     }
 
     private static string ModeName(string mode) => mode switch

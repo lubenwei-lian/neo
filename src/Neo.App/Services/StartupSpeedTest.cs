@@ -82,6 +82,10 @@ public static class StartupSpeedTest
 
             NotifyNodesChanged();
             LogBus.App($"启动自动测速完成：{ok}/{nodes.Count} 可达 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
+
+            // 顺带预热「上次节点所在组」的吞吐缓存：连接流程会同步等待这个探测（8 节点 × 256KB × 2 次），
+            // 预热后首次连接就能直接命中缓存。设置里关掉「启动自动测速」则不会预热。
+            await ConnectionService.WarmSpeedCacheAsync();
         }
         catch (OperationCanceledException)
         {
