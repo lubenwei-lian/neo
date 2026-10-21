@@ -98,7 +98,12 @@ public static class XrayConfigBuilder
             },
             ["routing"] = new JsonObject
             {
-                ["domainStrategy"] = "AsIs",
+                // IPOnDemand：域名规则没命中时，遇到 IP 规则（geoip:cn）再解析域名。
+                //   AsIs 下 geoip:cn 规则对「域名目标」永远不生效，于是 geosite:cn 之外的
+                //   国内站点会全部走代理（实测 realme.com 就是这样，用户感知「国内站很慢」）。
+                //   改成 IPOnDemand 后：命中 geosite:cn 的照旧直连，没命中的按解析出的 CN IP 直连，
+                //   国外域名解析后仍落 balancer 走代理（已实测 google/youtube/chatgpt 不受影响）。
+                ["domainStrategy"] = "IPOnDemand",
                 ["rules"] = BuildRoutingRules(proxyMode, bypassPrivate, bypassCn, blockAds, customRules),
             },
         };
@@ -307,7 +312,8 @@ public static class XrayConfigBuilder
 
         var routing = new JsonObject
         {
-            ["domainStrategy"] = "AsIs",
+            // 同上：多节点配置也用 IPOnDemand，让 geosite:cn 之外的国内站点按 IP 判直连。
+            ["domainStrategy"] = "IPOnDemand",
             ["balancers"] = new JsonArray(balancer),
             ["rules"] = rules,
         };

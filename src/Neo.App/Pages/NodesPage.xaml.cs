@@ -465,6 +465,29 @@ public sealed partial class NodesPage : UserControl
                     }
                 }),
                 ct: _realCts.Token);
+
+            // 批量里超时（-1）/没测到的节点用更长超时单独重试一次：
+            //   订阅里确实有死节点，但「其实能用、只是很慢」的节点会被 7s 批量超时误判。
+            var retry = all.Where(t => t.RealValue <= 0).ToList();
+            if (retry.Count > 0 && _realCts is { IsCancellationRequested: false })
+            {
+                LogBus.App($"真连测速：批量超时 {retry.Count} 个，正在单独重试（12s 超时）…");
+                try
+                {
+                    await Parallel.ForEachAsync(retry,
+                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = _realCts.Token },
+                        async (tile, ict) =>
+                        {
+                            var ms = await RealDelayTester.RealPingAsync(
+                                tile.Node, NeoPaths.RuntimeDir, timeoutMs: 12000, ct: ict);
+                            _ = DispatcherQueue.TryEnqueue(() =>
+                            {
+                                if (!App.IsShuttingDown) tile.SetResult(ms);
+                            });
+                        });
+                }
+                catch (OperationCanceledException) { }
+            }
         }
         catch (OperationCanceledException)
         {
