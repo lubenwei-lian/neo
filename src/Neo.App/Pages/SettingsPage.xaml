@@ -1,0 +1,590 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl x:Class="Neo.App.Pages.SettingsPage" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="using:Neo.App.Ui">
+
+    <UserControl.Resources>
+        <Style x:Key="GhostSm" TargetType="Button">
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="11,0" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Background" Value="{ThemeResource NeoGlass2}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Foreground" Value="{ThemeResource NeoText1}" />
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid RowSpacing="12" ColumnSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <ui:CoolGlassCard Grid.Row="0" Grid.Column="0">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,0,0,2">
+                        <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                        <TextBlock Text="通用" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                    </StackPanel>
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="开机自动启动" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="登录 Windows 后在托盘静默启动" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchAutoStart" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAutoStartToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="启动后自动连接" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="使用上次的节点与代理模式" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchAutoConnect" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAutoConnectToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="关闭窗口时最小化到托盘" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="保持代理在后台运行" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchMinTray" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnMinTrayToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="界面语言" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="当前仅提供简体中文" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Grid HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border
+                                x:Name="LangBox"
+                                Width="132"
+                                Height="30"
+                                CornerRadius="7"
+                                Background="{ThemeResource NeoGlass2}"
+                                BorderBrush="{ThemeResource NeoHairline}"
+                                BorderThickness="1"
+                                Padding="10,0"
+                            >
+                                <Grid>
+                                    <TextBlock x:Name="LangText" Text="简体中文" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                    <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                </Grid>
+                            </Border>
+                            <Button
+                                x:Name="LangBtn"
+                                Click="OnLangTapped"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                CornerRadius="7"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"
+                                AutomationProperties.Name="界面语言选择"
+                            />
+                        </Grid>
+                    </Grid>
+                </StackPanel>
+            </ui:CoolGlassCard>
+
+            <ui:CoolGlassCard Grid.Row="0" Grid.Column="1">
+                <StackPanel>
+                    <Grid Margin="0,0,0,2">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                            <TextBlock Text="内核" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                        </StackPanel>
+                        <Border
+                            x:Name="KernelBadgeBg"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            CornerRadius="5"
+                            Padding="8,2.5"
+                            Background="{ThemeResource NeoGreenSoft}"
+                            BorderBrush="{ThemeResource NeoGreenSoft}"
+                            BorderThickness="1"
+                        >
+                            <TextBlock x:Name="KernelBadge" Text="未运行" FontSize="10" FontWeight="SemiBold" Foreground="{ThemeResource NeoGreen}" />
+                        </Border>
+                    </Grid>
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="SOCKS5 端口" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="本地代理入口（浏览器/软件填这个）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Border
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            MinWidth="110"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                        >
+                            <TextBlock x:Name="PortSocksText" Text="10808" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="HTTP 端口" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="本地 HTTP 代理入口" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Border
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            MinWidth="110"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                        >
+                            <TextBlock x:Name="PortHttpText" Text="10809" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="xray 内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="XrayVersionHint" Text="本机内置内核" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border MinWidth="96" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0">
+                                <TextBlock
+                                    x:Name="XrayVersionText"
+                                    Text="—"
+                                    FontSize="11.5"
+                                    FontFamily="{StaticResource NeoMonoFont}"
+                                    Foreground="{ThemeResource NeoText1}"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Center"
+                                />
+                            </Border>
+                            <Button x:Name="BtnCheckXrayUpdate" Style="{StaticResource GhostSm}" Click="OnCheckXrayUpdateClick">
+                                <TextBlock Text="检查更新" FontSize="11.5" />
+                            </Button>
+                            <ProgressRing x:Name="RingXrayUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="sing-box 内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="SingBoxVersionHint" Text="本机内置内核 · TUN / 并发" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border MinWidth="96" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0">
+                                <TextBlock
+                                    x:Name="SingBoxVersionText"
+                                    Text="—"
+                                    FontSize="11.5"
+                                    FontFamily="{StaticResource NeoMonoFont}"
+                                    Foreground="{ThemeResource NeoText1}"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Center"
+                                />
+                            </Border>
+                            <Button x:Name="BtnCheckSingBoxUpdate" Style="{StaticResource GhostSm}" Click="OnCheckSingBoxUpdateClick">
+                                <TextBlock Text="检查更新" FontSize="11.5" />
+                            </Button>
+                            <ProgressRing x:Name="RingSingBoxUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="自动故障转移" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="当前节点连续失联时自动切换到可用节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchFailover" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnFailoverToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="多节点加速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchMultiNode" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnMultiNodeToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="并发模式" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="MultiModeHint" Text="加权：快的节点多吃流量，慢的留在池里打辅助" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Border
+                            x:Name="MultiModeBox"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Width="120"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                            Tapped="OnMultiModeTapped"
+                        >
+                            <Grid>
+                                <TextBlock x:Name="MultiModeText" Text="加权" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="日志级别" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="LogPathHint" Text="写入 data\logs" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Border
+                            x:Name="LogLevelBox"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Width="120"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                            Tapped="OnLogLevelTapped"
+                        >
+                            <Grid>
+                                <TextBlock x:Name="LogLevelText" Text="警告" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </ui:CoolGlassCard>
+
+            <ui:CoolGlassCard Grid.Row="1" Grid.Column="0">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,0,0,2">
+                        <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                        <TextBlock Text="外观" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                    </StackPanel>
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="主题" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            
+                            <TextBlock Text="固定暗色（亮色主题已移除）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="玻璃透明度" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="卡片与面板的透光强度（数值越大越透）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Grid Width="132" Height="24">
+                                <Border Height="4" CornerRadius="2" Background="{ThemeResource NeoTrack}" VerticalAlignment="Center" />
+                                
+                                <Border x:Name="GlassFill" Width="100" Height="4" CornerRadius="2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="{ThemeResource NeoBarFrom}" Offset="0" />
+                                            <GradientStop Color="{ThemeResource NeoBarTo}" Offset="1" />
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <Ellipse
+                                    x:Name="GlassKnob"
+                                    Width="12"
+                                    Height="12"
+                                    Fill="White"
+                                    Stroke="{ThemeResource NeoKnobStroke}"
+                                    StrokeThickness="1"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Margin="94,0,0,0"
+                                />
+                                <Slider
+                                    x:Name="GlassSlider"
+                                    Minimum="0"
+                                    Maximum="100"
+                                    Value="78"
+                                    StepFrequency="1"
+                                    Opacity="0"
+                                    VerticalAlignment="Center"
+                                    Margin="0"
+                                    ValueChanged="OnGlassValueChanged"
+                                />
+                            </Grid>
+                            <TextBlock x:Name="GlassPctText" Text="78%" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Width="34" TextAlignment="Right" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="紧凑布局" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="缩小行高以显示更多节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchCompact" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnCompactToggled" />
+                    </Grid>
+                </StackPanel>
+            </ui:CoolGlassCard>
+
+            <ui:CoolGlassCard Grid.Row="1" Grid.Column="1">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,0,0,2">
+                        <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                        <TextBlock Text="关于" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                    </StackPanel>
+
+                    <Grid Padding="0,7">
+                        <TextBlock Text="版本" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Width="74" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="74,0,0,0">
+                            <TextBlock x:Name="AboutVersionText" Text="neo 0.1.0" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                            <Border CornerRadius="5" Padding="6,1.5" Background="{ThemeResource NeoChipBg}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" VerticalAlignment="Center">
+                                <TextBlock Text="开发版" FontSize="10" Foreground="{ThemeResource NeoText2}" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Padding="0,7">
+                        <TextBlock Text="构建" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Width="74" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        <TextBlock x:Name="AboutBuildText" Text="— · win-x64" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" Margin="74,0,0,0" />
+                    </Grid>
+
+                    <Grid Padding="0,7">
+                        <TextBlock Text="内核" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Width="74" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        <TextBlock x:Name="AboutXrayText" Text="xray-core —" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" Margin="74,0,0,0" />
+                    </Grid>
+
+                    <Grid Padding="0,7">
+                        <TextBlock Text="开源许可" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Width="74" HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        <TextBlock Text="MIT · 第三方组件" FontSize="11.5" Foreground="{ThemeResource NeoText1}" Margin="74,0,0,0" />
+                    </Grid>
+
+                    <Border BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0" Margin="0,4,0,0" Padding="0,10,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="74,0,0,0">
+                            
+                            <Button Style="{StaticResource GhostSm}" Click="OnViewLogClick">
+                                <TextBlock Text="查看日志" FontSize="11.5" />
+                            </Button>
+                            <Button Style="{StaticResource GhostSm}" Click="OnFeedbackClick">
+                                <TextBlock Text="反馈问题" FontSize="11.5" />
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ui:CoolGlassCard>
+
+            <ui:CoolGlassCard Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2">
+                <StackPanel>
+                    <Grid Margin="0,0,0,2">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                            <TextBlock Text="高级" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                        </StackPanel>
+                        <TextBlock Text="分流与 DNS · 改动后自动重载内核" FontSize="10.5" Foreground="{ThemeResource NeoText2}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <Grid ColumnSpacing="26">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Grid Grid.Row="0" Grid.Column="0" MinHeight="44" Padding="0,9">
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="国内地址直连" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                <TextBlock Text="命中 geosite:cn / geoip:cn 时直连，不经过节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleSwitch x:Name="SwitchBypass" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnBypassCnToggled" />
+                        </Grid>
+
+                        <Grid Grid.Row="0" Grid.Column="1" MinHeight="44" Padding="0,9">
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="DNS 服务器" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                <TextBlock Text="内核解析分流目标所用 DNS" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Grid HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Border
+                                    x:Name="DnsBox"
+                                    Width="158"
+                                    Height="30"
+                                    CornerRadius="7"
+                                    Background="{ThemeResource NeoGlass2}"
+                                    BorderBrush="{ThemeResource NeoHairline}"
+                                    BorderThickness="1"
+                                    Padding="10,0"
+                                >
+                                    <Grid>
+                                        <TextBlock x:Name="DnsText" Text="223.5.5.5" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                        <TextBlock x:Name="DnsTag" Text="· 内置" FontSize="10.5" Foreground="{ThemeResource NeoText2}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                                <Button
+                                    x:Name="DnsBtn"
+                                    Click="OnDnsTapped"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    CornerRadius="7"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Stretch"
+                                    AutomationProperties.Name="DNS 服务器设置"
+                                />
+                            </Grid>
+                        </Grid>
+
+                        <Border Grid.Row="1" Grid.Column="0" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0">
+                            <Grid MinHeight="44" Padding="0,9" Tapped="OnRuleSetTapped" Background="Transparent">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="分流规则集" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                    <TextBlock Text="内网直连 / 国内直连 / 广告拦截" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <Border
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Width="158"
+                                    Height="30"
+                                    CornerRadius="7"
+                                    Background="{ThemeResource NeoGlass2}"
+                                    BorderBrush="{ThemeResource NeoHairline}"
+                                    BorderThickness="1"
+                                    Padding="10,0"
+                                >
+                                    <Grid>
+                                        <TextBlock x:Name="RuleSetCountText" Text="3 组已启用" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                        <TextBlock
+                                            Text=""
+                                            FontFamily="Segoe Fluent Icons"
+                                            FontSize="11"
+                                            Foreground="{ThemeResource NeoText3}"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center"
+                                        />
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="1" Grid.Column="1" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0">
+                            <Grid MinHeight="44" Padding="0,9">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="允许来自局域网的连接" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                    <TextBlock Text="其他设备可经本机代理上网" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="SwitchLan" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAllowLanToggled" />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0">
+                            <Grid MinHeight="44" Padding="0,9">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="游戏直连保护" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                    <TextBlock Text="TUN 下游戏进程流量直连不经过节点（防节点拒绝游戏 UDP）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="SwitchGameDirect" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnGameDirectToggled" />
+                            </Grid>
+                        </Border>
+
+
+                        <Border Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0">
+                            <Grid MinHeight="44" Padding="0,9">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="自定义游戏进程" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                    <TextBlock x:Name="GameDirectProcSummary" Text="内置已覆盖 PUBG/CS2/L4D2/NTE 等" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                                </StackPanel>
+                                <Button x:Name="BtnEditGameProcesses" Content="编辑" HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnEditGameProcessesClicked" />
+                            </Grid>
+                        </Border>
+
+
+                    </Grid>
+                </StackPanel>
+            </ui:CoolGlassCard>
+
+            <ui:CoolGlassCard Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2">
+                <StackPanel>
+                    <Grid Margin="0,0,0,2">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <TextBlock Text="" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                            <TextBlock Text="软件更新" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                        </StackPanel>
+                        <TextBlock x:Name="AppVersionText" Text="当前版本 —" FontSize="10.5" Foreground="{ThemeResource NeoText2}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                    </Grid>
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="检查更新" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="UpdateStatusText" Text="从 GitHub 获取最新版本" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            
+                            <ProgressRing x:Name="RingAppUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                            <Button x:Name="BtnCheckAppUpdate" Style="{StaticResource GhostSm}" Click="OnCheckAppUpdateClick">
+                                <TextBlock Text="立即检查" FontSize="11.5" />
+                            </Button>
+                            <Button x:Name="BtnDownloadUpdate" Style="{StaticResource GhostSm}" Click="OnDownloadUpdateClick" Visibility="Collapsed">
+                                <TextBlock Text="下载并更新" FontSize="11.5" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="自动检查更新" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="每天在设定时间之后自动检查一次（经当前代理）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch
+                            x:Name="SwitchAutoCheckUpdate"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            MinWidth="0"
+                            OnContent=""
+                            OffContent=""
+                            Toggled="OnAutoCheckUpdateToggled"
+                        />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="检查时间" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="每天到这个时间点后自动检查" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <TimePicker x:Name="UpdateTimePicker" HorizontalAlignment="Right" VerticalAlignment="Center" ClockIdentifier="24HourClock" TimeChanged="OnUpdateTimeChanged" />
+                    </Grid>
+                </StackPanel>
+            </ui:CoolGlassCard>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

@@ -1,0 +1,47 @@
+# 构建产物
+bin/
+obj/
+dist/*
+!dist/.gitkeep
+runtime/*
+!runtime/.gitkeep
+# rule-sets 是难再生的分流数据集（合计约 100KB），必须入库
+!runtime/rule-sets/
+!runtime/rule-sets/*.srs
+
+# IDE
+.vs/
+*.user
+*.suo
+
+# 临时
+*.log
+
+# 启动器构建中间产物
+tools/launcher/*.res
+
+# 自编译内核的官方原版备份（78MB，不入库、也不该进发布包）
+doc/内核补丁-20261018/*.orig-official*
+# 本地任务产物（审计/修复台账、临时构建证据），不入库
+_work/
+planning/
+
+# ==== 开源发布：内部资料不入库（本机保留，不上传） ====
+AGENTS.md
+aoci.txt
+aoci.code.txt
+aoci.meta.txt
+.aoci/
+.hermes/
+design/
+电脑安装/
+# doc/ 只保留内核补丁（GPL 对应源码），其余为内部过程文档
+doc/*
+!doc/内核补丁-20261018/
+!doc/内核补丁-20261018/**
+!doc/README.md
+
+# 内部 UI 探针脚本（不随开源仓库发布）
+tools/ui-tools/
+# 官方内核备份（82MB，不入库）
+doc/内核补丁-20261018/*orig-official*

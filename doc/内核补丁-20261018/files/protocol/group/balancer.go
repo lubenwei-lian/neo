@@ -1,0 +1,737 @@
+package group
+
+import (
+	"context"
+	"math/rand"
+	"net"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/adapter/outbound"
+	"github.com/sagernet/sing-box/common/interrupt"
+	"github.com/sagernet/sing-box/common/urltest"
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
+	E "github.com/sagernet/sing/common/exceptions"
+	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/common/x/list"
+	"github.com/sagernet/sing/service"
+	"github.com/sagernet/sing/service/pause"
+)
+
+// Balancer 是「多节点并发」出站组：把同地区、同协议的多个节点编成一个池，
+// 每条新连接按策略挑选一个**健康**成员，从而同时用上多个节点。
+//
+// 与 urltest 的本质区别：
+//
+//	urltest   —— 只挑一个最快的，**全部流量都走那一个**（单节点限速原样保留）。
+//	balancer  —— 健康成员轮转，**多条连接分摊到多个节点**，突破单节点单连接限速。
+//
+// 健康成员 = 最近一次探活成功（历史里有延迟记录）的成员。探活失败的会被
+// 移出候选池并自动改用其它节点，因此既加快又不会把请求发给死节点。
+func RegisterBalancer(registry *outbound.Registry) {
+	outbound.Register[option.BalancerOutboundOptions](registry, C.TypeBalancer, NewBalancer)
+}
+
+var (
+	_ adapter.OutboundGroup           = (*Balancer)(nil)
+	_ adapter.InterfaceUpdateListener = (*Balancer)(nil)
+)
+
+type Balancer struct {
+	outbound.Adapter
+	ctx                          context.Context
+	outbound                     adapter.OutboundManager
+	connection                   adapter.ConnectionManager
+	logger                       log.ContextLogger
+	tags                         []string
+	link                         string
+	interval                     time.Duration
+	idleTimeout                  time.Duration
+	strategy                     string
+	interruptExternalConnections bool
+
+	// 稳定相关：池大小 + 粘滞键
+	poolSize int
+	// dialAttempts 是一次连接在池内最多尝试的成员数（失败即换成员）。
+	// 1 = 不重试（上游 urltest 的行为）。
+	dialAttempts  int
+	stickyKeys    []string
+	stickyTimeout time.Duration
+	// stickyProcesses 非空时，只对这些进程启用粘滞；其余流量走纯轮转分摊。
+	stickyProcesses []string
+
+	history       *urltest.HistoryStorage
+	pause         pause.Manager
+	members       []adapter.Outbound
+	access        sync.Mutex
+	checkAccess   sync.Mutex
+	nextIndex     int
+	lastSelected  adapter.Outbound
+	interruptGrp  *interrupt.Group
+	ticker        *time.Ticker
+	pauseCallback *list.Element[pause.Callback]
+	close         chan struct{}
+	started       bool
+	// sticky 把「粘滞键 -> 成员」的映射固定下来，保证同一进程/域名
+	// 的连接始终走同一节点；否则同一局游戏的多个连接会落到不同出口，
+	// 中途换 IP 会被服务端判为异常并断连。
+	sticky map[string]*stickyEntry
+	// lastActive 用原子类型而非裸 time.Time：touch() 持锁写、loopCheck() 无锁读，
+	// 裸字段就是数据竞争（上游 urltest 同样用 common.TypedValue）。
+	lastActive common.TypedValue[time.Time]
+}
+
+// stickyEntry 记录某个粘滞键当前绑定的成员及最后活跃时间。
+type stickyEntry struct {
+	outbound adapter.Outbound
+	lastSeen time.Time
+}
+
+func (s *Balancer) markActive() {
+	s.lastActive.Store(time.Now())
+}
+
+func (s *Balancer) sinceActive() time.Duration {
+	last := s.lastActive.Load()
+	if last.IsZero() {
+		return 0
+	}
+	return time.Since(last)
+}
+
+func NewBalancer(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.BalancerOutboundOptions) (adapter.Outbound, error) {
+	outbound := &Balancer{
+		Adapter:                      outbound.NewAdapter(C.TypeBalancer, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.Outbounds),
+		ctx:                          ctx,
+		outbound:                     service.FromContext[adapter.OutboundManager](ctx),
+		connection:                   service.FromContext[adapter.ConnectionManager](ctx),
+		logger:                       logger,
+		tags:                         options.Outbounds,
+		link:                         options.URL,
+		interval:                     time.Duration(options.Interval),
+		idleTimeout:                  time.Duration(options.IdleTimeout),
+		strategy:                     options.Strategy,
+		interruptExternalConnections: options.InterruptExistConnections,
+		history:                      service.PtrFromContext[urltest.HistoryStorage](ctx),
+		pause:                        service.FromContext[pause.Manager](ctx),
+		interruptGrp:                 interrupt.NewGroup(),
+		close:                        make(chan struct{}),
+		poolSize:                     options.PoolSize,
+		dialAttempts:                 options.DialAttempts,
+		stickyKeys:                   options.StickyKey,
+		stickyTimeout:                time.Duration(options.StickyTimeout),
+		stickyProcesses:              options.StickyProcesses,
+		sticky:                       make(map[string]*stickyEntry),
+	}
+	if len(outbound.tags) == 0 {
+		return nil, E.New("missing tags")
+	}
+	if outbound.interval <= 0 {
+		outbound.interval = C.DefaultURLTestInterval
+	}
+	if outbound.idleTimeout <= 0 {
+		outbound.idleTimeout = C.DefaultURLTestIdleTimeout
+	}
+	if outbound.interval > outbound.idleTimeout {
+		return nil, E.New("interval must be less or equal than idle_timeout")
+	}
+	switch outbound.strategy {
+	case "", C.BalancerStrategyRoundRobin, C.BalancerStrategyLeastPing, C.BalancerStrategyRandom:
+	default:
+		return nil, E.New("unknown balancer strategy: ", outbound.strategy)
+	}
+	if outbound.poolSize < 0 {
+		return nil, E.New("pool_size must not be negative")
+	}
+	if outbound.poolSize == 0 {
+		outbound.poolSize = C.BalancerDefaultPoolSize
+	}
+	if outbound.dialAttempts < 0 {
+		return nil, E.New("dial_attempts must not be negative")
+	}
+	if outbound.dialAttempts == 0 {
+		outbound.dialAttempts = C.BalancerDefaultDialAttempts
+	}
+	if outbound.stickyTimeout <= 0 {
+		outbound.stickyTimeout = C.BalancerDefaultStickyTimeout
+	}
+	if outbound.stickyKeys == nil {
+		outbound.stickyKeys = []string{C.BalancerStickyProcess, C.BalancerStickyDomain}
+	}
+	for _, key := range outbound.stickyKeys {
+		switch key {
+		case C.BalancerStickyProcess, C.BalancerStickyDomain, C.BalancerStickyDestIP,
+			C.BalancerStickyDestPort, C.BalancerStickySourceIP, C.BalancerStickyNone:
+		default:
+			return nil, E.New("unknown sticky_key: ", key)
+		}
+	}
+	return outbound, nil
+}
+
+// stickyDisabled 报告是否显式关闭了粘滞（sticky_key = ["none"]）。
+func (s *Balancer) stickyDisabled() bool {
+	for _, key := range s.stickyKeys {
+		if key == C.BalancerStickyNone {
+			return true
+		}
+	}
+	return len(s.stickyKeys) == 0
+}
+
+// stickyKeyFor 由连接元数据算出粘滞键。返回空串表示该连接不粘滞。
+//
+// 粘滞是「稳定」的关键：同一 App（进程）访问同一域名时始终复用同一节点，
+// 游戏/语音/登录这类长连接不会因为分摊策略而在中途被换到别的出口。
+//
+// 但当配置了 sticky_processes 白名单时，粘滞只对名单内进程生效；
+// 名单外的流量返回空串 → 走纯轮转分摊（保住并发提速能力）。
+// 这是「游戏要稳」与「下载要快」之间的取舍点。
+func (s *Balancer) stickyKeyFor(ctx context.Context) string {
+	if s.stickyDisabled() {
+		return ""
+	}
+	metadata := adapter.ContextFrom(ctx)
+	if metadata == nil {
+		return ""
+	}
+	// 白名单外的进程不粘滞：让它的多条连接能分摊到多个节点
+	if len(s.stickyProcesses) > 0 && !s.processMatches(metadata) {
+		return ""
+	}
+	var builder strings.Builder
+	for _, key := range s.stickyKeys {
+		switch key {
+		case C.BalancerStickyProcess:
+			builder.WriteString("p=")
+			if owner := metadata.ProcessInfo; owner != nil {
+				if len(owner.AndroidPackageNames) > 0 {
+					builder.WriteString(strings.Join(owner.AndroidPackageNames, ","))
+				} else {
+					builder.WriteString(owner.ProcessPath)
+				}
+			}
+		case C.BalancerStickyDomain:
+			builder.WriteString("|d=")
+			// 嗅探到的域名优先；纯 IP 连接则退化为目标地址
+			if metadata.Domain != "" {
+				builder.WriteString(metadata.Domain)
+			} else {
+				builder.WriteString(metadata.Destination.AddrString())
+			}
+		case C.BalancerStickyDestIP:
+			builder.WriteString("|i=")
+			builder.WriteString(metadata.Destination.AddrString())
+		case C.BalancerStickyDestPort:
+			builder.WriteString("|o=")
+			builder.WriteString(strconv.Itoa(int(metadata.Destination.Port)))
+		case C.BalancerStickySourceIP:
+			builder.WriteString("|s=")
+			builder.WriteString(metadata.Source.AddrString())
+		}
+	}
+	result := builder.String()
+	// 所有键都取不到值时不粘滞，避免所有连接挤到同一个成员
+	if strings.Trim(result, "|") == "" {
+		return ""
+	}
+	return result
+}
+
+// processMatches 报告连接所属进程是否命中粘滞白名单。
+// 对 AndroidPackageNames 与 ProcessPath 做「包含」匹配，
+// 因此写包名前缀（如 com.tencent.tmgp）也能命中同系列的所有游戏。
+func (s *Balancer) processMatches(metadata *adapter.InboundContext) bool {
+	owner := metadata.ProcessInfo
+	if owner == nil {
+		return false
+	}
+	for _, pattern := range s.stickyProcesses {
+		if pattern == "" {
+			continue
+		}
+		for _, pkg := range owner.AndroidPackageNames {
+			if strings.Contains(pkg, pattern) {
+				return true
+			}
+		}
+		if owner.ProcessPath != "" && strings.Contains(owner.ProcessPath, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// Start 实现 1.14.3 的 adapter.Lifecycle 接口（按 StartStage 分阶段初始化）。
+//
+// 为什么必须这样写（2026-10-21 实测）：1.14.3 移除了 LegacyStart 兼容层，
+// 出站管理器只对实现 adapter.Lifecycle 的对象调用 Start/Close，未实现的对象会被
+// 静默跳过（adapter/outbound/manager.go：isLifecycle 为 false 时直接 continue）。
+// 旧的 Start()/PostStart() 签名因此永远不会被调用 → 成员列表为空 →
+// 所有连接报 "missing supported outbound"（TUN 能建立，但完全没网）。
+func (s *Balancer) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	switch stage {
+	case adapter.StartStateStart:
+		members := make([]adapter.Outbound, 0, len(s.tags))
+		for i, tag := range s.tags {
+			detour, loaded := s.outbound.Outbound(tag)
+			if !loaded {
+				return E.New("outbound ", i, " not found: ", tag)
+			}
+			members = append(members, detour)
+		}
+		s.members = members
+	case adapter.StartStateStarted:
+		s.access.Lock()
+		s.started = true
+		s.access.Unlock()
+		s.markActive()
+		// 启动即强制探活一遍：延迟记录跨会话共享，若跳过已有记录的成员，
+		// 启动初期会只剩少数可用节点，等于退化成单节点。
+		go s.checkOutbounds(true)
+		scope.Add(s.Close)
+	}
+	return nil
+}
+
+func (s *Balancer) Close() error {
+	s.access.Lock()
+	defer s.access.Unlock()
+	if s.ticker != nil {
+		s.ticker.Stop()
+		s.ticker = nil
+		if s.pause != nil && s.pauseCallback != nil {
+			s.pause.UnregisterCallback(s.pauseCallback)
+			s.pauseCallback = nil
+		}
+		close(s.close)
+	}
+	return nil
+}
+
+func (s *Balancer) Now() string {
+	s.access.Lock()
+	defer s.access.Unlock()
+	if s.lastSelected == nil {
+		return ""
+	}
+	return s.lastSelected.Tag()
+}
+
+func (s *Balancer) All() []string {
+	return s.tags
+}
+
+func (s *Balancer) touch() {
+	s.access.Lock()
+	if !s.started {
+		s.access.Unlock()
+		return
+	}
+	s.markActive()
+	if s.ticker != nil {
+		s.access.Unlock()
+		return
+	}
+	ticker := time.NewTicker(s.interval)
+	s.ticker = ticker
+	if s.pause != nil {
+		s.pauseCallback = pause.RegisterTicker(s.pause, ticker, s.interval, nil)
+	}
+	s.access.Unlock()
+	go s.loopCheck(ticker)
+}
+
+func (s *Balancer) loopCheck(ticker *time.Ticker) {
+	if s.sinceActive() > s.interval {
+		s.checkOutbounds(false)
+	}
+	for {
+		select {
+		case <-s.close:
+			return
+		case <-ticker.C:
+		}
+		if s.sinceActive() > s.idleTimeout {
+			s.access.Lock()
+			if s.ticker == ticker {
+				s.ticker.Stop()
+				s.ticker = nil
+				if s.pause != nil && s.pauseCallback != nil {
+					s.pause.UnregisterCallback(s.pauseCallback)
+					s.pauseCallback = nil
+				}
+			}
+			s.access.Unlock()
+			return
+		}
+		s.access.Lock()
+		s.pruneSticky()
+		s.access.Unlock()
+		s.checkOutbounds(false)
+	}
+}
+
+func (s *Balancer) checkOutbounds(force bool) {
+	s.checkAccess.Lock()
+	defer s.checkAccess.Unlock()
+	if s.ctx.Err() != nil {
+		return
+	}
+	URLTestOutbounds(s.ctx, s.outbound, s.history, s.logger, s.members, s.link, s.interval, force)
+}
+
+func (s *Balancer) InterfaceUpdated(ctx context.Context) {
+	s.access.Lock()
+	started := s.started
+	s.access.Unlock()
+	if !started {
+		return
+	}
+	if s.pause != nil && (s.pause.IsDevicePaused() || s.pause.IsNetworkPaused()) {
+		return
+	}
+	go func() {
+		if ctx.Err() != nil {
+			return
+		}
+		// 注意：这里绝不能自己再锁一次 checkAccess —— checkOutbounds 内部已经加锁。
+		// 上游 urltest 的分工是「InterfaceUpdated 拿锁、CheckOutbounds 不加锁」，
+		// 而本实现的 checkOutbounds 自带锁，若在此重复加锁就会在非重入互斥锁上
+		// 自死锁：该 goroutine 永久占用 checkAccess，导致此后每一轮探活都阻塞，
+		// 健康记录全部过期，balancer 退化成「永远只用成员表第一个」。
+		s.checkOutbounds(true)
+	}()
+}
+
+// delayOf 读取成员的实测延迟；0 表示该成员当前没有健康记录。
+func (s *Balancer) delayOf(detour adapter.Outbound) uint16 {
+	if s.history == nil {
+		return 0
+	}
+	history := s.history.LoadURLTestHistory(RealTag(s.outbound, detour))
+	if history == nil {
+		return 0
+	}
+	if time.Since(history.Time) > s.idleTimeout {
+		return 0
+	}
+	return history.Delay
+}
+
+// healthyMembers 返回当前健康且支持该网络的成员，按延迟从快到慢排序。
+// 「健康」= 有未过期的探活成功记录 **且延迟在质量门槛之内**。
+//
+// 【为什么必须加质量门槛·2026-10-17 真机实测】
+// 原先只按延迟升序取前 poolSize 个，看似"自动挑最快的"，但**没有绝对上限**：
+// 当同地区节点数量不足、或某些节点整体变慢时，池子里会混进极慢的成员。
+// 真机实测（非 Pro，日本地区，pool_size=5）：
+//
+//	🇯🇵日本-X       1239 / 4930 / 1351 ms   ← 慢且抖动巨大
+//	🇯🇵东京-E(通用)  483 ms
+//	🇯🇵东京-F(通用)  410 ms
+//	🇯🇵东京-G(流量)  355 / 252 / 445 ms
+//	🇯🇵东京-H(流量)  350 ms
+//
+// roundRobin 按顺序轮流使用全部 5 个成员 ⇒ 每 5 条连接就有 1 条落到 1351~4930ms
+// 的节点上 ⇒ 用户侧表现为"有时秒开、有时卡半天"（刷推特很卡）。
+// 同一链路连续 11 次单流下载实测：最快 2560 KB/s、最慢 173 KB/s（14.8 倍波动），
+// 其中 2 次直接超时。这**不是并发本身失效**，而是坏成员把收益吃掉了。
+//
+// 【门槛怎么定】用「相对最快者的倍数」而不是绝对毫秒：
+//   - 绝对毫秒在不同网络（蜂窝/热点/WiFi）下没有可比性，2.5s 在弱网下可能是
+//     最快的节点，硬卡会把池子清空、退化成单节点；
+//   - 相对倍数自适应：只要某人比最快者慢 N 倍，它对这个用户就是"坏节点"。
+// 取 3 倍：实测里 1351/350 ≈ 3.9 倍会被剔除，而 483/350 ≈ 1.4 倍会保留，
+// 正好把"明显拖后腿"的剔掉、把"稍慢但可用"的留下参与叠加。
+func (s *Balancer) healthyMembers(network string) []adapter.Outbound {
+	alive := make([]adapter.Outbound, 0, len(s.members))
+	for _, detour := range s.members {
+		if !common.Contains(detour.Network(), network) {
+			continue
+		}
+		if s.delayOf(detour) > 0 {
+			alive = append(alive, detour)
+		}
+	}
+	// 按实测延迟升序：让「池大小截断」自动保留最快的几个，实现插件式的
+	// 「软件自己找节点」——无需用户手选，快节点自动进池、慢节点自动出池。
+	sort.SliceStable(alive, func(i, j int) bool {
+		return s.delayOf(alive[i]) < s.delayOf(alive[j])
+	})
+	// 【2026-10-18 neo 桌面版：移除「质量门槛」——按用户明确要求】
+	//
+	// 此处原有「剔除比最快者慢 balancerMaxDelayRatio(=3) 倍的成员」的逻辑，现整段删除。
+	// 用户原话：「我要的并发是所有节点都能一起工作，为什么要踢出去？慢还不是有速度，
+	//            只要保证总体快不就行了？」
+	//
+	// 理由：多连接场景下总吞吐是各节点带宽的相加，慢节点贡献较少但仍在贡献；
+	// 踢掉它等于主动放弃那部分带宽。桌面版的「加权/均衡」两模式已从**配置层**
+	// （份额）实现「快节点多吃、慢节点打辅助」，比在池内做二元生杀更贴合用户预期。
+	//
+	// 保留的仍只是「健康性」筛选：只有有未过期探活成功记录的成员才进池
+	//（见上面 delayOf(detour) > 0 判断），排的是探测失败的坏节点而非慢节点。
+	// 池大小截断：只保留最快的 poolSize 个参与分摊，其余留作后备。
+	if s.poolSize > 0 && len(alive) > s.poolSize {
+		alive = alive[:s.poolSize]
+	}
+	// 【诊断日志·2026-10-17】把"最终真正参与分摊的成员 + 各自延迟"打出来。
+	// 为什么要打：此前只能看到 Balancer.all（配置里的全部候选），
+	// **看不到内核此刻实际在用哪几个** —— 于是"我改了门槛到底有没有生效"
+	// 只能靠吞吐量间接猜，而吞吐受运营商/对端影响极大，根本不能当证据。
+	// 有了这行日志，改动的效果就是可读的、可复现的直接证据。
+	if len(alive) > 0 {
+		var sb strings.Builder
+		for i, detour := range alive {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(RealTag(s.outbound, detour))
+			sb.WriteString("=")
+			sb.WriteString(strconv.Itoa(int(s.delayOf(detour))))
+			sb.WriteString("ms")
+		}
+		s.logger.Info("balancer pool: ", sb.String())
+	}
+	return alive
+}
+
+// selectOutbound 选一个成员。调用方需持 s.access。
+// 健康成员为空时（启动初期尚未探活完成，或全部节点刚失效）退化为按声明顺序
+// 挑第一个支持该网络的成员——保证「刚连上就能用」，而不是直接报错。
+func (s *Balancer) selectOutbound(network string) adapter.Outbound {
+	alive := s.healthyMembers(network)
+	if len(alive) == 0 {
+		for _, detour := range s.members {
+			if common.Contains(detour.Network(), network) {
+				return detour
+			}
+		}
+		return nil
+	}
+	var selected adapter.Outbound
+	switch s.strategy {
+	case C.BalancerStrategyLeastPing:
+		selected = alive[0] // 已按延迟升序排好
+	case C.BalancerStrategyRandom:
+		selected = alive[rand.Intn(len(alive))]
+	default:
+		s.nextIndex = (s.nextIndex + 1) % len(alive)
+		selected = alive[s.nextIndex]
+	}
+	return selected
+}
+
+// selectSticky 按粘滞键取成员：命中且该成员仍健康就复用，
+// 否则按策略重新选一个并记住。这样同一 App 的同一目标不会中途换出口。
+// 调用方需持 s.access。
+func (s *Balancer) selectSticky(key string, network string) adapter.Outbound {
+	return s.selectStickyExcept(key, network, nil)
+}
+
+// selectStickyExcept 与 selectSticky 相同，但会排除 tried 里的成员。
+// tried 供拨号重试使用：已经失败过的成员不得再次被选中。
+// 调用方需持 s.access。
+func (s *Balancer) selectStickyExcept(key string, network string, tried map[adapter.Outbound]struct{}) adapter.Outbound {
+	alive := s.healthyMembers(network)
+	if len(tried) > 0 {
+		filtered := make([]adapter.Outbound, 0, len(alive))
+		for _, detour := range alive {
+			if _, skip := tried[detour]; skip {
+				continue
+			}
+			filtered = append(filtered, detour)
+		}
+		alive = filtered
+	}
+	if len(alive) == 0 {
+		// 全部不健康、或健康成员都已尝试过：按声明顺序挑第一个尚未尝试的，
+		// 保证仍能尝试连接，而不是直接放弃。
+		for _, detour := range s.members {
+			if !common.Contains(detour.Network(), network) {
+				continue
+			}
+			if _, skip := tried[detour]; skip {
+				continue
+			}
+			return detour
+		}
+		return nil
+	}
+	if key != "" {
+		if entry, loaded := s.sticky[key]; loaded {
+			// 绑定的成员仍在健康池里、且本次尚未试过，继续用
+			//（这是「不中途换节点」的保证）
+			if _, skip := tried[entry.outbound]; !skip && common.Contains(alive, entry.outbound) {
+				entry.lastSeen = time.Now()
+				return entry.outbound
+			}
+			// 绑定的成员已不健康或本次已失败，摘掉旧绑定，下面重选
+			delete(s.sticky, key)
+		}
+	}
+	selected := s.selectFrom(alive)
+	if key != "" && selected != nil {
+		s.sticky[key] = &stickyEntry{outbound: selected, lastSeen: time.Now()}
+	}
+	return selected
+}
+
+// selectFrom 在给定候选里按策略挑一个。调用方需持 s.access。
+func (s *Balancer) selectFrom(alive []adapter.Outbound) adapter.Outbound {
+	if len(alive) == 0 {
+		return nil
+	}
+	switch s.strategy {
+	case C.BalancerStrategyLeastPing:
+		return alive[0]
+	case C.BalancerStrategyRandom:
+		return alive[rand.Intn(len(alive))]
+	default:
+		s.nextIndex = (s.nextIndex + 1) % len(alive)
+		return alive[s.nextIndex]
+	}
+}
+
+// pruneSticky 清理过期的粘滞表项，避免长期运行后无限增长。
+func (s *Balancer) pruneSticky() {
+	if len(s.sticky) == 0 {
+		return
+	}
+	deadline := time.Now().Add(-s.stickyTimeout)
+	for key, entry := range s.sticky {
+		if entry.lastSeen.Before(deadline) {
+			delete(s.sticky, key)
+		}
+	}
+}
+
+// markFailed 把刚拨号失败的成员移出候选池（删掉其健康记录），
+// 下一条连接立刻改用其它节点，不必等下一轮探活。
+func (s *Balancer) markFailed(detour adapter.Outbound) {
+	if s.history == nil {
+		return
+	}
+	tag := RealTag(s.outbound, detour)
+	s.history.DeleteURLTestHistory(tag)
+}
+
+// evictSticky 在成员拨号失败后解除它的粘滞绑定。
+// 只删「正好指向该成员」的那一条，避免误删并发中其它键的绑定。
+func (s *Balancer) evictSticky(key string, failed adapter.Outbound) {
+	if key == "" {
+		return
+	}
+	s.access.Lock()
+	if entry, loaded := s.sticky[key]; loaded && entry.outbound == failed {
+		delete(s.sticky, key)
+	}
+	s.access.Unlock()
+}
+
+// DialContext 按策略挑选成员拨号；失败时在池内换成员重试。
+//
+// 为什么必须重试：成员的健康记录只说明「探针可达」，不保证「对该目标可用」
+// ——实测某节点对测速源稳定返回 403，而池内另两个节点完全健康。
+// 上游 urltest 是单出口，失败只能上报；balancer 有多个成员，若不把冗余用起来，
+// 3 节点池里只要有 1 个成员对该目标不可用，落在它上面的连接就整条失败
+//（真机 16 流实测：6 条失败 = 37.5%，而彼时另 2 个节点健康）。
+func (s *Balancer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	s.touch()
+	key := s.stickyKeyFor(ctx)
+	attempts := s.dialAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	tried := make(map[adapter.Outbound]struct{}, attempts)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		s.access.Lock()
+		selected := s.selectStickyExcept(key, network, tried)
+		if selected != nil {
+			s.lastSelected = selected
+		}
+		s.access.Unlock()
+		if selected == nil {
+			break
+		}
+		tried[selected] = struct{}{}
+
+		conn, err := selected.DialContext(ctx, network, destination)
+		if err == nil {
+			return s.interruptGrp.NewConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+		}
+		lastErr = err
+		s.logger.ErrorContext(ctx, err)
+		// 立刻把失败成员移出健康池：本次重试与后续连接都不再选它
+		s.markFailed(selected)
+		s.evictSticky(key, selected)
+		if ctx.Err() != nil {
+			s.logger.DebugContext(ctx, "dial aborted: context done, stop retrying")
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = E.New("missing supported outbound")
+	}
+	return nil, lastErr
+}
+
+// ListenPacket 与 DialContext 同理：失败即换成员重试，避免单成员对该目标
+// 不可用时整条 UDP/QUIC 会话直接失败。
+func (s *Balancer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	s.touch()
+	key := s.stickyKeyFor(ctx)
+	attempts := s.dialAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	tried := make(map[adapter.Outbound]struct{}, attempts)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		s.access.Lock()
+		selected := s.selectStickyExcept(key, N.NetworkUDP, tried)
+		if selected != nil {
+			s.lastSelected = selected
+		}
+		s.access.Unlock()
+		if selected == nil {
+			break
+		}
+		tried[selected] = struct{}{}
+
+		conn, err := selected.ListenPacket(ctx, destination)
+		if err == nil {
+			return s.interruptGrp.NewPacketConn(conn, interrupt.IsExternalConnectionFromContext(ctx)), nil
+		}
+		lastErr = err
+		s.logger.ErrorContext(ctx, err)
+		s.markFailed(selected)
+		s.evictSticky(key, selected)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = E.New("missing supported outbound")
+	}
+	return nil, lastErr
+}
+
+func (s *Balancer) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	ctx = interrupt.ContextWithIsExternalConnection(ctx)
+	s.connection.NewConnection(ctx, s, conn, metadata, onClose)
+}
+
+func (s *Balancer) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	ctx = interrupt.ContextWithIsExternalConnection(ctx)
+	s.connection.NewPacketConnection(ctx, s, conn, metadata, onClose)
+}

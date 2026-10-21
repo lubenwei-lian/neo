@@ -1,0 +1,1032 @@
+using System.Diagnostics;
+using System.IO;
+using Microsoft.UI;
+using Microsoft.UI.Text;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.Win32;
+using Neo.App.Services;
+using Neo.Core;
+using Neo.Core.Core;
+using Windows.UI;
+
+namespace Neo.App.Pages;
+
+public sealed partial class SettingsPage : UserControl
+{
+    // 不再有点击主题分段的处理函数，也不再对外抛 ThemeRequested 事件
+    //（留着它会因"从不触发"产生 CS0067 警告）。MainWindow 侧的订阅也已同步删除。
+    public event EventHandler? OpenRulesRequested;
+
+    private bool _syncing;
+    private bool _checkingUpdate;
+    private bool _checkingSingBoxUpdate;
+
+    private readonly DispatcherTimer _glassSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+
+    private Neo.App.Ui.PopupList? _langList;
+    private Neo.App.Ui.PopupList? _logLevelList;
+    private Neo.App.Ui.PopupList? _multiModeList;
+    private Neo.App.Ui.PopupList? _dnsList;
+
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    private static readonly (string Key, string Label)[] LogLevels =
+    {
+        ("none", "关闭"),
+        ("error", "错误"),
+        ("warning", "警告"),
+        ("info", "信息"),
+        ("debug", "调试"),
+    };
+
+    public SettingsPage()
+    {
+        InitializeComponent();
+        _glassSaveTimer.Tick += (_, _) => { _glassSaveTimer.Stop(); AppState.Save(); };
+        Loaded += (_, _) => RefreshState();
+        ConnectionService.StateChanged += RefreshState;
+    }
+
+    public void RefreshFromState() => RefreshState();
+
+    /// 退出时停掉本页计时器并落盘。`_glassSaveTimer` 的 Tick 会调 AppState.Save()（写文件），
+    /// Exit 之后继续触发属于「退出期后台活动」；这里顺手 Save 一次也保证最后一次改动已持久化。
+    public void StopTimers()
+    {
+        try { _glassSaveTimer.Stop(); } catch { }
+        try { AppState.Save(); } catch { }
+    }
+
+    private static bool IsAutoStartOn()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+            return k?.GetValue("neo") is string s && s.Length > 0;
+        }
+        catch { return false; }
+    }
+
+    private void OnAutoStartToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        try
+        {
+            using var k = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+            if (SwitchAutoStart.IsOn)
+            {
+                var exe = NeoPaths.LauncherPath;
+                k?.SetValue("neo", $"\"{exe}\"");
+            }
+            else
+            {
+                k?.DeleteValue("neo", throwOnMissingValue: false);
+            }
+        }
+        catch { }
+    }
+
+    private void OnAutoConnectToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.AutoConnect = SwitchAutoConnect.IsOn;
+        AppState.Save();
+    }
+
+    private void OnMinTrayToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.MinimizeToTray = SwitchMinTray.IsOn;
+        AppState.Save();
+    }
+
+    private void OnGlassValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (GlassPctText == null) return;
+
+        int v = (int)Math.Round(e.NewValue);
+        GlassPctText.Text = v + "%";
+        // 滑块几何：轨道总宽 132、两端圆角各 6（实际可走行程 120）。
+        // 填充条从轨道最左端（x=0）开始、宽度 = 6 + t*120 —— 这样 100% 时也覆盖左侧圆角，
+        // 不会再留一块深色「色块」；旋钮中心 = 6 + t*120。
+        double t = Math.Clamp(v, 0, 100) / 100.0;
+        GlassFill.Width = Math.Round(6 + t * 120);
+        GlassKnob.Margin = new Thickness(Math.Round(t * 120), 0, 0, 0);
+        GlassTuner.Apply(v);
+
+        if (_syncing) return;
+        AppState.State.GlassOpacity = v;
+        _glassSaveTimer.Stop();
+        _glassSaveTimer.Start();
+    }
+
+    private void OnCompactToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.CompactLayout = SwitchCompact.IsOn;
+        AppState.Save();
+        AppState.NotifyUiSettingsChanged();
+    }
+
+    private void OnLangTapped(object sender, RoutedEventArgs e)
+    {
+        _langList ??= new Neo.App.Ui.PopupList();
+        _langList.ClearItems();
+        _langList.AddItem("简体中文", null, () => SetLanguage("zh-CN"));
+        _langList.AddDisabled("English（翻译中，敬请期待）");
+        _langList.AddSeparator();
+        _langList.AddDisabled("当前仅提供简体中文");
+        ShowListBelow(_langList, sender, LangBox);
+    }
+
+    private void SetLanguage(string code)
+    {
+        if (string.Equals(AppState.State.Language, code, StringComparison.OrdinalIgnoreCase)) return;
+        AppState.State.Language = code;
+        AppState.Save();
+        UpdateLangUi();
+    }
+
+    private void UpdateLangUi()
+    {
+        LangText.Text = AppState.State.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase)
+            ? "English" : "简体中文";
+    }
+
+    private void OnFailoverToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.FailoverEnabled = SwitchFailover.IsOn;
+        AppState.Save();
+        LogBus.App(SwitchFailover.IsOn ? "自动故障转移：已开启" : "自动故障转移：已关闭");
+    }
+
+    private async void OnMultiNodeToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.MultiNodeEnabled = SwitchMultiNode.IsOn;
+        AppState.Save();
+
+        if (!SwitchMultiNode.IsOn)
+        {
+            LogBus.App("多节点加速：已关闭");
+            // 关闭后必须重载内核，否则运行中的 xray 仍按旧的「多节点」配置继续跑，
+            if (ConnectionService.IsConnected)
+            {
+                try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
+            }
+            return;
+        }
+
+        // 说明当前会组成几个节点，避免用户开了却不知道实际效果
+        var cur = AppState.CurrentNode;
+        if (cur == null)
+        {
+            LogBus.App("多节点加速：已开启（尚未选择节点，连接时自动组队）", "Warning");
+            return;
+        }
+
+        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 16));
+        var region = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(cur.Name));
+        if (group.Count <= 1)
+        {
+            LogBus.App($"多节点加速：已开启，但当前节点（{region}）没有同地区同协议的其它节点可组队，将按单节点运行", "Warning");
+            return;
+        }
+        LogBus.App($"多节点加速：已开启 · {region} 共 {group.Count} 个节点参与（策略 {AppState.State.MultiNodeStrategy}）");
+
+        // 已连接时立即重载，让加速马上生效
+        if (ConnectionService.IsConnected)
+        {
+            try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
+        }
+    }
+
+    private bool _checkingAppUpdate;
+    private bool _downloadingUpdate;
+    private AppUpdateService.UpdateInfo? _pendingUpdate;
+
+    public void NotifyUpdateAvailable(AppUpdateService.UpdateInfo info)
+    {
+        _pendingUpdate = info;
+        BtnDownloadUpdate.Visibility = Visibility.Visible;
+        UpdateStatusText.Text = $"发现新版本 {info.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
+    }
+
+    // B方案：自动检查发现新版本时弹公告对话框，展示更新说明并允许直接下载更新。
+    // 这是**后台自动**触发的弹窗（30 分钟定时器），必须用 TryShowAsync 而非排队：
+    // 用户此刻可能正开着别的对话框（添加订阅 / 切换节点确认…），若排队就会在用户
+    // 处理完手头的事之后突然冒出一个更新公告，观感很突兀；直接跳过更合适 ——
+    // NotifyUpdateAvailable 已经让设置页显示出「发现新版本」和下载按钮，用户主动去点即可。
+    public async Task PromptAutoUpdateAsync(AppUpdateService.UpdateInfo info)
+    {
+        NotifyUpdateAvailable(info);
+        var notes = (info.Notes ?? "").Trim();
+        if (notes.Length > 600) notes = notes[..600] + "…";
+        var extra = string.IsNullOrEmpty(notes) ? "" : $"\n\n更新说明：\n{notes}";
+        var dlg = new ContentDialog
+        {
+            Title = "发现新版本",
+            Content = new TextBlock
+            {
+                Text = $"neo {info.LatestTag} 已发布（当前 {AppUpdateService.CurrentVersion}）。{extra}",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12.5,
+            },
+            PrimaryButtonText = "下载并更新",
+            CloseButtonText = "稍后",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        var (shown, result) = await Neo.App.Ui.DialogGuard.TryShowAsync(dlg);
+        if (!shown)
+        {
+            // 已有对话框打开：不打断用户。设置页已显示新版本提示，用户可自行点下载。
+            LogBus.App($"发现新版本 {info.LatestTag}，但当前有对话框打开，已在设置页提示（未弹窗）");
+            return;
+        }
+        if (result == ContentDialogResult.Primary)
+            await StartUpdateDownloadAsync();
+    }
+
+    private void RefreshUpdateStatusHint()
+    {
+        var last = AppState.State.LastUpdateCheckUnix;
+        if (last > 0)
+        {
+            var local = DateTimeOffset.FromUnixTimeSeconds(last).LocalDateTime;
+            UpdateStatusText.Text = $"上次检查：{local:MM-dd HH:mm}";
+        }
+        else
+        {
+            UpdateStatusText.Text = "从 GitHub 获取最新版本";
+        }
+    }
+
+    private async Task ShowSettingsInfo(string title, string message)
+    {
+        var dlg = new ContentDialog
+        {
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 12.5 },
+            CloseButtonText = "知道了",
+            XamlRoot = XamlRoot,
+        };
+        await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+    }
+
+    /// 统一切换「检查中」的 UI 状态：转圈显示/隐藏 + 按钮禁用 + 状态文案。
+    /// 原先只有按钮禁用 + 文字变化，用户看不出程序在跑，还以为是没反应。
+    private void SetCheckingUi(ProgressRing ring, Button btn, string? statusText, bool checking)
+    {
+        try
+        {
+            ring.IsActive = checking;
+            ring.Visibility = checking ? Visibility.Visible : Visibility.Collapsed;
+            btn.IsEnabled = !checking;
+            if (statusText != null) UpdateStatusText.Text = statusText;
+        }
+        catch { }
+    }
+
+    private async void OnCheckAppUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_checkingAppUpdate) return;
+        _checkingAppUpdate = true;
+        SetCheckingUi(RingAppUpdate, BtnCheckAppUpdate, "正在检查…", true);
+        try
+        {
+            var r = await AppUpdateService.CheckAsync();
+            AppState.State.LastUpdateCheckUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
+            AppState.Save();
+
+            if (!r.Ok)
+            {
+                UpdateStatusText.Text = "检查失败";
+                await ShowSettingsInfo("检查更新",
+                    $"无法连接 GitHub（{r.Error}）。\n\n" +
+                    "已自动尝试「当前代理 → 系统代理 → 直连」三条路径。\n" +
+                    "若三条都不通，请检查代理是否可用，或稍后重试。");
+                return;
+            }
+
+            if (!r.HasNew)
+            {
+                _pendingUpdate = null;
+                BtnDownloadUpdate.Visibility = Visibility.Collapsed;
+                UpdateStatusText.Text = $"已是最新版本（{AppUpdateService.CurrentVersion}）";
+                return;   // 结果直接显示在卡片里，不再弹窗打断
+            }
+
+            _pendingUpdate = r;
+            BtnDownloadUpdate.Visibility = Visibility.Visible;
+            UpdateStatusText.Text = $"发现新版本 {r.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
+        }
+        finally
+        {
+            _checkingAppUpdate = false;
+            SetCheckingUi(RingAppUpdate, BtnCheckAppUpdate, null, false);
+        }
+    }
+
+    private async void OnDownloadUpdateClick(object sender, RoutedEventArgs e)
+        => await StartUpdateDownloadAsync();
+
+    private async Task StartUpdateDownloadAsync()
+    {
+        if (_downloadingUpdate) return;
+        if (_pendingUpdate is not { HasNew: true } u || string.IsNullOrEmpty(u.AssetUrl)) return;
+        _downloadingUpdate = true;
+        try
+        {
+            var prog = new ProgressBar { Minimum = 0, Maximum = 1, Width = 320 };
+            var txt = new TextBlock { Text = "正在从 GitHub 下载更新包…", FontSize = 12, TextWrapping = TextWrapping.Wrap };
+            var panel = new StackPanel { Spacing = 12, MinWidth = 360 };
+            panel.Children.Add(txt);
+            panel.Children.Add(prog);
+
+            var cts = new CancellationTokenSource();
+            var dlg = new ContentDialog
+            {
+                Title = "下载更新",
+                Content = panel,
+                CloseButtonText = "取消",
+                XamlRoot = XamlRoot,
+            };
+            dlg.CloseButtonClick += (_, _) => cts.Cancel();
+
+            var showTask = Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+            string? path = null;
+
+            // 关键：必须用 try/finally 保证 dlg.Hide() 一定执行。
+            // DialogGuard 的门闩由「对话框关闭」释放；只要有一条异常路径跳过 Hide()，
+            // 这个对话框就永远开着、门闩永远不释放 → 此后**全 app 所有**走 DialogGuard
+            // 的弹窗（添加订阅 / 删除确认 / 手动节点 / 切换节点 / TUN 提示 / 反馈…）
+            // 全部永久挂起，用户看到「点什么都还是没反应」。
+            // （原先这里只 catch OperationCanceledException，而 DownloadAsync 里
+            try
+            {
+                //   全用命名参数，避免服务侧参数顺序调整时调用点错位。
+                path = await Task.Run(() => AppUpdateService.DownloadAsync(
+                    assetUrl: u.AssetUrl,
+                    assetName: u.AssetName,
+                    progress: p => DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (App.IsShuttingDown) return;
+                        prog.Value = p;
+                    }),
+                    expectedSize: u.AssetSize,
+                    ct: cts.Token));
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                LogBus.Exception("下载更新包失败", ex);
+            }
+            finally
+            {
+                try { dlg.Hide(); } catch { }
+            }
+            //   但「不 await 完成」这一半是真问题，我确认并在此修）：
+            //   原写法 `_ = showTask;` 表示「丢弃这个 Task、不关心它何时结束」。
+            //   而 DialogGuard.ShowAsync 的 finally 才会 `Gate.Release()` ——
+            //   上面执行的 `dlg.Hide()` 只是让对话框视觉关闭，门闩的释放**要等 showTask 跑完**。
+            //   两者之间存在时间差：若紧接着调用另一个 DialogGuard.ShowAsync，
+            //   它会卡在门闩上并最多等 8 秒（GateTimeoutMs），超时后被"强制放行"
+            //   → 两个对话框并发显示 → 正是 DialogGuard 要防的 0x80000019。
+            //   现在改为「等它结束」，消除该时间差。用 try/catch 包住：
+            //   ShowAsync 内部已有 finally 保 Release，这里只需吞掉可能的异常
+            //   （如 XamlRoot 失效），不影响后续流程。最多等 8 秒（内部上限），不阻塞界面。
+            try { await showTask.ConfigureAwait(true); } catch { }
+
+            if (path == null)
+            {
+                await ShowSettingsInfo("下载失败", "无法下载更新包。\n\n直连不通时请先开启代理，然后再重试。");
+                return;
+            }
+
+            // 文件可能已被清理/被杀软删掉：这里也要容错，否则会在 async void 路径上逃逸。
+            double sizeMb;
+            try { sizeMb = new System.IO.FileInfo(path).Length / 1048576.0; }
+            catch (Exception ex)
+            {
+                LogBus.Exception("读取更新包大小失败", ex);
+                await ShowSettingsInfo("安装更新", "更新包已下载但无法读取（可能被清理或拦截），请重试。");
+                return;
+            }
+
+            var confirm = new ContentDialog
+            {
+                Title = "安装更新",
+                Content = new TextBlock
+                {
+                    Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n\n点「立即更新」后 neo 将自动关闭并开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 12.5,
+                },
+                PrimaryButtonText = "立即更新",
+                CloseButtonText = "稍后",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = XamlRoot,
+            };
+            var res = await Neo.App.Ui.DialogGuard.ShowAsync(confirm);
+            if (res == ContentDialogResult.Primary)
+            {
+                AppUpdateService.LaunchInstallerAndExit(path);
+                App.MainWindowInstance?.ExitForUpdate();
+            }
+        }
+        finally { _downloadingUpdate = false; }
+    }
+
+    private void OnAutoCheckUpdateToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.AutoCheckUpdate = SwitchAutoCheckUpdate.IsOn;
+        AppState.Save();
+    }
+
+    private void OnUpdateTimeChanged(object sender, TimePickerValueChangedEventArgs args)
+    {
+        if (_syncing) return;
+        AppState.State.UpdateCheckTime = $"{UpdateTimePicker.Time.Hours:00}:{UpdateTimePicker.Time.Minutes:00}";
+        AppState.Save();
+    }
+
+    private void OnLogLevelTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _logLevelList ??= new Neo.App.Ui.PopupList();
+        _logLevelList.ClearItems();
+        foreach (var (key, label) in LogLevels)
+        {
+            var k = key;
+            _logLevelList.AddItem(label, null, async () =>
+            {
+                if (AppState.State.LogLevel == k) return;
+                AppState.State.LogLevel = k;
+                AppState.Save();
+                LogLevelText.Text = label;
+                await ConnectionService.ReloadForSettingsAsync();
+            });
+        }
+        ShowListBelow(_logLevelList, sender, LogLevelBox);
+    }
+
+    /// 把下拉挂在被点元素正下方。传 sender 优先 —— 它是真正被点的那个控件，
+    /// 用它定位比用命名的 Box 更贴合「点哪弹哪」；取不到才退回命名元素。
+    private static void ShowListBelow(Neo.App.Ui.PopupList list, object? sender, FrameworkElement fallback)
+    {
+        var fe = sender as FrameworkElement ?? fallback;
+        Neo.App.Ui.PopupList.ShowBelow(list, fe, fe.ActualWidth > 0 ? fe.ActualWidth : 260);
+    }
+
+    ///   balanced —— 均衡：连接均匀打到全部存活节点，不做速度区分。
+    private static readonly (string Key, string Label, string Hint)[] MultiModes =
+    {
+        ("weighted", "加权", "加权：快的节点多吃流量，慢的留在池里打辅助"),
+        ("balanced", "均衡", "均衡：所有存活节点平均分摊，不做速度区分"),
+    };
+
+    private void OnMultiModeTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _multiModeList ??= new Neo.App.Ui.PopupList();
+        _multiModeList.ClearItems();
+        foreach (var (key, label, hint) in MultiModes)
+        {
+            var k = key;
+            _multiModeList.AddItem(label, null, async () =>
+            {
+                if (AppState.State.MultiNodeMode == k) return;
+                AppState.State.MultiNodeMode = k;
+                AppState.Save();
+                UpdateMultiModeUi();
+                LogBus.App($"并发模式已切换为「{label}」（切换后需重连生效）");
+                await ConnectionService.ReloadForSettingsAsync();
+            });
+            _multiModeList.AddDisabled(hint);
+        }
+        ShowListBelow(_multiModeList, sender, MultiModeBox);
+    }
+
+    private void UpdateMultiModeUi()
+    {
+        var cur = MultiModes.FirstOrDefault(m => m.Key == AppState.State.MultiNodeMode);
+        MultiModeText.Text = cur.Label ?? "加权";
+        MultiModeHint.Text = cur.Hint ?? MultiModes[0].Hint;
+    }
+
+    //   旧实现一个 OnAdvancedToggled 同时写 BypassCn 与 AllowLan —— 拨「允许局域网连接」时
+    //   会顺带把 SwitchBypass 的**过期显示值**写回 BypassCn，静默回滚规则页/设置页的改动。
+    private void OnBypassCnToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.BypassCn = SwitchBypass.IsOn;
+        SaveAdvancedSettings();
+    }
+
+    private void OnAllowLanToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.AllowLan = SwitchLan.IsOn;
+        SaveAdvancedSettings();
+    }
+
+    private void SaveAdvancedSettings()
+    {
+        AppState.Save();
+        UpdateRuleSetCount();
+        _ = ConnectionService.ReloadForSettingsAsync();
+    }
+
+    private void OnGameDirectToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.GameDirectEnabled = SwitchGameDirect.IsOn;
+        AppState.Save();
+        _ = ConnectionService.ReloadForSettingsAsync();
+    }
+
+    private void RefreshGameDirectSummary()
+    {
+        var custom = AppState.State.GameDirectProcesses
+            .Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        GameDirectProcSummary.Text = custom.Count == 0
+            ? "内置已覆盖 PUBG/CS2/L4D2/NTE 等"
+            : $"内置 PUBG/CS2/L4D2/NTE 等 + 自定义 {custom.Count} 个";
+    }
+
+    private async void OnEditGameProcessesClicked(object sender, RoutedEventArgs e)
+    {
+        var box = new TextBox
+        {
+            AcceptsReturn = true,
+            Height = 220,
+            Text = string.Join(Environment.NewLine, AppState.State.GameDirectProcesses),
+            PlaceholderText = "每行一个进程名，例如：MyGame.exe",
+            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+        };
+        var panel = new StackPanel { Spacing = 8 };
+        var hint = new TextBlock
+        {
+            Text = "内置已覆盖：TslGame.exe（PUBG）、cs2.exe、left4dead2.exe、HTGame.exe（NTE）等，无需重复填写。",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        panel.Children.Add(hint);
+        panel.Children.Add(box);
+        var dialog = new ContentDialog
+        {
+            XamlRoot = this.XamlRoot,
+            Title = "自定义游戏进程（每行一个 exe 名）",
+            Content = panel,
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        if (await Neo.App.Ui.DialogGuard.ShowAsync(dialog) == ContentDialogResult.Primary)
+        {
+            AppState.State.GameDirectProcesses = box.Text
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(s => s.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            AppState.Save();
+            RefreshGameDirectSummary();
+            _ = ConnectionService.ReloadForSettingsAsync();
+        }
+    }
+
+    private static readonly (string Value, string Label)[] DnsPresets =
+    {
+        ("223.5.5.5", "阿里公共 DNS"),
+        ("119.29.29.29", "腾讯 DNSPod"),
+        ("1.1.1.1", "Cloudflare"),
+        ("8.8.8.8", "Google"),
+    };
+
+    private void OnDnsTapped(object sender, RoutedEventArgs e)
+    {
+        _dnsList ??= new Neo.App.Ui.PopupList();
+        _dnsList.ClearItems();
+        foreach (var (value, label) in DnsPresets)
+        {
+            var v = value;
+            _dnsList.AddItem($"{value}（{label}）", null, () => SetDns(v));
+        }
+        _dnsList.AddSeparator();
+        _dnsList.AddItem("自定义…", null, async () => await PromptCustomDnsAsync());
+        ShowListBelow(_dnsList, sender, DnsBox);
+    }
+
+    private void SetDns(string value)
+    {
+        if (string.Equals(AppState.State.DnsServer, value, StringComparison.Ordinal)) return;
+        AppState.State.DnsServer = value;
+        AppState.Save();
+        UpdateDnsUi();
+        _ = ConnectionService.ReloadForSettingsAsync();
+    }
+
+    private async Task PromptCustomDnsAsync()
+    {
+        var box = new TextBox
+        {
+            PlaceholderText = "如 223.6.6.6 或 https://1.1.1.1/dns-query",
+            Text = AppState.State.DnsServer,
+        };
+        var dlg = new ContentDialog
+        {
+            Title = "自定义 DNS 服务器",
+            Content = box,
+            PrimaryButtonText = "应用",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        if (await Neo.App.Ui.DialogGuard.ShowAsync(dlg) != ContentDialogResult.Primary) return;
+        var v = box.Text.Trim();
+        if (v.Length == 0) return;
+        SetDns(v);
+    }
+
+    private void UpdateDnsUi()
+    {
+        var v = AppState.State.DnsServer;
+        DnsText.Text = v;
+        DnsTag.Text = v == "223.5.5.5" ? "· 内置" : "· 自定义";
+    }
+
+    private void OnRuleSetTapped(object sender, TappedRoutedEventArgs e)
+        => OpenRulesRequested?.Invoke(this, EventArgs.Empty);
+
+    private void UpdateRuleSetCount()
+    {
+        int n = 0;
+        if (AppState.State.BypassPrivate) n++;
+        if (AppState.State.BypassCn) n++;
+        if (AppState.State.BlockAds) n++;
+        RuleSetCountText.Text = $"{n} 组已启用";
+    }
+
+    private async void OnCheckXrayUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_checkingUpdate) return;
+        _checkingUpdate = true;
+        var wasConnected = ConnectionService.IsConnected;
+        var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
+        SetCheckingUi(RingXrayUpdate, BtnCheckXrayUpdate, null, true);
+        XrayVersionHint.Text = "正在检查更新…";
+        try
+        {
+            var xray = ConnectionService.XrayVersion ?? "—";
+            var (ok, msg, rel) = await UpdateChecker.CheckXrayAsync(ConnectionService.XrayVersion);
+            if (!ok)
+            {
+                XrayVersionHint.Text = "检查失败 · " + msg;
+                await ShowDialogAsync("检查 xray 更新", msg, "知道了", "");
+                return;
+            }
+
+            var hasNew = rel is { } r
+                && xray != "—"
+                && UpdateChecker.CompareVersions(r.Version, xray) > 0;
+
+            var latest = rel?.Version ?? "—";
+            XrayVersionHint.Text = hasNew
+                ? $"发现新版本 {latest}（当前 {xray}）"
+                : $"已是最新版本（{xray}）";
+
+            var result = await ShowDialogAsync(
+                "检查 xray 内核",
+                $"内置内核：xray {xray}\n\n{msg}",
+                hasNew ? "暂不" : "知道了",
+                hasNew ? "立即更新" : "");
+
+            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
+            {
+                await InstallXrayUpdateAsync(chosen);
+                await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
+            }
+        }
+        finally
+        {
+            _checkingUpdate = false;
+            SetCheckingUi(RingXrayUpdate, BtnCheckXrayUpdate, null, false);
+            RefreshState();
+        }
+    }
+
+    /// 检查 sing-box 内核更新。通道 = neo 自己的发布仓库（自编译版，含 balancer）。
+    /// 上游官方版**不能**用于此处：它不含 balancer 出站，装上会让 TUN 并发整个失效。
+    private async void OnCheckSingBoxUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_checkingSingBoxUpdate) return;
+        _checkingSingBoxUpdate = true;
+        var wasConnected = ConnectionService.IsConnected;
+        var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
+        SetCheckingUi(RingSingBoxUpdate, BtnCheckSingBoxUpdate, null, true);
+        SingBoxVersionHint.Text = "正在检查更新…";
+        try
+        {
+            var cur = ConnectionService.SingBoxVersion ?? "—";
+            var (ok, msg, rel) = await UpdateChecker.CheckSingBoxAsync(ConnectionService.SingBoxVersion);
+            if (!ok)
+            {
+                SingBoxVersionHint.Text = "检查失败 · " + msg;
+                await ShowDialogAsync("检查 sing-box 更新", msg, "知道了", "");
+                return;
+            }
+
+            var hasNew = rel is { } r
+                && cur != "—"
+                && UpdateChecker.CompareVersions(
+                       UpdateChecker.StripSuffix(r.Version), UpdateChecker.StripSuffix(cur)) > 0;
+
+            SingBoxVersionHint.Text = hasNew
+                ? $"发现新版本 {rel!.Version}（当前 {cur}）"
+                : $"已是最新版本（{cur}）";
+
+            var extra = "";
+            if (hasNew)
+            {
+                extra = "\n\n⚠ 本内核为 neo 自编译版（含 balancer 并发出站）。\n"
+                      + "安装后会先自校验 balancer 能力，校验不过会自动拒绝并保留现有内核。\n"
+                      + "请勿改用上游官方 sing-box —— 官方版不含 balancer，装上会让 TUN 多节点并发失效。";
+            }
+
+            var result = await ShowDialogAsync(
+                "检查 sing-box 内核",
+                $"内置内核：sing-box {cur}\n\n{msg}{extra}",
+                hasNew ? "暂不" : "知道了",
+                hasNew ? "立即更新" : "");
+
+            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
+            {
+                await InstallSingBoxUpdateAsync(chosen);
+                await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
+            }
+        }
+        finally
+        {
+            _checkingSingBoxUpdate = false;
+            SetCheckingUi(RingSingBoxUpdate, BtnCheckSingBoxUpdate, null, false);
+            RefreshState();
+        }
+    }
+
+    /// 内核更新完成后自动重连（更新流程会先断开当前连接）。
+    /// 只在「更新前是连接状态、更新后没连上」时触发；失败只记 Warning，不打扰用户。
+    private static async Task TryReconnectAfterKernelUpdateAsync(bool wasConnected, Neo.Core.Models.NodeItem? node)
+    {
+        if (!wasConnected || node == null || ConnectionService.IsConnected) return;
+        try
+        {
+            var (ok, err) = await ConnectionService.ConnectAsync(node);
+            if (!ok) LogBus.App($"内核更新后自动重连失败：{err}", "Warning");
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"内核更新后自动重连异常：{ex.GetType().Name} {ex.Message}", "Warning");
+        }
+    }
+
+    /// <summary>一键更新 sing-box 内核：进度弹窗 → 下载 + 双重自校验 → 覆盖安装 → 结果弹窗。</summary>
+    private async Task InstallSingBoxUpdateAsync(SingBoxRelease rel)
+    {
+        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
+        {
+            Text = "准备中…",
+            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+        };
+        //   解压与 RunVersion 期间进度窗冻结）；进度回调 marshal 回 UI 线程。
+        //   与 xray 路径保持一致（原先只在 finally 里 await，时间差会撞 8 秒门闩超时）。
+        var cts = new CancellationTokenSource();
+        var prog = new ContentDialog
+        {
+            Title = $"更新 sing-box {rel.Version}",
+            Content = tb,
+            CloseButtonText = "取消",
+            XamlRoot = XamlRoot,
+        };
+        prog.CloseButtonClick += (_, _) => cts.Cancel();
+        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
+        bool ok;
+        string msg;
+        try
+        {
+            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallSingBoxAsync(
+                rel,
+                s => DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    tb.Text = s;
+                }),
+                cts.Token));
+        }
+        catch (OperationCanceledException)
+        {
+            ok = false;
+            msg = "已取消，未做任何改动。";
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            msg = "安装过程中出现异常：" + ex.Message;
+        }
+        finally
+        {
+            try { cts.Dispose(); } catch { }
+            try { prog.Hide(); } catch { }
+        }
+
+        try { await showTask.ConfigureAwait(true); } catch { }   
+        if (ok) RefreshState();
+        await ShowDialogAsync(ok ? "更新完成" : "更新失败", msg, "知道了", "");
+    }
+
+    /// 一键更新：进度弹窗 → 下载覆盖安装 → 结果弹窗。全程无需手动替换文件。
+    private async Task InstallXrayUpdateAsync(XrayRelease rel)
+    {
+        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
+        {
+            Text = "准备中…",
+            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+        };
+        var cts = new CancellationTokenSource();
+        var prog = new ContentDialog
+        {
+            Title = $"更新 xray {rel.Version}",
+            Content = tb,
+            CloseButtonText = "取消",
+            XamlRoot = XamlRoot,
+        };
+        prog.CloseButtonClick += (_, _) => cts.Cancel();
+        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
+        bool ok;
+        string msg;
+        try
+        {
+            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallAsync(
+                rel,
+                s => DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    tb.Text = s;
+                }),
+                cts.Token));
+        }
+        catch (OperationCanceledException)
+        {
+            ok = false;
+            msg = "已取消，未做任何改动。";
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            msg = "安装过程中出现异常：" + ex.Message;
+        }
+        finally
+        {
+            try { cts.Dispose(); } catch { }
+            try { prog.Hide(); } catch { }
+        }
+
+        try { await showTask.ConfigureAwait(true); } catch { }   
+        if (ok) RefreshState();
+        await ShowDialogAsync(ok ? "更新完成" : "更新失败", msg, "知道了", "");
+    }
+
+    private async Task<ContentDialogResult> ShowDialogAsync(string title, string content, string closeText, string primaryText)
+    {
+        var dlg = new ContentDialog
+        {
+            Title = title,
+            Content = content,
+            CloseButtonText = closeText,
+            PrimaryButtonText = primaryText,
+            DefaultButton = string.IsNullOrEmpty(primaryText) ? ContentDialogButton.Close : ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        return await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+    }
+
+    private void OnViewLogClick(object sender, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo { FileName = NeoPaths.LogDir, UseShellExecute = true }); }
+        catch { }
+    }
+
+    private async void OnFeedbackClick(object sender, RoutedEventArgs e)
+    {
+        var dlg = new ContentDialog
+        {
+            Title = "反馈问题",
+            Content = "反馈渠道暂未接入 — 开发期直接找作者提就行。",
+            CloseButtonText = "知道了",
+            XamlRoot = XamlRoot,
+        };
+        await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+    }
+
+    private void RefreshState()
+    {
+        _syncing = true;
+        SwitchAutoStart.IsOn = IsAutoStartOn();
+        SwitchAutoConnect.IsOn = AppState.State.AutoConnect;
+        SwitchFailover.IsOn = AppState.State.FailoverEnabled;
+        SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
+        SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
+        UpdateTimePicker.Time = TimeSpan.TryParse(AppState.State.UpdateCheckTime, out var checkTime)
+            ? checkTime
+            : new TimeSpan(12, 0, 0);
+        AppVersionText.Text = $"当前版本 {AppUpdateService.CurrentVersion}";
+        RefreshUpdateStatusHint();
+        SwitchMinTray.IsOn = AppState.State.MinimizeToTray;
+        SwitchCompact.IsOn = AppState.State.CompactLayout;
+        GlassSlider.Value = Math.Clamp(AppState.State.GlassOpacity, 0, 100);
+        SwitchBypass.IsOn = AppState.State.BypassCn;
+        SwitchLan.IsOn = AppState.State.AllowLan;
+        SwitchGameDirect.IsOn = AppState.State.GameDirectEnabled;
+        RefreshGameDirectSummary();
+        _syncing = false;
+
+        LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
+        UpdateMultiModeUi();
+        UpdateRuleSetCount();
+        UpdateDnsUi();
+        UpdateLangUi();
+
+        bool on = ConnectionService.IsConnected;
+        int? mem = ConnectionService.CoreMemoryMb;
+        KernelBadge.Text = on && mem is { } m ? $"运行中 · {m} MB" : (on ? "运行中" : "未运行");
+        KernelBadge.Foreground = on
+            ? ThemeUtil.Get("NeoGreen", Color.FromArgb(255, 0x16, 0xA3, 0x4A))
+            : ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
+        KernelBadgeBg.Background = on
+            ? ThemeUtil.Get("NeoGreenSoft", Color.FromArgb(0x1A, 0x16, 0xA3, 0x4A))
+            : ThemeUtil.Get("NeoChipBg", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21));
+        KernelBadgeBg.BorderBrush = KernelBadgeBg.Background;
+
+        var ver = ConnectionService.XrayVersion;
+        if (ver != null)
+        {
+            XrayVersionText.Text = ver;
+            AboutXrayText.Text = "xray-core " + ver;
+            XrayVersionHint.Text = "本机内置内核 · 就绪";
+        }
+
+        // sing-box 单列一行显示，并标出它是否带 balancer（决定 TUN 并发是否可用）。
+        var sbVer = ConnectionService.SingBoxVersion;
+        SingBoxVersionText.Text = sbVer ?? "—";
+        if (sbVer == null)
+        {
+            SingBoxVersionHint.Text = "未检测到内核文件";
+        }
+        else
+        {
+            var canBalance = ConnectionService.SingBoxSupportsBalancer;
+            SingBoxVersionHint.Text = canBalance
+                ? "本机内置内核 · 支持 TUN 并发"
+                : "本机内置内核 · 不含并发能力（TUN 单节点）";
+            SingBoxVersionHint.Foreground = canBalance
+                ? ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80))
+                : ThemeUtil.Get("NeoOrange", Color.FromArgb(255, 0xC2, 0x41, 0x0C));
+        }
+        PortSocksText.Text = XrayConfigBuilder.DefaultSocksPort.ToString();
+        PortHttpText.Text = XrayConfigBuilder.DefaultHttpPort.ToString();
+        LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)
+            ? Path.Combine("data", "logs")
+            : NeoPaths.LogDir);
+
+        AboutVersionText.Text = "neo " + (typeof(SettingsPage).Assembly.GetName().Version?.ToString(3) ?? "0.1.0");
+        try
+        {
+            var bi = File.GetLastWriteTime(typeof(SettingsPage).Assembly.Location);
+            AboutBuildText.Text = $"{bi:yyyy.MM.dd} · win-x64";
+        }
+        catch { }
+    }
+
+    // 亮色主题已移除：不再有主题分段控件可点，UpdateThemeSeg 也随之删除。
+    // 保留 OnThemeTapped 的空实现没有意义，故一并移除（XAML 里已无 Tapped 绑定）。
+
+    private static void Apply(Border bg, TextBlock text, bool on)
+    {
+        var accent = ThemeUtil.Get("NeoAccent", Color.FromArgb(255, 0x25, 0x63, 0xEB));
+        var onText = ThemeUtil.Get("NeoOnAccent", Colors.White);
+        var text2 = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
+
+        bg.Background = on ? accent : new SolidColorBrush(Colors.Transparent);
+        text.Foreground = on ? onText : text2;
+        text.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+    }
+
+    private static System.Collections.Generic.List<string> DefaultGameProcs() => new List<string>
+    {
+        "TslGame.exe", "cs2.exe", "left4dead2.exe", "HTGame.exe", "Client-Win64-Shipping.exe", "Sugar.exe",
+    };
+}

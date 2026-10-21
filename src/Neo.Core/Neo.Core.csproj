@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <RootNamespace>Neo.Core</RootNamespace>
+    <Platforms>x64</Platforms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Version>0.2.5</Version>
+    <!-- 与 Neo.App 同步。此前这里只写了 <Version>0.2.4</Version> 且从未跟着升级，
+         又没有 <FileVersion>，于是 Neo.Core.dll 的「文件属性」永远显示 0.2.4.0，
+         让人误判成装了旧版内核库（程序集本身其实是新的）。 -->
+    <FileVersion>0.2.5.0</FileVersion>
+    <AssemblyVersion>0.2.17.0</AssemblyVersion>
+  </PropertyGroup>
+
+</Project>
