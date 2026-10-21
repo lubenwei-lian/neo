@@ -105,15 +105,13 @@
                     <TextBlock Text="近 30 日" FontSize="11" Foreground="{ThemeResource NeoAccent}" HorizontalAlignment="Right" VerticalAlignment="Center" />
                 </Grid>
 
-                <TextBlock FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="0,0,0,8">
-                    <Run Text="最近 7 天" /><Run Text=" · 顶格 20 GB/日" Foreground="{ThemeResource NeoText3}" />
-                </TextBlock>
+                <TextBlock x:Name="TrendWeekHint" Text="最近 7 天 · 顶格 20 GB/日" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="0,0,0,8" />
                 <Grid x:Name="TrendWeekGrid" Height="74" ColumnSpacing="2" />
+                <Grid x:Name="TrendWeekLabels" Height="13" ColumnSpacing="2" Margin="0,4,0,0" />
 
-                <TextBlock FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="0,16,0,8">
-                    <Run Text="最近 30 天" /><Run Text=" · 顶格 20 GB/日" Foreground="{ThemeResource NeoText3}" />
-                </TextBlock>
+                <TextBlock x:Name="TrendMonthHint" Text="最近 30 天 · 顶格 20 GB/日" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="0,16,0,8" />
                 <Grid x:Name="TrendMonthGrid" Height="40" ColumnSpacing="2" />
+                <Grid x:Name="TrendMonthLabels" Height="13" ColumnSpacing="2" Margin="0,4,0,0" />
             </StackPanel>
         </ui:CoolGlassCard>
 

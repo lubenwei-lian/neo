@@ -49,6 +49,9 @@ public sealed class NodeItem
     /// 由「位置检测」写入，仅本进程会话有效（不落盘）。
     public string? ExitCountry { get; set; }
 
+    /// 实测出口 IP（「位置检测」写入，仅本进程会话有效）。
+    public string? ExitIp { get; set; }
+
     public string EndPoint => $"{Server}:{Port}";
 
     public bool IsValid => !string.IsNullOrWhiteSpace(Server) && Port > 0;

@@ -99,6 +99,22 @@ public sealed partial class SettingsPage : UserControl
         AppState.Save();
     }
 
+    private void OnWarmCacheToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.WarmCacheOnStartup = SwitchWarmCache.IsOn;
+        AppState.Save();
+    }
+
+    private void OnShowRealIpToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.ShowRealIp = SwitchShowRealIp.IsOn;
+        AppState.Save();
+        // 节点卡片要按开关重建（显示/隐藏真实出口行）
+        AppState.NotifyUiSettingsChanged();
+    }
+
     private void OnMinTrayToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -505,7 +521,7 @@ public sealed partial class SettingsPage : UserControl
     // ---- 并发节点数 ----
     // 原先上限写死 16（默认 8），而订阅里同地区同协议的节点往往有十几二十个，
     // 用户会觉得「并发 8 太少」。这里给出档位 + 「全部」，实际可组队数量由 NodeGrouper 决定。
-    private static readonly int[] MultiCountPresets = { 8, 16, 32 };
+    private static readonly int[] MultiCountPresets = { 3, 6, 8, 10 };
     private const int MultiCountAll = 64;
 
     private int MultiGroupAvailable()
@@ -980,6 +996,8 @@ public sealed partial class SettingsPage : UserControl
         SwitchAutoStart.IsOn = IsAutoStartOn();
         SwitchAutoConnect.IsOn = AppState.State.AutoConnect;
         SwitchStartupSpeedTest.IsOn = AppState.State.StartupSpeedTest;
+        SwitchWarmCache.IsOn = AppState.State.WarmCacheOnStartup;
+        SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;

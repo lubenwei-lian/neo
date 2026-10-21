@@ -29,11 +29,12 @@ public sealed partial class NodesPage : UserControl
     {
         InitializeComponent();
         AppState.NodesChanged += RebuildList;
-        AppState.UiSettingsChanged += RebuildList;
+        AppState.UiSettingsChanged += OnUiSettingsChanged;
         Loaded += (_, _) =>
         {
             RebuildList();
             try { Ui.Ripple.Attach(RealTestBtn, App.MainWindowInstance?.RippleLayerHost); } catch { }
+            TryAutoDetectLocations();
         };
         _resizeTrailTimer = DispatcherQueue.CreateTimer();
         _resizeTrailTimer.Interval = TimeSpan.FromMilliseconds(160);
@@ -45,6 +46,13 @@ public sealed partial class NodesPage : UserControl
     public void StopTimers()
     {
         try { _resizeTrailTimer?.Stop(); } catch { }
+    }
+
+    /// 「真实 IP 显示」等界面设置变化时：重建卡片，并补一次出口检测（若还没测过）。
+    private void OnUiSettingsChanged()
+    {
+        RebuildList();
+        TryAutoDetectLocations();
     }
 
     private void RebuildList()
@@ -281,10 +289,53 @@ public sealed partial class NodesPage : UserControl
             _realCts?.Cancel();
             return;
         }
-        await RealTestAllAsync();
+        // 优化：只测当前列表里实际显示的节点（搜索/筛选后测得更快），
+        // 没筛选时等于测全部。
+        var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
+        await RunBatchAsync(list);
     }
 
-    private async Task RealTestAllAsync() => await RunBatchAsync(_tiles.ToList());
+    // 「真实 IP 显示」打开后自动跑一次检测（静默，不弹结果框），让卡片直接显示真实出口。
+    private bool _geoAutoTried;
+    private async void TryAutoDetectLocations()
+    {
+        if (_geoAutoTried || _geoTesting) return;
+        // 开关没开时**不能**把已尝试标记置上，否则用户之后打开开关就再也不会自动检测。
+        if (!AppState.State.ShowRealIp) return;
+        _geoAutoTried = true;
+        try
+        {
+            var nodes = AppState.Nodes.ToList();
+            if (nodes.Count == 0) return;
+            if (nodes.All(n => !string.IsNullOrEmpty(n.ExitCountry))) return;
+
+            LogBus.App("真实 IP 显示已开启：后台检测节点出口位置…");
+            var map = await RealDelayTester.DetectExitLocationsAsync(
+                nodes, NeoPaths.RuntimeDir,
+                onResult: (node, country, ip) => _ = DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    node.ExitCountry = country;
+                    node.ExitIp = ip;
+                    _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
+                }));
+
+            var ok = 0;
+            foreach (var n in nodes)
+            {
+                if (!map.TryGetValue(n, out var loc)) continue;
+                n.ExitCountry = loc.Country;
+                n.ExitIp = loc.Ip;
+                if (!string.IsNullOrEmpty(loc.Country)) ok++;
+            }
+            RebuildList();
+            LogBus.App($"真实 IP 显示：出口检测完成 {ok}/{nodes.Count}（超时的节点保持未检测）");
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"真实 IP 显示：出口检测失败（不影响使用）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+        }
+    }
 
     // ---- 位置检测（真实出口国家）----
     //   名称里的国旗/地区是订阅方写的，可能与实际出口不符（例如标日本、实际在美国）。
@@ -309,20 +360,24 @@ public sealed partial class NodesPage : UserControl
         try
         {
             _geoCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            var map = await RealDelayTester.DetectExitCountriesAsync(
+            var map = await RealDelayTester.DetectExitLocationsAsync(
                 nodes, NeoPaths.RuntimeDir,
-                onResult: (node, country) => _ = DispatcherQueue.TryEnqueue(() =>
+                onResult: (node, country, ip) => _ = DispatcherQueue.TryEnqueue(() =>
                 {
                     if (App.IsShuttingDown) return;
                     node.ExitCountry = country;
+                    node.ExitIp = ip;
                     _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
                 }),
                 ct: _geoCts.Token);
 
             foreach (var n in nodes)
             {
-                var actual = map.TryGetValue(n, out var c) ? c : "";
+                var actual = "";
+                var actualIp = "";
+                if (map.TryGetValue(n, out var l)) { actual = l.Country; actualIp = l.Ip; }
                 n.ExitCountry = actual;
+                n.ExitIp = actualIp;
                 if (string.IsNullOrEmpty(actual)) continue;
                 ok++;
                 var claimed = AppState.GuessFlag(n.Name);
@@ -386,6 +441,9 @@ public sealed partial class NodesPage : UserControl
             var done = 0;
             var map = await RealDelayTester.RealPingBatchAsync(
                 all.Select(t => t.Node).ToList(), NeoPaths.RuntimeDir,
+                // 优化：超时从 10s 收到 7s —— 真连超过 7s 的节点实际体验已不可用，
+                // 继续等 10s 只会拖慢整批（批量是并行的，最后一名决定总耗时）。
+                timeoutMs: 7000,
                 onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                 {
                     if (App.IsShuttingDown) return;
@@ -394,6 +452,7 @@ public sealed partial class NodesPage : UserControl
                         tile.SetResult(ms);
                         done++;
                         FootTime.Text = $"真连测速中 {done}/{all.Count}…";
+                        RealTestBtnText.Text = $"停止 {done}/{all.Count}";
                         FootAvg.Text = "";
                     }
                 }),

@@ -20,11 +20,12 @@ public sealed class NodeTile : INotifyPropertyChanged
     private string _locText = "";
     private Brush? _locBrush;
     private bool _locMismatch;
+    private readonly string _fullInfo;
 
     public string Tooltip { get => _tooltip; private set { _tooltip = value; Raise(); } }
     public string LocText { get => _locText; private set { _locText = value; Raise(); } }
     public Brush? LocBrush { get => _locBrush; private set { _locBrush = value; Raise(); } }
-    public Visibility LocVisibility => _locMismatch ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility LocVisibility => _locText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     public string FlagKey { get; }
     public string SearchText { get; }
     public double CardHeight { get; }
@@ -51,17 +52,20 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         Node = node;
         NameText = node.Name;
-        CardHeight = AppState.State.CompactLayout ? 58 : 66;
+        // 「真实 IP 显示」打开时卡片多一行（真实出口国家 + IP），高度 +12。
+        var showReal = AppState.State.ShowRealIp;
+        CardHeight = AppState.State.CompactLayout ? (showReal ? 70 : 58) : (showReal ? 78 : 66);
 
         var proto = AppState.ProtocolName(node.Protocol);
         var transport = AppState.TransportName(node);
-        var meta = string.IsNullOrEmpty(transport) ? proto : proto + " · " + transport;
-        if (!string.IsNullOrEmpty(node.SourceSubscription)) meta += " · " + node.SourceSubscription;
-        MetaText = meta;
+        // 卡片只留「地区 · 类型」；服务器/传输/来源/真实出口都在 Tooltip。
+        MetaText = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(node.Name)) + " · " + proto;
+        _fullInfo = $"{node.Name}\n{node.Server}:{node.Port}\n{proto}"
+            + (string.IsNullOrEmpty(transport) ? "" : " · " + transport)
+            + (string.IsNullOrEmpty(node.SourceSubscription) ? "" : "\n来源：" + node.SourceSubscription);
 
         FlagKey = AppState.GuessFlag(node.Name);
         SearchText = $"{node.Name} {proto} {transport} {node.Server}".ToLowerInvariant();
-        Tooltip = $"{node.Name}\n{node.Server}:{node.Port}\n{proto} · {transport}";
 
         ApplyIdleColor();
         RefreshDelay();
@@ -153,25 +157,37 @@ public sealed class NodeTile : INotifyPropertyChanged
             : ms == -1 ? "超时" : "失败"), "Debug");
     }
 
-    /// 位置检测结果回填：只有「检测到实际国家」且与名称标记不一致时才显示红色「实际 XX」。
+    /// 位置检测结果回填。
+    ///   · 「真实 IP 显示」打开且有检测结果：额外显示「实际国家 + IP」；
+    ///   · 未打开时只在「标记与实际不符」的情况下标红「实际 XX」；
+    ///   · Tooltip 始终带完整信息（服务器、传输、来源、真实出口）。
     public void RefreshLocation()
     {
         var actual = Node.ExitCountry ?? "";
+        var actualIp = Node.ExitIp ?? "";
         var claimed = AppState.GuessFlag(Node.Name);
         var mismatch = actual.Length > 0 && claimed != "other"
             && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase);
         _locMismatch = mismatch;
 
-        var proto = AppState.ProtocolName(Node.Protocol);
-        var transport = AppState.TransportName(Node);
-        Tooltip = $"{Node.Name}\n{Node.Server}:{Node.Port}\n{proto} · {transport}"
-            + (string.IsNullOrEmpty(actual)
+        Tooltip = _fullInfo
+            + (actual.Length == 0
                 ? "\n位置：未检测"
                 : $"\n实际出口：{NodeGrouper.RegionDisplay(actual)}"
+                  + (actualIp.Length > 0 ? " · " + actualIp : "")
                   + (mismatch ? $"（标记为{NodeGrouper.RegionDisplay(claimed)}，不符）" : "（与标记一致）"));
 
-        LocText = mismatch ? "实际" + NodeGrouper.RegionDisplay(actual) : "";
-        LocBrush = ThemeUtil.Get("NeoRed", Color.FromArgb(255, 0xDC, 0x26, 0x26));
+        var showReal = AppState.State.ShowRealIp && actual.Length > 0;
+        if (showReal)
+            LocText = "实际" + NodeGrouper.RegionDisplay(actual) + (actualIp.Length > 0 ? " " + actualIp : "");
+        else if (mismatch)
+            LocText = "实际" + NodeGrouper.RegionDisplay(actual);
+        else
+            LocText = "";
+
+        LocBrush = mismatch
+            ? ThemeUtil.Get("NeoRed", Color.FromArgb(255, 0xDC, 0x26, 0x26))
+            : ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
         Raise(nameof(LocVisibility));
     }
 

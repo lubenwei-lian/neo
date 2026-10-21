@@ -27,6 +27,8 @@ public sealed partial class SubsPage : UserControl
     private Neo.App.Ui.PopupList? _intervalList;
 
     private readonly List<Border> _weekCells = new();
+    private readonly List<Grid> _weekCols = new();
+    private readonly List<Grid> _monthCols = new();
     private readonly List<Border> _monthCells = new();
     private bool _trendBuilt;
 
@@ -702,6 +704,21 @@ public sealed partial class SubsPage : UserControl
         var week = UsageTracker.DailySeries(7);
         var month = UsageTracker.DailySeries(30);
 
+        // 汇总行：今日 / 峰值 / 日均（原先只有一句静态的「顶格 20 GB/日」）
+        long wPeak = 0, wSum = 0;
+        foreach (var v in week) { if (v > wPeak) wPeak = v; wSum += v; }
+        TrendWeekHint.Text = $"最近 7 天 · 今日 {UsageTracker.Format(week[^1])} · 峰值 {UsageTracker.Format(wPeak)} · 每列 1 天，满格 20 GB（每格 2.5 GB）";
+        long mPeak = 0;
+        foreach (var v in month) if (v > mPeak) mPeak = v;
+        TrendMonthHint.Text = $"最近 30 天 · 峰值 {UsageTracker.Format(mPeak)} · 每列 1 天，满格 20 GB（每格 5 GB）";
+
+        // 每列 tooltip：日期 + 当天用量（格子太小，不悬停看不到具体值）
+        var today = DateTime.Now.Date;
+        for (int i = 0; i < _weekCols.Count && i < week.Length; i++)
+            ToolTipService.SetToolTip(_weekCols[i], $"{today.AddDays(i - (week.Length - 1)):M月d日} · {UsageTracker.Format(week[i])}");
+        for (int i = 0; i < _monthCols.Count && i < month.Length; i++)
+            ToolTipService.SetToolTip(_monthCols[i], $"{today.AddDays(i - (month.Length - 1)):M月d日} · {UsageTracker.Format(month[i])}");
+
         var wLv = new int[7];
         for (int i = 0; i < wLv.Length; i++) wLv[i] = LevelOf(week[i], 8);
         ApplyLevels(_weekCells, wLv, ref _weekLevels);
@@ -730,14 +747,46 @@ public sealed partial class SubsPage : UserControl
     /// 建列与格子。7 日每条列 8 格、30 日每条列 4 格，列内**自底部向上**点亮
     private void BuildTrend()
     {
-        BuildTrendColumns(TrendWeekGrid, 7, 8, _weekCells);
-        BuildTrendColumns(TrendMonthGrid, 30, 4, _monthCells);
+        BuildTrendColumns(TrendWeekGrid, 7, 8, _weekCells, _weekCols);
+        BuildTrendColumns(TrendMonthGrid, 30, 4, _monthCells, _monthCols);
+        // 用「日期」而不是「周几」：滚动 7 天从六天前开始，写周几会让人误以为从周一开始。
+        BuildTrendLabels(TrendWeekLabels, 7, (date, ordinal) => ordinal == 6 ? "今天" : $"{date.Month}/{date.Day}");
+        // 30 天：从右往左每 5 列标一个，保证最后一个标签与右端间隔也是 5 列。
+        BuildTrendLabels(TrendMonthLabels, 30, (date, ordinal) => (29 - ordinal) % 5 == 0 ? $"{date.Month}/{date.Day}" : "");
         _trendBuilt = true;
     }
 
-    private void BuildTrendColumns(Grid host, int cols, int rows, List<Border> sink)
+    /// 趋势图下方的日期标签（周：周几；月：每 5 天一个日期）。
+    private void BuildTrendLabels(Grid host, int cols, Func<DateTime, int, string> text)
+    {
+        host.ColumnDefinitions.Clear();
+        host.Children.Clear();
+        var today = DateTime.Now.Date;
+        for (int c = 0; c < cols; c++)
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (int c = 0; c < cols; c++)
+        {
+            var d = today.AddDays(c - (cols - 1));
+            var isToday = c == cols - 1;
+            var tb = new TextBlock
+            {
+                Text = text(d, c),
+                FontSize = 9.5,
+                FontWeight = isToday ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+                Foreground = isToday
+                    ? ThemeUtil.Get("NeoAccent", Color.FromArgb(255, 0x25, 0x63, 0xEB))
+                    : ThemeUtil.Get("NeoText3", Color.FromArgb(255, 0x98, 0xA0, 0xAA)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            Grid.SetColumn(tb, c);
+            host.Children.Add(tb);
+        }
+    }
+
+    private void BuildTrendColumns(Grid host, int cols, int rows, List<Border> sink, List<Grid> colSink)
     {
         sink.Clear();
+        colSink.Clear();
         host.ColumnDefinitions.Clear();
         host.Children.Clear();
 
@@ -768,6 +817,7 @@ public sealed partial class SubsPage : UserControl
 
             Grid.SetColumn(col, c);
             host.Children.Add(col);
+            colSink.Add(col);
         }
     }
 
@@ -796,12 +846,15 @@ public sealed partial class SubsPage : UserControl
             int lv = levels[c];
             if (cache[c] == lv) continue;   // 档位没变就不写这 rows 个依赖属性
             cache[c] = lv;
+            // 「用得越多颜色越深」：整列点亮格子的不透明度随档位升高（最低 35% → 最高 100%）。
+            double depth = lv <= 0 ? 1.0 : 0.35 + 0.65 * lv / rows;
             for (int k = 0; k < rows; k++)
             {
                 // k=0 是最上面那格 → 距底部第 (rows-1-k) 格；
                 // 点亮「底部起 lv 格」等价于 k >= rows - lv，方向因此是自下而上。
                 bool on = k >= rows - lv;
                 cells[c * rows + k].Style = on ? onStyle : offStyle;
+                cells[c * rows + k].Opacity = on ? depth : 1.0;
             }
         }
     }

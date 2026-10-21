@@ -96,6 +96,14 @@ public static class AppState
         /// 由 设置 → 通用 →「启动自动测速」控制。
         public bool StartupSpeedTest { get; set; } = true;
 
+        /// 启动时预热「多节点吞吐权重缓存」：连接流程会同步等这个探测，
+        /// 预热后首次/重启后的连接就不必再等（开关关闭则连接时现测）。
+        public bool WarmCacheOnStartup { get; set; } = true;
+
+        /// 节点卡片显示实测出口信息（真实国家 + IP）。需要「位置检测」的结果，
+        /// 打开后节点页会自动在后台检测一次。
+        public bool ShowRealIp { get; set; } = false;
+
         public int AutoUpdateHours { get; set; } = 12;
 
         public bool AutoCheckUpdate { get; set; } = true;

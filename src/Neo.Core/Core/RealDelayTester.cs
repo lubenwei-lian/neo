@@ -490,11 +490,11 @@ public static class RealDelayTester
     /// 出口位置检测：每个节点走自己的 socks 入口请求 Cloudflare trace，读出**真实出口国家**（ISO 小写）。
     /// 与批量测速同一套做法（一个临时内核 + 每节点独立 socks 端口），避免逐个起进程。
     /// 只覆盖 xray 承载的协议；hy2/tuic（sing-box）暂不参与（返回空）。
-    public static async Task<IReadOnlyDictionary<NodeItem, string>> DetectExitCountriesAsync(
+    public static async Task<IReadOnlyDictionary<NodeItem, (string Country, string Ip)>> DetectExitLocationsAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir, int timeoutMs = 10000,
-        Action<NodeItem, string>? onResult = null, CancellationToken ct = default)
+        Action<NodeItem, string, string>? onResult = null, CancellationToken ct = default)
     {
-        var result = new ConcurrentDictionary<NodeItem, string>();
+        var result = new ConcurrentDictionary<NodeItem, (string Country, string Ip)>();
         var xrayNodes = nodes.Where(n => n.IsValid
             && n.Protocol is not NodeProtocol.Hysteria2 and not NodeProtocol.TUIC).ToList();
         if (xrayNodes.Count == 0) return result;
@@ -520,9 +520,9 @@ public static class RealDelayTester
                 new ParallelOptions { CancellationToken = ct },
                 async (i, ict) =>
                 {
-                    var country = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, ict);
-                    result[xrayNodes[i]] = country;
-                    onResult?.Invoke(xrayNodes[i], country);
+                    var (country, ip) = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, ict);
+                    result[xrayNodes[i]] = (country, ip);
+                    onResult?.Invoke(xrayNodes[i], country, ip);
                 });
         }
         catch (OperationCanceledException) { throw; }
@@ -539,7 +539,7 @@ public static class RealDelayTester
     }
 
     /// Cloudflare trace 的 loc= 行就是 Cloudflare 判定的出口国家代码。
-    private static async Task<string> QueryExitCountryViaSocksAsync(int socksPort, int timeoutMs, CancellationToken ct)
+    private static async Task<(string Country, string Ip)> QueryExitCountryViaSocksAsync(int socksPort, int timeoutMs, CancellationToken ct)
     {
         try
         {
@@ -552,13 +552,17 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
             var text = await http.GetStringAsync("http://cp.cloudflare.com/cdn-cgi/trace", ct);
+            var country = "";
+            var ip = "";
             foreach (var line in text.Split('\n'))
             {
                 var t = line.Trim();
-                if (t.StartsWith("loc=", StringComparison.Ordinal)) return t[4..].Trim().ToLowerInvariant();
+                if (t.StartsWith("loc=", StringComparison.Ordinal)) country = t[4..].Trim().ToLowerInvariant();
+                else if (t.StartsWith("ip=", StringComparison.Ordinal)) ip = t[3..].Trim();
             }
+            return (country, ip);
         }
         catch { }
-        return "";
+        return ("", "");
     }
 }
