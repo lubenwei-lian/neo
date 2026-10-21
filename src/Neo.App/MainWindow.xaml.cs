@@ -1250,6 +1250,10 @@ public sealed partial class MainWindow : Window
                 catch { }
             }
         }
+
+        // 启动自动测速（设置 → 通用 →「启动自动测速」）：等节点就绪后在后台跑一次，
+        // 让节点列表/延迟在用户点开时就是实测值。开关关闭时 Schedule 内部直接返回。
+        StartupSpeedTest.Schedule();
     }
 
     private void UpdateSidebar()

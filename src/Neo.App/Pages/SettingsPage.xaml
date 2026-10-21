@@ -55,6 +55,15 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="启动自动测速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="启动后自动测一次全部节点延迟（后台进行）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchStartupSpeedTest" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnStartupSpeedTestToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="关闭窗口时最小化到托盘" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock Text="保持代理在后台运行" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>

@@ -92,6 +92,10 @@ public static class AppState
 
         public bool AutoSpeedTest { get; set; } = true;
 
+        /// 启动后自动测一次全部节点的真连延迟（与节点页「真连测速」同一套实现），
+        /// 由 设置 → 通用 →「启动自动测速」控制。
+        public bool StartupSpeedTest { get; set; } = true;
+
         public int AutoUpdateHours { get; set; } = 12;
 
         public bool AutoCheckUpdate { get; set; } = true;

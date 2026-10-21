@@ -91,6 +91,13 @@ public sealed partial class SettingsPage : UserControl
         AppState.Save();
     }
 
+    private void OnStartupSpeedTestToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.StartupSpeedTest = SwitchStartupSpeedTest.IsOn;
+        AppState.Save();
+    }
+
     private void OnMinTrayToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -913,6 +920,7 @@ public sealed partial class SettingsPage : UserControl
         _syncing = true;
         SwitchAutoStart.IsOn = IsAutoStartOn();
         SwitchAutoConnect.IsOn = AppState.State.AutoConnect;
+        SwitchStartupSpeedTest.IsOn = AppState.State.StartupSpeedTest;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
