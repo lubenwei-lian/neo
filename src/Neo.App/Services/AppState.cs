@@ -58,8 +58,6 @@ public static class AppState
         public bool MinimizeToTray { get; set; } = true;
         public bool CompactLayout { get; set; } = false;
 
-        public int GlassOpacity { get; set; } = 78;
-
         public string DnsServer { get; set; } = "223.5.5.5";
 
         public string Language { get; set; } = "zh-CN";
@@ -178,7 +176,7 @@ public static class AppState
     /// 加载配置。一次进程只真正执行一次（<see cref="_loadedOnce"/> 幂等）。
     ///   出厂默认对象 → 43 个字段全丢」。我在隔离目录用带 MARKER 指纹的 v0 配置实跑 AppState.Load()，
     ///   结果**全部用户数据都活着**（SubscriptionUrl / LastNodeName / DnsServer / WinW / WinH /
-    ///   GlassOpacity / ProxyMode / Subscriptions / CustomRules / ManualLinks 逐项保留），
+    ///   ProxyMode / Subscriptions / CustomRules / ManualLinks 逐项保留），
     ///   两个迁移也都生效了 → 落盘序列化的是「刚读出来的那份对象」，不是静态初始化器。**该机制不成立。**
     ///   原因：`State = LoadStateWithRecovery();` 本来就排在 `MigrateConfig()` **之前**
     ///   `state.json` 合法但**内容残缺**时（例：`{ "ConfigVersion": 0, "LogLevel": "info" }`），
@@ -313,7 +311,6 @@ public static class AppState
             // 背景：这些字段都写在 state.json 里，可被手工编辑/被旧版本写坏。
             //   · MultiNodeStrategy 写成未知串 → xray 拒绝启动（exit=23 unknown balancing strategy），
             //     用户表现就是「点连接没反应」；
-            //   · GlassOpacity > 100 → 透明度系数被压到下限，界面几乎全透；
             //   · MultiNodeMax 0/负数 → PickGroup 语义不明确（代码里虽有 Clamp，但落盘值应保持干净）。
             // 这里在加载时统一归一，避免任何一处漏判就把软件变成「垃圾」。
             if (!string.Equals(State.MultiNodeStrategy, "leastLoad", StringComparison.OrdinalIgnoreCase))
@@ -329,8 +326,6 @@ public static class AppState
             }
             var maxNodes = Math.Clamp(State.MultiNodeMax, 2, 16);
             if (maxNodes != State.MultiNodeMax) { State.MultiNodeMax = maxNodes; changed = true; }
-            var glass = Math.Clamp(State.GlassOpacity, 0, 100);
-            if (glass != State.GlassOpacity) { State.GlassOpacity = glass; changed = true; }
             if (string.IsNullOrWhiteSpace(State.DnsServer)) { State.DnsServer = "223.5.5.5"; changed = true; }
 
             State.ConfigVersion = 3;

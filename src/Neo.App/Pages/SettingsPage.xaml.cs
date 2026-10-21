@@ -24,8 +24,6 @@ public sealed partial class SettingsPage : UserControl
     private bool _checkingUpdate;
     private bool _checkingSingBoxUpdate;
 
-    private readonly DispatcherTimer _glassSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
-
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
     private Neo.App.Ui.PopupList? _multiModeList;
@@ -45,18 +43,15 @@ public sealed partial class SettingsPage : UserControl
     public SettingsPage()
     {
         InitializeComponent();
-        _glassSaveTimer.Tick += (_, _) => { _glassSaveTimer.Stop(); AppState.Save(); };
         Loaded += (_, _) => RefreshState();
         ConnectionService.StateChanged += RefreshState;
     }
 
     public void RefreshFromState() => RefreshState();
 
-    /// 退出时停掉本页计时器并落盘。`_glassSaveTimer` 的 Tick 会调 AppState.Save()（写文件），
-    /// Exit 之后继续触发属于「退出期后台活动」；这里顺手 Save 一次也保证最后一次改动已持久化。
+    /// 退出时落盘一次，保证最后一次改动已持久化（原玻璃滑杆的防抖计时器已随设置项移除）。
     public void StopTimers()
     {
-        try { _glassSaveTimer.Stop(); } catch { }
         try { AppState.Save(); } catch { }
     }
 
@@ -103,25 +98,6 @@ public sealed partial class SettingsPage : UserControl
         AppState.Save();
     }
 
-    private void OnGlassValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        if (GlassPctText == null) return;
-
-        int v = (int)Math.Round(e.NewValue);
-        GlassPctText.Text = v + "%";
-        // 滑块几何：轨道总宽 132、两端圆角各 6（实际可走行程 120）。
-        // 填充条从轨道最左端（x=0）开始、宽度 = 6 + t*120 —— 这样 100% 时也覆盖左侧圆角，
-        // 不会再留一块深色「色块」；旋钮中心 = 6 + t*120。
-        double t = Math.Clamp(v, 0, 100) / 100.0;
-        GlassFill.Width = Math.Round(6 + t * 120);
-        GlassKnob.Margin = new Thickness(Math.Round(t * 120), 0, 0, 0);
-        GlassTuner.Apply(v);
-
-        if (_syncing) return;
-        AppState.State.GlassOpacity = v;
-        _glassSaveTimer.Stop();
-        _glassSaveTimer.Start();
-    }
 
     private void OnCompactToggled(object sender, RoutedEventArgs e)
     {
@@ -947,7 +923,6 @@ public sealed partial class SettingsPage : UserControl
         RefreshUpdateStatusHint();
         SwitchMinTray.IsOn = AppState.State.MinimizeToTray;
         SwitchCompact.IsOn = AppState.State.CompactLayout;
-        GlassSlider.Value = Math.Clamp(AppState.State.GlassOpacity, 0, 100);
         SwitchBypass.IsOn = AppState.State.BypassCn;
         SwitchLan.IsOn = AppState.State.AllowLan;
         SwitchGameDirect.IsOn = AppState.State.GameDirectEnabled;

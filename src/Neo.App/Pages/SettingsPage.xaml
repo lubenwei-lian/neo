@@ -291,60 +291,6 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="主题" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            
-                            <TextBlock Text="固定暗色（亮色主题已移除）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
-                        </StackPanel>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="玻璃透明度" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="卡片与面板的透光强度（数值越大越透）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-                            <Grid Width="132" Height="24">
-                                <Border Height="4" CornerRadius="2" Background="{ThemeResource NeoTrack}" VerticalAlignment="Center" />
-                                
-                                <Border x:Name="GlassFill" Width="100" Height="4" CornerRadius="2" HorizontalAlignment="Left" VerticalAlignment="Center">
-                                    <Border.Background>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                            <GradientStop Color="{ThemeResource NeoBarFrom}" Offset="0" />
-                                            <GradientStop Color="{ThemeResource NeoBarTo}" Offset="1" />
-                                        </LinearGradientBrush>
-                                    </Border.Background>
-                                </Border>
-                                <Ellipse
-                                    x:Name="GlassKnob"
-                                    Width="12"
-                                    Height="12"
-                                    Fill="White"
-                                    Stroke="{ThemeResource NeoKnobStroke}"
-                                    StrokeThickness="1"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Center"
-                                    Margin="94,0,0,0"
-                                />
-                                <Slider
-                                    x:Name="GlassSlider"
-                                    Minimum="0"
-                                    Maximum="100"
-                                    Value="78"
-                                    StepFrequency="1"
-                                    Opacity="0"
-                                    VerticalAlignment="Center"
-                                    Margin="0"
-                                    ValueChanged="OnGlassValueChanged"
-                                />
-                            </Grid>
-                            <TextBlock x:Name="GlassPctText" Text="78%" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Width="34" TextAlignment="Right" />
-                        </StackPanel>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="紧凑布局" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock Text="缩小行高以显示更多节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>

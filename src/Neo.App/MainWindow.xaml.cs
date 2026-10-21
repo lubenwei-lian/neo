@@ -1123,7 +1123,7 @@ public sealed partial class MainWindow : Window
         catch { }
         UpdateSidebar();
         UpdateUsageCard();
-        GlassTuner.Apply(AppState.State.GlassOpacity);
+        GlassTuner.ApplyFixed();
         UpdateConnUi();
         PageSettings.RefreshFromState();
         PageRule.RefreshFromState();
