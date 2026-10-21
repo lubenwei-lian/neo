@@ -16,7 +16,15 @@ public sealed class NodeTile : INotifyPropertyChanged
     public NodeItem Node { get; }
     public string NameText { get; }
     public string MetaText { get; }
-    public string Tooltip { get; }
+    private string _tooltip = "";
+    private string _locText = "";
+    private Brush? _locBrush;
+    private bool _locMismatch;
+
+    public string Tooltip { get => _tooltip; private set { _tooltip = value; Raise(); } }
+    public string LocText { get => _locText; private set { _locText = value; Raise(); } }
+    public Brush? LocBrush { get => _locBrush; private set { _locBrush = value; Raise(); } }
+    public Visibility LocVisibility => _locMismatch ? Visibility.Visible : Visibility.Collapsed;
     public string FlagKey { get; }
     public string SearchText { get; }
     public double CardHeight { get; }
@@ -57,6 +65,7 @@ public sealed class NodeTile : INotifyPropertyChanged
 
         ApplyIdleColor();
         RefreshDelay();
+        RefreshLocation();
     }
 
     private void ApplyIdleColor()
@@ -142,6 +151,28 @@ public sealed class NodeTile : INotifyPropertyChanged
         LogBus.App($"测速 {Node.Name} → " + (ms > 0 ? $"{ms} ms"
             : ms == RealDelayTester.BatchFailed ? "本机测速失败（未测到节点）"
             : ms == -1 ? "超时" : "失败"), "Debug");
+    }
+
+    /// 位置检测结果回填：只有「检测到实际国家」且与名称标记不一致时才显示红色「实际 XX」。
+    public void RefreshLocation()
+    {
+        var actual = Node.ExitCountry ?? "";
+        var claimed = AppState.GuessFlag(Node.Name);
+        var mismatch = actual.Length > 0 && claimed != "other"
+            && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase);
+        _locMismatch = mismatch;
+
+        var proto = AppState.ProtocolName(Node.Protocol);
+        var transport = AppState.TransportName(Node);
+        Tooltip = $"{Node.Name}\n{Node.Server}:{Node.Port}\n{proto} · {transport}"
+            + (string.IsNullOrEmpty(actual)
+                ? "\n位置：未检测"
+                : $"\n实际出口：{NodeGrouper.RegionDisplay(actual)}"
+                  + (mismatch ? $"（标记为{NodeGrouper.RegionDisplay(claimed)}，不符）" : "（与标记一致）"));
+
+        LocText = mismatch ? "实际" + NodeGrouper.RegionDisplay(actual) : "";
+        LocBrush = ThemeUtil.Get("NeoRed", Color.FromArgb(255, 0xDC, 0x26, 0x26));
+        Raise(nameof(LocVisibility));
     }
 
     private void Raise([CallerMemberName] string? name = null)

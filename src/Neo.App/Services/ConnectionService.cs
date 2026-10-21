@@ -191,7 +191,7 @@ public static class ConnectionService
             try
             {
                 group = NodeGrouper.PickGroup(AppState.Nodes, node,
-                    Math.Clamp(AppState.State.MultiNodeMax, 2, 16));
+                    Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
             }
             catch (Exception ex)
             {
@@ -223,6 +223,27 @@ public static class ConnectionService
         // 一个临时内核实例承载全部节点、每节点独立 socks 端口、并行测完）。
         // 它用的是**随机空闲端口**、不占 10085 统计端口，因此与已连接会话不冲突。
         // 只测「RealDelay == 0」的节点，已有结果的跳过 ⇒ 同一会话内第二次连接几乎是瞬时的。
+        // 位置检测跑过之后：把「实际出口国家与名称标记地区不符」的节点踢出并发组。
+        //   用户明确不接受「标着日本、实际从别处出去」；这类节点混在池里会让出口 IP 跨国跳，
+        //   登录态、风控、流媒体解锁都会出问题。没检测过的节点（ExitCountry 为空）保持原样，
+        //   避免把「没测」当成「不符」。
+        if (group.Count > 1)
+        {
+            var claimedRegion = NodeGrouper.RegionOf(node.Name);
+            if (claimedRegion != "other")
+            {
+                var bad = group.Where(n => !ReferenceEquals(n, node)
+                    && !string.IsNullOrEmpty(n.ExitCountry)
+                    && !string.Equals(n.ExitCountry, claimedRegion, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (bad.Count > 0)
+                {
+                    group = group.Where(n => !bad.Contains(n)).ToList();
+                    MultiNodeCount = group.Count;
+                    LogBus.App($"多节点并发：已排除 {bad.Count} 个「标记与实际出口不符」的节点（{string.Join("、", bad.Select(b => b.Name))}）", "Warning");
+                }
+            }
+        }
+
         if (group.Count > 1)
             await FillGroupDelaysAsync(group);
 
@@ -1467,9 +1488,11 @@ public static class ConnectionService
         if (missing.Count == 0) return speeds.ToList();
 
         LogBus.App($"多节点并发：正在探测 {missing.Count} 个节点的真实吞吐（权重依据）…", "Debug");
-        // 15 秒预算：正常 8 节点并行 ~6-12 秒；个别节点极慢时不至于把连接拖到 25 秒，
-        // 超预算的部分本次按延迟加权（下次启动预热会补上）。
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        // 预算随节点数增长（10s + 1.2s/节点，上限 30s）：8 节点约 20s、19 节点约 30s。
+        // 之前写死 15s，19 节点首次连接时探测会被取消、权重退化成「每节点 1 份」。
+        // 超预算的部分本次按延迟加权，下次启动预热会补上。
+        var probeBudget = TimeSpan.FromSeconds(Math.Min(30, 10 + missing.Count * 1.2));
+        using var cts = new CancellationTokenSource(probeBudget);
         var map = await RealDelayTester.MeasureSpeedBatchAsync(
             missing.Select(i => group[i]).ToList(), NeoPaths.RuntimeDir, ct: cts.Token);
 
@@ -1507,7 +1530,7 @@ public static class ConnectionService
             List<NodeItem> group;
             try
             {
-                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 16));
+                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
             }
             catch { return; }
             if (group.Count < 2) return;

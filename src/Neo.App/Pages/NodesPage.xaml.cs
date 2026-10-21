@@ -286,6 +286,89 @@ public sealed partial class NodesPage : UserControl
 
     private async Task RealTestAllAsync() => await RunBatchAsync(_tiles.ToList());
 
+    // ---- 位置检测（真实出口国家）----
+    //   名称里的国旗/地区是订阅方写的，可能与实际出口不符（例如标日本、实际在美国）。
+    //   这里经每个节点自己的 socks 入口访问 Cloudflare trace，读出真实 loc，
+    //   与名称标记不一致的节点在卡片上标红「实际 XX」，并弹窗列出清单。
+    private bool _geoTesting;
+    private CancellationTokenSource? _geoCts;
+
+    private async void OnGeoTestClick(object sender, RoutedEventArgs e)
+    {
+        if (_geoTesting) { _geoCts?.Cancel(); return; }
+
+        var nodes = AppState.Nodes.ToList();
+        if (nodes.Count == 0) return;
+
+        _geoTesting = true;
+        GeoTestBtnText.Text = "停止";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        LogBus.App($"位置检测开始（{nodes.Count} 个节点 · 经各节点访问 Cloudflare trace）");
+        var mismatches = new List<string>();
+        var ok = 0;
+        try
+        {
+            _geoCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            var map = await RealDelayTester.DetectExitCountriesAsync(
+                nodes, NeoPaths.RuntimeDir,
+                onResult: (node, country) => _ = DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    node.ExitCountry = country;
+                    _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
+                }),
+                ct: _geoCts.Token);
+
+            foreach (var n in nodes)
+            {
+                var actual = map.TryGetValue(n, out var c) ? c : "";
+                n.ExitCountry = actual;
+                if (string.IsNullOrEmpty(actual)) continue;
+                ok++;
+                var claimed = AppState.GuessFlag(n.Name);
+                if (claimed != "other" && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase))
+                    mismatches.Add($"• {n.Name}：标记 {NodeGrouper.RegionDisplay(claimed)} → 实际 {NodeGrouper.RegionDisplay(actual)}");
+            }
+            foreach (var t in _tiles) t.RefreshLocation();
+            RebuildList();
+
+            LogBus.App($"位置检测完成：{ok}/{nodes.Count} 个节点有结果 · 标记与实际不符 {mismatches.Count} 个 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
+            FootTime.Text = $"位置检测：{mismatches.Count} 个标记不符（{DateTime.Now:HH:mm:ss}）";
+            FootAvg.Text = "";
+
+            var unresolved = nodes.Count - ok;
+            var head = $"已检测 {ok}/{nodes.Count} 个节点"
+                + (unresolved > 0 ? $"（{unresolved} 个无响应/超时，未能判定）" : "") + "。";
+            var body = mismatches.Count == 0
+                ? head + "\n\n出口国家与名称标记全部一致。"
+                : head + $"\n\n{mismatches.Count} 个标记与实际出口不符：\n\n" + string.Join("\n", mismatches.Take(20))
+                  + (mismatches.Count > 20 ? $"\n… 其余 {mismatches.Count - 20} 个见日志" : "");
+            var dlg = new ContentDialog
+            {
+                Title = "位置检测结果",
+                Content = new TextBlock { Text = body, TextWrapping = TextWrapping.Wrap, FontSize = 12.5, MaxWidth = 560 },
+                CloseButtonText = "知道了",
+                XamlRoot = XamlRoot,
+            };
+            await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+        }
+        catch (OperationCanceledException)
+        {
+            LogBus.App("位置检测已取消", "Warning");
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("位置检测", ex);
+        }
+        finally
+        {
+            _geoTesting = false;
+            GeoTestBtnText.Text = "位置检测";
+            _geoCts?.Dispose();
+            _geoCts = null;
+        }
+    }
+
     private async Task RunBatchAsync(List<NodeTile> all)
     {
         if (all.Count == 0) return;

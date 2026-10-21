@@ -486,4 +486,79 @@ public static class RealDelayTester
         while (set.Count < count) set.Add(FreePort());
         return set.OrderBy(p => p).ToArray();
     }
+
+    /// 出口位置检测：每个节点走自己的 socks 入口请求 Cloudflare trace，读出**真实出口国家**（ISO 小写）。
+    /// 与批量测速同一套做法（一个临时内核 + 每节点独立 socks 端口），避免逐个起进程。
+    /// 只覆盖 xray 承载的协议；hy2/tuic（sing-box）暂不参与（返回空）。
+    public static async Task<IReadOnlyDictionary<NodeItem, string>> DetectExitCountriesAsync(
+        IReadOnlyList<NodeItem> nodes, string runtimeDir, int timeoutMs = 10000,
+        Action<NodeItem, string>? onResult = null, CancellationToken ct = default)
+    {
+        var result = new ConcurrentDictionary<NodeItem, string>();
+        var xrayNodes = nodes.Where(n => n.IsValid
+            && n.Protocol is not NodeProtocol.Hysteria2 and not NodeProtocol.TUIC).ToList();
+        if (xrayNodes.Count == 0) return result;
+
+        var ports = AllocPorts(xrayNodes.Count);
+        var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-geotest-{ports[0]}-{Guid.NewGuid():N}.json");
+        CoreProcess? core = null;
+        var tail = new ConcurrentQueue<string>();
+        try
+        {
+            await File.WriteAllTextAsync(cfgPath, XrayConfigBuilder.BuildTestBatch(xrayNodes, ports), ct);
+            core = new CoreProcess(Path.Combine(runtimeDir, "xray.exe"), runtimeDir);
+            core.LogLine += line => AppendTail(tail, line);
+            core.Start(cfgPath);
+            await Task.Delay(1200, ct);
+            if (!core.IsRunning)
+            {
+                Log($"出口位置检测失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
+                return result;
+            }
+
+            await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
+                new ParallelOptions { CancellationToken = ct },
+                async (i, ict) =>
+                {
+                    var country = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, ict);
+                    result[xrayNodes[i]] = country;
+                    onResult?.Invoke(xrayNodes[i], country);
+                });
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Log($"出口位置检测失败（本机原因）：[{ex.GetType().Name}] {ex.Message}", isError: true);
+        }
+        finally
+        {
+            core?.Stop();
+            try { File.Delete(cfgPath); } catch { }
+        }
+        return result;
+    }
+
+    /// Cloudflare trace 的 loc= 行就是 Cloudflare 判定的出口国家代码。
+    private static async Task<string> QueryExitCountryViaSocksAsync(int socksPort, int timeoutMs, CancellationToken ct)
+    {
+        try
+        {
+            using var handler = new SocketsHttpHandler
+            {
+                Proxy = new WebProxy(new Uri($"socks5://127.0.0.1:{socksPort}")),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromMilliseconds(timeoutMs),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+            var text = await http.GetStringAsync("http://cp.cloudflare.com/cdn-cgi/trace", ct);
+            foreach (var line in text.Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("loc=", StringComparison.Ordinal)) return t[4..].Trim().ToLowerInvariant();
+            }
+        }
+        catch { }
+        return "";
+    }
 }

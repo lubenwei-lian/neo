@@ -27,6 +27,7 @@ public sealed partial class SettingsPage : UserControl
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
     private Neo.App.Ui.PopupList? _multiModeList;
+    private Neo.App.Ui.PopupList? _multiCountList;
     private Neo.App.Ui.PopupList? _dnsList;
 
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -172,7 +173,7 @@ public sealed partial class SettingsPage : UserControl
             return;
         }
 
-        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 16));
+        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
         var region = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(cur.Name));
         if (group.Count <= 1)
         {
@@ -499,6 +500,64 @@ public sealed partial class SettingsPage : UserControl
         var cur = MultiModes.FirstOrDefault(m => m.Key == AppState.State.MultiNodeMode);
         MultiModeText.Text = cur.Label ?? "加权";
         MultiModeHint.Text = cur.Hint ?? MultiModes[0].Hint;
+    }
+
+    // ---- 并发节点数 ----
+    // 原先上限写死 16（默认 8），而订阅里同地区同协议的节点往往有十几二十个，
+    // 用户会觉得「并发 8 太少」。这里给出档位 + 「全部」，实际可组队数量由 NodeGrouper 决定。
+    private static readonly int[] MultiCountPresets = { 8, 16, 32 };
+    private const int MultiCountAll = 64;
+
+    private int MultiGroupAvailable()
+    {
+        var cur = AppState.CurrentNode;
+        if (cur == null) return 0;
+        try { return NodeGrouper.PickGroup(AppState.Nodes, cur, 999).Count; }
+        catch { return 0; }
+    }
+
+    private void OnMultiCountTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _multiCountList ??= new Neo.App.Ui.PopupList();
+        _multiCountList.ClearItems();
+        var avail = MultiGroupAvailable();
+
+        foreach (var n in MultiCountPresets)
+        {
+            var v = n;
+            _multiCountList.AddItem($"{v} 个", null, async () =>
+            {
+                if (AppState.State.MultiNodeMax == v) return;
+                AppState.State.MultiNodeMax = v;
+                AppState.Save();
+                UpdateMultiCountUi();
+                LogBus.App($"并发节点数已设为 {v} 个（重连后生效）");
+                await ConnectionService.ReloadForSettingsAsync();
+            });
+        }
+
+        _multiCountList.AddItem(avail > 0 ? $"全部（{avail} 个）" : "全部", null, async () =>
+        {
+            if (AppState.State.MultiNodeMax == MultiCountAll) return;
+            AppState.State.MultiNodeMax = MultiCountAll;
+            AppState.Save();
+            UpdateMultiCountUi();
+            LogBus.App($"并发节点数已设为「全部」（当前可组队 {avail} 个，重连后生效）");
+            await ConnectionService.ReloadForSettingsAsync();
+        });
+
+        _multiCountList.AddDisabled("只组合同地区、同协议的节点：跨地区会让出口 IP 乱跳；协议不同内核不兼容");
+        ShowListBelow(_multiCountList, sender, MultiCountBox);
+    }
+
+    private void UpdateMultiCountUi()
+    {
+        var avail = MultiGroupAvailable();
+        var max = Math.Clamp(AppState.State.MultiNodeMax, 2, 64);
+        MultiCountText.Text = avail > 0 && max >= avail ? $"全部（{avail} 个）" : $"{max} 个";
+        MultiCountHint.Text = avail > 1
+            ? $"当前可组队 {avail} 个（同地区同协议）；「全部」把可用的都用上"
+            : "同地区同协议节点一起用；数值越大越吃带宽与内核资源";
     }
 
     //   旧实现一个 OnAdvancedToggled 同时写 BypassCn 与 AllowLan —— 拨「允许局域网连接」时
@@ -939,6 +998,7 @@ public sealed partial class SettingsPage : UserControl
 
         LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
         UpdateMultiModeUi();
+        UpdateMultiCountUi();
         UpdateRuleSetCount();
         UpdateDnsUi();
         UpdateLangUi();

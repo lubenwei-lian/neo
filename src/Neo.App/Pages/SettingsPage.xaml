@@ -266,6 +266,32 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="并发节点数" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="MultiCountHint" Text="同地区同协议节点一起用；选「全部」把可用的都用上" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Border
+                            x:Name="MultiCountBox"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Width="120"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                            Tapped="OnMultiCountTapped"
+                        >
+                            <Grid>
+                                <TextBlock x:Name="MultiCountText" Text="8 个" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="日志级别" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="LogPathHint" Text="写入 data\logs" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>
