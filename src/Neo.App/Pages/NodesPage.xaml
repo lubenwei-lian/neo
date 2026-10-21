@@ -168,7 +168,10 @@
                                                Foreground="{ThemeResource NeoText3}"
                                                TextTrimming="CharacterEllipsis" VerticalAlignment="Bottom" />
 
+                                    <!-- 固定宽度 + 右对齐：延迟从「● 未测」变成「● 123 ms」时列宽不再变，
+                                         否则批量测速时每张卡片都在横向重排，看起来像整页在闪。 -->
                                     <TextBlock Grid.Row="1" Grid.Column="2" Text="{x:Bind DelayText, Mode=OneWay}"
+                                               Width="64" TextAlignment="Right"
                                                FontSize="10" FontWeight="SemiBold"
                                                Foreground="{x:Bind DelayBrush, Mode=OneWay}"
                                                VerticalAlignment="Bottom" />

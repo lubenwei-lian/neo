@@ -459,8 +459,8 @@ public sealed partial class NodesPage : UserControl
                     {
                         tile.SetResult(ms);
                         done++;
-                        FootTime.Text = $"真连测速中 {done}/{all.Count}…";
-                        RealTestBtnText.Text = $"停止 {done}/{all.Count}";
+                        // 只每 10 个刷新一次页脚；按钮文字保持「停止」不变，避免工具栏宽度来回变。
+                        if (done % 10 == 0) FootTime.Text = $"真连测速中 {done}/{all.Count}…";
                         FootAvg.Text = "";
                     }
                 }),
@@ -510,7 +510,10 @@ public sealed partial class NodesPage : UserControl
 
         var ok = all.Count(t => t.RealValue > 0);
         LogBus.App($"真连测速完成：{ok}/{all.Count} 可达 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
-        RebuildList();
+        // 结束时不重建卡片（重建会整页闪一下）：只按新延迟排序后重新绑定现有卡片对象。
+        _tiles = _tiles.OrderBy(t => t.RealValue <= 0 ? int.MaxValue : t.RealValue).ToList();
+        ApplyFilter();
+        UpdateFooter();
     }
 
     private void UpdateFooter()
