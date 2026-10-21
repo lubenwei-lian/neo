@@ -295,6 +295,21 @@ public sealed partial class NodesPage : UserControl
         await RunBatchAsync(list);
     }
 
+    /// 把「节点对象 → (国家, IP)」的检测结果按稳定 NodeKey 回填到当前节点列表，
+    /// 避免订阅刷新重建对象后结果丢失。返回是否有任何变更。
+    private static void ApplyLocations(IReadOnlyDictionary<NodeItem, (string Country, string Ip)> map)
+    {
+        if (map.Count == 0) return;
+        var byKey = new Dictionary<string, (string Country, string Ip)>();
+        foreach (var kv in map) byKey[AppState.NodeKey(kv.Key)] = kv.Value;
+        foreach (var n in AppState.Nodes)
+            if (byKey.TryGetValue(AppState.NodeKey(n), out var loc))
+            {
+                n.ExitCountry = loc.Country;
+                n.ExitIp = loc.Ip;
+            }
+    }
+
     // 「真实 IP 显示」打开后自动跑一次检测（静默，不弹结果框），让卡片直接显示真实出口。
     private bool _geoAutoTried;
     private async void TryAutoDetectLocations()
@@ -320,14 +335,10 @@ public sealed partial class NodesPage : UserControl
                     _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
                 }));
 
-            var ok = 0;
-            foreach (var n in nodes)
-            {
-                if (!map.TryGetValue(n, out var loc)) continue;
-                n.ExitCountry = loc.Country;
-                n.ExitIp = loc.Ip;
-                if (!string.IsNullOrEmpty(loc.Country)) ok++;
-            }
+            // 检测期间订阅刷新可能重建了节点对象：按稳定 NodeKey 回填到**当前**列表，
+            // 否则结果全落在旧对象上、界面永远不显示（实测踩到过）。
+            ApplyLocations(map);
+            var ok = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
             RebuildList();
             LogBus.App($"真实 IP 显示：出口检测完成 {ok}/{nodes.Count}（超时的节点保持未检测）");
         }
@@ -371,15 +382,12 @@ public sealed partial class NodesPage : UserControl
                 }),
                 ct: _geoCts.Token);
 
-            foreach (var n in nodes)
+            ApplyLocations(map);
+            ok = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
+            foreach (var n in AppState.Nodes)
             {
-                var actual = "";
-                var actualIp = "";
-                if (map.TryGetValue(n, out var l)) { actual = l.Country; actualIp = l.Ip; }
-                n.ExitCountry = actual;
-                n.ExitIp = actualIp;
+                var actual = n.ExitCountry ?? "";
                 if (string.IsNullOrEmpty(actual)) continue;
-                ok++;
                 var claimed = AppState.GuessFlag(n.Name);
                 if (claimed != "other" && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase))
                     mismatches.Add($"• {n.Name}：标记 {NodeGrouper.RegionDisplay(claimed)} → 实际 {NodeGrouper.RegionDisplay(actual)}");

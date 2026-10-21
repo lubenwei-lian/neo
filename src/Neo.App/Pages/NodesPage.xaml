@@ -164,15 +164,9 @@
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
 
-                                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Vertical" Spacing="1" VerticalAlignment="Bottom">
-                                        <TextBlock Text="{x:Bind MetaText}" FontSize="10"
-                                                   Foreground="{ThemeResource NeoText3}"
-                                                   TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{x:Bind LocText, Mode=OneWay}" FontSize="9.5" FontWeight="SemiBold"
-                                                   Foreground="{x:Bind LocBrush, Mode=OneWay}"
-                                                   TextTrimming="CharacterEllipsis"
-                                                   Visibility="{x:Bind LocVisibility, Mode=OneWay}" />
-                                    </StackPanel>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind MetaText, Mode=OneWay}" FontSize="10"
+                                               Foreground="{ThemeResource NeoText3}"
+                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Bottom" />
 
                                     <TextBlock Grid.Row="1" Grid.Column="2" Text="{x:Bind DelayText, Mode=OneWay}"
                                                FontSize="10" FontWeight="SemiBold"

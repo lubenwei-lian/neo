@@ -15,12 +15,14 @@ public sealed class NodeTile : INotifyPropertyChanged
 {
     public NodeItem Node { get; }
     public string NameText { get; }
-    public string MetaText { get; }
+    private string _metaText = "";
+    public string MetaText { get => _metaText; private set { _metaText = value; Raise(); } }
     private string _tooltip = "";
     private string _locText = "";
     private Brush? _locBrush;
     private bool _locMismatch;
     private readonly string _fullInfo;
+    private readonly string _metaBase = "";
 
     public string Tooltip { get => _tooltip; private set { _tooltip = value; Raise(); } }
     public string LocText { get => _locText; private set { _locText = value; Raise(); } }
@@ -54,12 +56,14 @@ public sealed class NodeTile : INotifyPropertyChanged
         NameText = node.Name;
         // 「真实 IP 显示」打开时卡片多一行（真实出口国家 + IP），高度 +12。
         var showReal = AppState.State.ShowRealIp;
-        CardHeight = AppState.State.CompactLayout ? (showReal ? 70 : 58) : (showReal ? 78 : 66);
+        // 卡片固定两行（名称 + 信息行）：真实出口并入信息行，不额外加行，避免被容器裁切。
+        CardHeight = AppState.State.CompactLayout ? 58 : 66;
 
         var proto = AppState.ProtocolName(node.Protocol);
         var transport = AppState.TransportName(node);
         // 卡片只留「地区 · 类型」；服务器/传输/来源/真实出口都在 Tooltip。
-        MetaText = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(node.Name)) + " · " + proto;
+        _metaBase = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(node.Name)) + " · " + proto;
+        MetaText = _metaBase;
         _fullInfo = $"{node.Name}\n{node.Server}:{node.Port}\n{proto}"
             + (string.IsNullOrEmpty(transport) ? "" : " · " + transport)
             + (string.IsNullOrEmpty(node.SourceSubscription) ? "" : "\n来源：" + node.SourceSubscription);
@@ -177,13 +181,17 @@ public sealed class NodeTile : INotifyPropertyChanged
                   + (actualIp.Length > 0 ? " · " + actualIp : "")
                   + (mismatch ? $"（标记为{NodeGrouper.RegionDisplay(claimed)}，不符）" : "（与标记一致）"));
 
-        var showReal = AppState.State.ShowRealIp && actual.Length > 0;
-        if (showReal)
-            LocText = "实际" + NodeGrouper.RegionDisplay(actual) + (actualIp.Length > 0 ? " " + actualIp : "");
+        // 真实出口并进信息行（不额外占一行，卡片高度固定，绝不会被裁）。
+        var meta = _metaBase;
+        if (AppState.State.ShowRealIp)
+            meta += actual.Length > 0
+                ? " · 实际" + NodeGrouper.RegionDisplay(actual) + (actualIp.Length > 0 ? " " + actualIp : "")
+                : " · 位置未检测";
         else if (mismatch)
-            LocText = "实际" + NodeGrouper.RegionDisplay(actual);
-        else
-            LocText = "";
+            meta += " · 实际" + NodeGrouper.RegionDisplay(actual);
+        MetaText = meta;
+
+        LocText = "";
 
         LocBrush = mismatch
             ? ThemeUtil.Get("NeoRed", Color.FromArgb(255, 0xDC, 0x26, 0x26))
