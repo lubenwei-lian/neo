@@ -28,6 +28,8 @@ public sealed partial class SettingsPage : UserControl
     private Neo.App.Ui.PopupList? _logLevelList;
     private Neo.App.Ui.PopupList? _multiModeList;
     private Neo.App.Ui.PopupList? _multiCountList;
+    private Neo.App.Ui.PopupList? _fixedExitNodeList;
+    private Neo.App.Ui.PopupList? _fixedExitEntryList;
     private Neo.App.Ui.PopupList? _dnsList;
 
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -203,6 +205,97 @@ public sealed partial class SettingsPage : UserControl
         {
             try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
         }
+    }
+
+    // ---- 固定出口（多入口加速）----
+    // 出口固定为一个非 REALITY 节点，其他节点作为入口链路给它叠加带宽。
+    // 说明：xray 的 REALITY 不能作内层链路（实测报 received real certificate），
+    // 所以出口候选只列 ws/tls 节点；入口不受限制。
+    private void OnFixedExitToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.FixedExitEnabled = SwitchFixedExit.IsOn;
+        AppState.Save();
+        LogBus.App(SwitchFixedExit.IsOn ? "固定出口：已开启（出口固定，其他节点作入口）" : "固定出口：已关闭");
+        if (SwitchFixedExit.IsOn && AppState.State.UseTun)
+            LogBus.App("固定出口：当前是 TUN 模式，该功能只在非 TUN（xray）下生效", "Warning");
+        _ = ReloadForFixedExitAsync();
+    }
+
+    private async Task ReloadForFixedExitAsync()
+    {
+        if (!ConnectionService.IsConnected) return;
+        try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
+    }
+
+    private void OnFixedExitNodeTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _fixedExitNodeList ??= new Neo.App.Ui.PopupList();
+        _fixedExitNodeList.ClearItems();
+        _fixedExitNodeList.AddItem("自动（最快）", null, async () =>
+        {
+            AppState.State.FixedExitExitKey = "";
+            AppState.Save();
+            UpdateFixedExitUi();
+            LogBus.App("固定出口：出口节点改为自动选择");
+            await ReloadForFixedExitAsync();
+        });
+        foreach (var n in AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).Take(30))
+        {
+            var node = n;
+            var key = AppState.NodeKey(node);
+            _fixedExitNodeList.AddItem(node.Name, null, async () =>
+            {
+                AppState.State.FixedExitExitKey = key;
+                AppState.Save();
+                UpdateFixedExitUi();
+                LogBus.App("固定出口：出口已设为「" + node.Name + "」");
+                await ReloadForFixedExitAsync();
+            });
+        }
+        _fixedExitNodeList.AddDisabled("出口必须是 ws/tls 等非 REALITY 节点：REALITY 不能作为内层链路");
+        ShowListBelow(_fixedExitNodeList, sender, FixedExitNodeBox);
+    }
+
+    private void OnFixedExitEntryTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _fixedExitEntryList ??= new Neo.App.Ui.PopupList();
+        _fixedExitEntryList.ClearItems();
+        foreach (var v in new[] { 3, 6, 12 })
+        {
+            var val = v;
+            _fixedExitEntryList.AddItem(val + " 个", null, async () =>
+            {
+                AppState.State.FixedExitEntryCount = val;
+                AppState.Save();
+                UpdateFixedExitUi();
+                LogBus.App("固定出口：入口数量设为 " + val);
+                await ReloadForFixedExitAsync();
+            });
+        }
+        _fixedExitEntryList.AddItem("全部", null, async () =>
+        {
+            AppState.State.FixedExitEntryCount = 0;
+            AppState.Save();
+            UpdateFixedExitUi();
+            LogBus.App("固定出口：入口使用全部可用节点");
+            await ReloadForFixedExitAsync();
+        });
+        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路");
+        ShowListBelow(_fixedExitEntryList, sender, FixedExitEntryBox);
+    }
+
+    private void UpdateFixedExitUi()
+    {
+        var cands = AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).ToList();
+        var key = AppState.State.FixedExitExitKey ?? "";
+        var node = key.Length > 0 ? cands.FirstOrDefault(n => AppState.NodeKey(n) == key) : null;
+        FixedExitNodeText.Text = node?.Name ?? "自动";
+        FixedExitNodeHint.Text = node != null
+            ? "手动指定；出口 IP 固定，不随入口变化"
+            : "自动：从 " + cands.Count + " 个非 REALITY 节点里选延迟/吞吐最好的";
+        var c = AppState.State.FixedExitEntryCount;
+        FixedExitEntryText.Text = c <= 0 ? "全部" : c + " 个";
     }
 
     private bool _checkingAppUpdate;
@@ -1073,6 +1166,7 @@ public sealed partial class SettingsPage : UserControl
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
         st.FailoverEnabled = true; st.MultiNodeEnabled = true; st.MultiNodeMax = 8;
+        st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
         st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;
         st.AutoCheckUpdate = true; st.UpdateCheckTime = "12:00"; st.GameDirectEnabled = true;
@@ -1096,6 +1190,7 @@ public sealed partial class SettingsPage : UserControl
         SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
+        SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
         UpdateTimePicker.Time = TimeSpan.TryParse(AppState.State.UpdateCheckTime, out var checkTime)
             ? checkTime
@@ -1113,6 +1208,7 @@ public sealed partial class SettingsPage : UserControl
         LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
         UpdateMultiModeUi();
         UpdateMultiCountUi();
+        UpdateFixedExitUi();
         UpdateRuleSetCount();
         UpdateDnsUi();
         UpdateLangUi();

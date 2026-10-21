@@ -310,6 +310,67 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="固定出口（多入口加速）" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="FixedExitHint" Text="出口固定一个节点，其他节点作入口给它叠加带宽；出口仅支持 ws/tls 节点，TUN 模式下不生效，流量按两跳计" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchFixedExit" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnFixedExitToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="出口节点" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="FixedExitNodeHint" Text="自动选最快的非 REALITY 节点" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Border
+                            x:Name="FixedExitNodeBox"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Width="180"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                            Tapped="OnFixedExitNodeTapped"
+                        >
+                            <Grid>
+                                <TextBlock x:Name="FixedExitNodeText" Text="自动" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
+                                <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="入口数量" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="FixedExitEntryHint" Text="入口越多总带宽越高；每条连接仍只走一条链路" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Border
+                            x:Name="FixedExitEntryBox"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Width="120"
+                            Height="30"
+                            CornerRadius="7"
+                            Background="{ThemeResource NeoGlass2}"
+                            BorderBrush="{ThemeResource NeoHairline}"
+                            BorderThickness="1"
+                            Padding="10,0"
+                            Tapped="OnFixedExitEntryTapped"
+                        >
+                            <Grid>
+                                <TextBlock x:Name="FixedExitEntryText" Text="6 个" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="日志级别" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="LogPathHint" Text="写入 data\logs" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>

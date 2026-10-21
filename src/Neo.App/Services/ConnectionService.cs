@@ -72,6 +72,15 @@ public static class ConnectionService
     /// 本次连接实际参与加速的节点数（1 = 未启用多节点加速）。
     public static int MultiNodeCount { get; private set; } = 1;
 
+    /// 固定出口是否生效（本次会话）。生效时出口固定为单一节点，其它节点只作入口。
+    public static bool FixedExitActive { get; private set; }
+
+    /// 固定出口模式下参与分摊的入口链路数。
+    public static int FixedExitEntries { get; private set; }
+
+    /// 固定出口模式下出口节点的名称。
+    public static string? FixedExitName { get; private set; }
+
     /// 参与加速的地区显示名（未启用时为 null）。
     public static string? MultiNodeRegion { get; private set; }
 
@@ -179,14 +188,56 @@ public static class ConnectionService
 
         if (!node.IsValid) return (false, "节点无效（缺地址或端口）");
 
+        FixedExitActive = false;
+        FixedExitEntries = 0;
+        FixedExitName = null;
+
         bool useTun = AppState.State.UseTun;
         bool useSingBox = useTun || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC;
 
         // 多节点加速：xray 路径与 TUN（sing-box）路径都支持。
         // 于是 TUN 模式永远单节点。现在 TUN 也能并发 —— 前提是使用**自编译的 sing-box**
         // 内核是否支持由探测决定，不支持时自动退回单节点，不会让 TUN 直接连不上（见下方探测）。
+        // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
+        // 与多节点加速互斥；TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
+        NodeItem? fixedExit = null;
+        var fixedEntries = new List<NodeItem>();
+        if (AppState.State.FixedExitEnabled)
+        {
+            if (useTun)
+            {
+                LogBus.App("固定出口：TUN 模式暂不支持（需要 xray 链式出站），本次按普通模式连接", "Warning");
+            }
+            else
+            {
+                try
+                {
+                    fixedExit = ResolveFixedExitNode();
+                    if (fixedExit == null)
+                    {
+                        LogBus.App("固定出口：没有可用出口节点（出口需为非 REALITY 的 ws/tls 节点），本次按普通模式连接", "Warning");
+                    }
+                    else
+                    {
+                        fixedEntries = PickFixedExitEntries(fixedExit, AppState.State.FixedExitEntryCount);
+                        if (fixedEntries.Count == 0)
+                        {
+                            LogBus.App("固定出口：除出口「" + fixedExit.Name + "」外没有可用入口节点，本次按单节点连接", "Warning");
+                            fixedExit = null;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogBus.App("固定出口：准备失败，退回普通模式（" + ex.GetType().Name + ": " + ex.Message + "）", "Warning");
+                    fixedExit = null;
+                }
+            }
+        }
+
         var group = new List<NodeItem> { node };
-        if (AppState.State.MultiNodeEnabled)
+        if (fixedExit != null) group = new List<NodeItem> { fixedExit };
+        if (fixedExit == null && AppState.State.MultiNodeEnabled)
         {
             try
             {
@@ -268,8 +319,22 @@ public static class ConnectionService
             // **TUN 分支永远进不去**：因为 useTun 为真时 useSingBox 也为真（见上面
             // `useSingBox = useTun || hy2/tuic`），外层 `!useSingBox` 直接把它挡掉了。
             // 只有单个 `proxy` 出站、没有 balancer —— 界面/日志说并发，实际单节点。
-            var wantMulti = group.Count > 1 && (!useSingBox || useTun);
-            if (wantMulti)
+            var wantMulti = fixedExit == null && group.Count > 1 && (!useSingBox || useTun);
+            if (fixedExit != null && !useSingBox)
+            {
+                json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
+                    XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                    AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                    AppState.State.LogLevel, AppState.State.DnsServer);
+                FixedExitActive = true;
+                FixedExitEntries = fixedEntries.Count;
+                FixedExitName = fixedExit.Name;
+                LogBus.App("固定出口已启用：出口「" + fixedExit.Name + "」· 入口 " + fixedEntries.Count + " 条链路（"
+                    + string.Join("、", fixedEntries.Take(6).Select(n => n.Name))
+                    + (fixedEntries.Count > 6 ? "…" : "") + "）");
+            }
+            else if (wantMulti)
             {
                 // ComputeWeights 会给它中间份额；已测过（>0）的按延迟倍数分配份额。
                 // 队列顺序必须与 group 一致：BuildMulti 是按 group 的下标给 proxy{i} 建出站的。
@@ -451,7 +516,8 @@ public static class ConnectionService
         _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
         var gdCount = (useSingBox && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
         LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
-                   (MultiNodeCount > 1 ? $" · 多节点加速={MultiNodeRegion}×{MultiNodeCount}" : "") + " ===");
+                   (MultiNodeCount > 1 ? $" · 多节点加速={MultiNodeRegion}×{MultiNodeCount}" : "") +
+                   (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
         NotifyStateChanged();
         return (true, null);
         }
@@ -473,6 +539,9 @@ public static class ConnectionService
         ConnectedAt = null;
         MultiNodeCount = 1;
         MultiNodeRegion = null;
+        FixedExitActive = false;
+        FixedExitEntries = 0;
+        FixedExitName = null;
 
         // 用户主动断开时，取消尚未执行的内核自动重启，否则会「断开后又自己连回来」
         try { _coreRestartCts?.Cancel(); } catch { }
@@ -1452,6 +1521,39 @@ public static class ConnectionService
             }
         }
         catch { }
+    }
+
+    /// 解析固定出口的出口节点：优先用户手动指定的键，否则自动选延迟/吞吐最好的非 REALITY 节点。
+    private static NodeItem? ResolveFixedExitNode()
+    {
+        var cands = AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).ToList();
+        if (cands.Count == 0) return null;
+        var key = AppState.State.FixedExitExitKey ?? "";
+        if (key.Length > 0)
+        {
+            var hit = cands.FirstOrDefault(n => string.Equals(AppState.NodeKey(n), key, StringComparison.Ordinal));
+            if (hit != null) return hit;
+        }
+        return cands
+            .OrderBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
+            .ThenByDescending(n => TryGetCachedSpeed(n, out var k) ? k : 0)
+            .First();
+    }
+
+    /// 选入口节点：排除出口本身，按「已测速优先 → 延迟低 → 吞吐高」排序，取前 count 个（0 = 全部）。
+    private static List<NodeItem> PickFixedExitEntries(NodeItem exit, int count)
+    {
+        var exitKey = AppState.NodeKey(exit);
+        var pool = AppState.Nodes
+            .Where(n => n.IsValid && !string.Equals(AppState.NodeKey(n), exitKey, StringComparison.Ordinal))
+            .Where(n => n.Network is not ("h2" or "quic"))
+            .Where(n => n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks)
+            .OrderByDescending(n => n.RealDelay > 0)
+            .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
+            .ThenByDescending(n => TryGetCachedSpeed(n, out var k) ? k : 0)
+            .ToList();
+        if (count <= 0) count = pool.Count;
+        return pool.Take(Math.Clamp(count, 1, 32)).ToList();
     }
 
     /// 缓存命中判定：内存/落盘共用同一个 6 小时 TTL（落盘加载时已按 TTL 过滤）。

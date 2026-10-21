@@ -395,6 +395,163 @@ public static class XrayConfigBuilder
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
+
+    /// 该节点能否作为「固定出口」。
+    /// 依据实测（2026-10-22，xray 26.10.17）：REALITY 不能作为**内层**链路（入口→出口），
+    ///   会报 REALITY: received real certificate (potential MITM or redirection)，
+    ///   重试几次后连接被重置；ws/tls 这类普通 TLS 传输可以正常串联。
+    /// 另外 h2/quic 传输已被 xray 26 移除，不能用于任何出站。
+    public static bool CanBeFixedExit(NodeItem n) =>
+        n.IsValid
+        && !string.Equals(n.Security, "reality", StringComparison.OrdinalIgnoreCase)
+        && n.Network is not ("h2" or "quic")
+        && n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks;
+
+    /// 固定出口（多入口加速）配置：出口固定为一个节点，其他节点作为入口链路。
+    /// 链路 = 客户端 → hop{i}(入口) → chain{i}(出口) → 目标。
+    /// 所有 chain 的出口是同一个节点 ⇒ 对端网站看到的出口 IP 固定；
+    /// balancer 在 chain 之间分摊连接 ⇒ 多入口的带宽可以叠加（单条 TCP 仍只走一条链）。
+    /// 代价：流量要在入口与出口各走一遍（同一订阅可能按两次计费），并多一跳延迟。
+    public static string BuildFixedExit(NodeItem exitNode, IReadOnlyList<NodeItem> entryNodes,
+        int socksPort = DefaultSocksPort, int httpPort = DefaultHttpPort,
+        string proxyMode = "rule", bool bypassPrivate = true, bool bypassCn = true, bool blockAds = true,
+        bool allowLan = false, IReadOnlyList<RouteRule>? customRules = null, string logLevel = "warning",
+        string dnsServer = "223.5.5.5", string strategy = "leastLoad")
+    {
+        var entries = entryNodes.Where(n => n.IsValid).ToList();
+        if (!CanBeFixedExit(exitNode))
+            throw new ArgumentException("节点「" + exitNode.Name + "」不能作为固定出口（REALITY 或已被移除的传输方式不支持串联）");
+        if (entries.Count == 0) throw new ArgumentException("固定出口：没有可用的入口节点");
+        if (socksPort == httpPort) throw new ArgumentException("socks 与 http 端口不能相同（xray 无混合入站）");
+
+        var listen = allowLan ? "0.0.0.0" : "127.0.0.1";
+        var level = logLevel is "none" or "error" or "warning" or "info" or "debug" ? logLevel : "warning";
+        var dns = NormalizeDnsServer(dnsServer);
+        strategy = NormalizeStrategy(strategy);
+
+        var outbounds = new JsonArray();
+        var tags = new List<string>();
+
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var hopTag = "hop" + i;
+            var hop = BuildProxyOutbound(entries[i]);
+            hop["tag"] = hopTag;
+            outbounds.Add(hop);
+
+            var chainTag = "chain" + i;
+            var chain = BuildProxyOutbound(exitNode);
+            chain["tag"] = chainTag;
+            if (chain["streamSettings"] is JsonObject stream)
+            {
+                stream["sockopt"] = new JsonObject { ["dialerProxy"] = hopTag };
+            }
+            outbounds.Add(chain);
+            tags.Add(chainTag);
+        }
+
+        outbounds.Add(new JsonObject { ["tag"] = "direct", ["protocol"] = "freedom" });
+        outbounds.Add(new JsonObject { ["tag"] = "block", ["protocol"] = "blackhole" });
+        outbounds.Add(new JsonObject { ["tag"] = "api", ["protocol"] = "freedom" });
+
+        var rules = BuildRoutingRules(proxyMode, bypassPrivate, bypassCn, blockAds, customRules, proxyTag: "bal");
+        if (proxyMode != "direct")
+        {
+            rules.Add(new JsonObject
+            {
+                ["type"] = "field",
+                ["network"] = "tcp,udp",
+                ["balancerTag"] = "bal",
+            });
+        }
+
+        var strategyObj = new JsonObject { ["type"] = strategy };
+        if (strategy is "leastLoad")
+        {
+            strategyObj["settings"] = new JsonObject
+            {
+                ["expected"] = tags.Count,
+                ["tolerance"] = 0.3,
+            };
+        }
+
+        var balancer = new JsonObject
+        {
+            ["tag"] = "bal",
+            ["selector"] = new JsonArray(tags.Select(t => (JsonNode)t!).ToArray()),
+            ["strategy"] = strategyObj,
+            ["fallbackTag"] = tags[0],
+        };
+
+        var routing = new JsonObject
+        {
+            ["domainStrategy"] = "IPOnDemand",
+            ["balancers"] = new JsonArray(balancer),
+            ["rules"] = rules,
+        };
+
+        var root = new JsonObject
+        {
+            ["log"] = new JsonObject { ["loglevel"] = level },
+            ["dns"] = new JsonObject { ["servers"] = new JsonArray(dns) },
+            ["api"] = new JsonObject { ["tag"] = "api", ["services"] = new JsonArray("StatsService") },
+            ["stats"] = new JsonObject(),
+            ["policy"] = new JsonObject
+            {
+                ["levels"] = new JsonObject { ["0"] = new JsonObject { ["statsUserUplink"] = true, ["statsUserDownlink"] = true } },
+                ["system"] = new JsonObject { ["statsInboundUplink"] = true, ["statsInboundDownlink"] = true, ["statsOutboundUplink"] = true, ["statsOutboundDownlink"] = true },
+            },
+            ["inbounds"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["listen"] = "127.0.0.1",
+                    ["port"] = StatsApiPort,
+                    ["protocol"] = "dokodemo-door",
+                    ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
+                    ["tag"] = "api-in",
+                },
+                new JsonObject
+                {
+                    ["tag"] = "socks-in",
+                    ["listen"] = listen,
+                    ["port"] = socksPort,
+                    ["protocol"] = "socks",
+                    ["settings"] = new JsonObject { ["auth"] = "noauth", ["udp"] = true },
+                    ["sniffing"] = new JsonObject
+                    {
+                        ["enabled"] = true,
+                        ["destOverride"] = new JsonArray("http", "tls"),
+                    },
+                },
+                new JsonObject
+                {
+                    ["tag"] = "http-in",
+                    ["listen"] = listen,
+                    ["port"] = httpPort,
+                    ["protocol"] = "http",
+                    ["sniffing"] = new JsonObject
+                    {
+                        ["enabled"] = true,
+                        ["destOverride"] = new JsonArray("http", "tls"),
+                    },
+                },
+            },
+            ["outbounds"] = outbounds,
+            ["routing"] = routing,
+        };
+
+        root["observatory"] = new JsonObject
+        {
+            ["subjectSelector"] = new JsonArray(tags.Select(t => (JsonNode)t!).ToArray()),
+            ["probeUrl"] = ProbeUrlForObservatory,
+            ["probeInterval"] = "90s",
+            ["enableConcurrency"] = true,
+        };
+
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
     /// 计算每个节点在 balancer 候选集里占的**份额**（份数）。
     /// 份额 = 该节点在候选集中出现的次数，内核在候选集内均匀随机取，
     /// 因此份额比 ≈ 流量比。

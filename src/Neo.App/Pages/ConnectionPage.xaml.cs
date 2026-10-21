@@ -200,16 +200,23 @@ public sealed partial class ConnectionPage : UserControl
                 : (ConnectionService.XrayVersion ?? "—");
 
             var multi = running ? ConnectionService.MultiNodeCount : 0;
-            CoreTagText.Text = multi > 1
+            var fixedExit = running && ConnectionService.FixedExitActive ? ConnectionService.FixedExitEntries + 1 : 0;
+            CoreTagText.Text = fixedExit > 0
+                ? "固定出口"
+                : multi > 1
                 ? (string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)
                     ? "均衡" : "加权")
                 : (running ? ConnectionService.CoreKind : "—");
 
-            CoreStrategyText.Text = multi > 1
+            CoreStrategyText.Text = fixedExit > 0
+                ? $"出口固定 · {ConnectionService.FixedExitName}"
+                : multi > 1
                 ? $"{StrategyDisplayName(AppState.State.MultiNodeStrategy)} · {(string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase) ? "均衡" : "加权")}"
                 : (running ? "单节点" : "—");
 
-            CoreNodesText.Text = multi > 1
+            CoreNodesText.Text = fixedExit > 0
+                ? $"{fixedExit} / {AppState.Nodes.Count}"
+                : multi > 1
                 ? $"{multi} / {AppState.Nodes.Count}"
                 : (running ? $"1 / {AppState.Nodes.Count}" : "—");
         }

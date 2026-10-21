@@ -90,6 +90,16 @@ public static class AppState
         /// 详见 XrayConfigBuilder.ComputeWeights。
         public string MultiNodeMode { get; set; } = "weighted";
 
+        /// 固定出口（多入口加速）：出口固定为一个节点，其他节点作为入口链路给它叠加带宽。
+        /// 仅在非 TUN（xray）下生效；与「多节点加速」互斥（开启后忽略多节点组队）。
+        public bool FixedExitEnabled { get; set; } = false;
+
+        /// 固定出口的出口节点稳定键（见 <see cref="NodeKey"/>）；空 = 自动挑延迟/吞吐最好的非 REALITY 节点。
+        public string FixedExitExitKey { get; set; } = "";
+
+        /// 入口链路数量：0 = 全部可用入口。
+        public int FixedExitEntryCount { get; set; } = 6;
+
         public bool AutoSpeedTest { get; set; } = true;
 
         /// 启动后自动测一次全部节点的真连延迟（与节点页「真连测速」同一套实现），
