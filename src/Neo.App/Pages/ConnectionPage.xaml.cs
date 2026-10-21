@@ -34,7 +34,6 @@ public sealed partial class ConnectionPage : UserControl
     private const double CellSize = 9;
     private const double CellGap = 2;
     private const double BandGap = 20;
-    private bool _focused = true;
     /// <summary>窗口是否可见（最小化到托盘 / 最小化 / 恢复）。由 MainWindow 推送。</summary>
     private bool _windowVisible = true;
     /// <summary>Activated 是否已订阅（改到 Loaded 里订阅，见 HookWindowActivation）。</summary>
@@ -103,18 +102,19 @@ public sealed partial class ConnectionPage : UserControl
 
     private void RefreshStats()
     {
-        //   计时器却一直在跑 —— 切到别的页后仍每秒往 Collapsed 控件写 10+ 个属性，
-        //   断开时还会调 ResetChart()。纯浪费，且是 UI 线程上的开销。
-        //   注意：必须在**可见时**才做完整刷新，但连接时长的秒表要照常推进
-        //   （否则切回来时间会跳），故 RingTimeText 仍更新。
-        if (!IsPageVisible())
-        {
-            UpdateRingTime();
-            return;
-        }
-
         if (!ConnectionService.IsConnected)
         {
+            _lastSnap = null;
+            _peakDownBps = 0;
+            if (_dnHist.Count > 0 || _upHist.Count > 0)
+                ResetChart();
+
+            if (!IsPageVisible())
+            {
+                UpdateRingTime();
+                return;
+            }
+
             UpSpeedText.Text = "0"; UpSpeedUnit.Text = "B/s";
             DownSpeedText.Text = "0"; DownSpeedUnit.Text = "B/s";
             ConnCountText.Text = "—";
@@ -123,47 +123,50 @@ public sealed partial class ConnectionPage : UserControl
             StatsCoreMemText.Text = "—";
             PeakText.Text = "未连接";
             RingTimeText.Text = "00:00:00";
-            _lastSnap = null;
-            _peakDownBps = 0;
-            if (_dnHist.Count > 0 || _upHist.Count > 0)
-                ResetChart();
-
-            //   （StatsSampler 每秒调 UsageTracker.Sample / 断开时 SessionBreak），
-            //   本页再调会让「断开后残留的计数器」被重复重置/重复计数，故一并删除。
             return;
         }
 
         int? mem = ConnectionService.CoreMemoryMb;
-        StatsCoreMemText.Text = mem is { } m ? m.ToString() : "—";
 
-        // 读后台采样器的缓存，不在 UI 线程上取数：
-        // 而本方法由 1 秒 DispatcherTimer 在 UI 线程调用 —— 直接调等于每秒冻结界面 80 ms。
-        // 采样改由 StatsSampler 在后台线程按同样节奏完成。
+        // 读后台采样器的缓存，不在 UI 线程上取数。
         var snap = StatsSampler.Latest;
         if (snap is not { } cur) return;
 
+        bool hasPrev = _lastSnap is not null;
+        long upBps = 0, downBps = 0;
         if (_lastSnap is { } prev)
         {
             double dt = Math.Max((DateTime.Now - _lastSnapAt).TotalSeconds, 0.001);
-            long upBps = (long)Math.Max(0, cur.Uplink - prev.Uplink) / Math.Max(1, (long)dt);
-            long downBps = (long)Math.Max(0, cur.Downlink - prev.Downlink) / Math.Max(1, (long)dt);
+            upBps = (long)Math.Max(0, cur.Uplink - prev.Uplink) / Math.Max(1, (long)dt);
+            downBps = (long)Math.Max(0, cur.Downlink - prev.Downlink) / Math.Max(1, (long)dt);
+            if (downBps > _peakDownBps) _peakDownBps = downBps;
 
+            // 数据入库与"看不看得见"解耦：窗口最小化到托盘 / 窗口在后台 / 切到别的页面时，
+            // 依旧每秒把采样写进图表历史；否则用户点开时图表从"现在"重新开始，中间那段直接缺失。
+            // 重绘由 PushChart 内部的 IsPageVisible 拦住，看不见时只记录不绘制。
+            PushChart(upBps, downBps);
+        }
+        _lastSnap = cur;
+        _lastSnapAt = DateTime.Now;
+
+        if (!IsPageVisible())
+        {
+            UpdateRingTime();
+            return;
+        }
+
+        StatsCoreMemText.Text = mem is { } m ? m.ToString() : "—";
+
+        if (hasPrev)
+        {
             var (uv, uu) = SplitBytes(upBps);
             UpSpeedText.Text = uv; UpSpeedUnit.Text = uu + "/s";
             var (dv, du) = SplitBytes(downBps);
             DownSpeedText.Text = dv; DownSpeedUnit.Text = du + "/s";
 
-            if (downBps > _peakDownBps) _peakDownBps = downBps;
             var (pv, pu) = SplitBytes(_peakDownBps);
             PeakText.Text = $"峰值 ↓ {pv} {pu}/s";
-
-            PushChart(upBps, downBps);
         }
-
-        _lastSnap = cur;
-        _lastSnapAt = DateTime.Now;
-
-        //   与「连接页是否可见」解耦；本页再调会重复计数。
 
         var (tv, tu) = SplitBytes(cur.Uplink);
         TotalUpText.Text = tv; TotalUpUnit.Text = tu;
@@ -301,7 +304,8 @@ public sealed partial class ConnectionPage : UserControl
             _upHist.RemoveRange(0, drop);
             _times.RemoveRange(0, drop);
         }
-        if (_focused && IsPageVisible()) RedrawChart();
+        // 只要页面可见就重绘：取消失焦停画，窗口在后台（未聚焦）时图表也继续走。
+        if (IsPageVisible()) RedrawChart();
     }
 
     /// 本页当前是否真的显示着。用于跳过「看不见的重绘」：
@@ -656,9 +660,9 @@ public sealed partial class ConnectionPage : UserControl
 
     private void OnWinActivated(object sender, WindowActivatedEventArgs e)
     {
-        //   回到前台补一次完整重绘即可。原先这里停的是 100ms 空转计时器（已删除）。
-        _focused = e.WindowActivationState != WindowActivationState.Deactivated;
-        if (_focused)
+        // 取消"失焦就停画"：窗口在后台（未聚焦）时图表也继续推进。
+        // 这里只在重新拿到焦点时补一次完整重绘，修正窗口被遮挡期间可能漏掉的帧。
+        if (e.WindowActivationState != WindowActivationState.Deactivated)
         {
             try { RedrawChart(); } catch { }
         }
@@ -693,16 +697,20 @@ public sealed partial class ConnectionPage : UserControl
     private void ApplyPageVisibility()
     {
         if (App.IsShuttingDown) return;
+
+        // 1 秒统计表始终运行：窗口隐藏（最小化到托盘）/切到别的页面时，
+        // 仍然要每秒把流量写进图表历史 —— 后台也要一直记录。
+        // 该计时器每秒只做几次差分与入列；重绘由 IsPageVisible 拦住，看不见时不画。
+        try { _statsTimer.Start(); } catch { }
+
         if (IsPageVisible())
         {
-            try { _statsTimer.Start(); } catch { }
             RefreshConnUi();
             RefreshStats();
             try { RedrawChart(); } catch { }
         }
         else
         {
-            try { _statsTimer.Stop(); } catch { }
             StopRingStoryboards();
         }
     }
