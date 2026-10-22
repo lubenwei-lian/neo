@@ -248,8 +248,11 @@ public static class ConnectionService
         string? customConfigPath = null;
         if (useCustom)
         {
-            if (useTun)
-                return (false, "自定义配置直通暂不支持 TUN 模式 —— 请关闭 TUN，或改用拆分出来的普通节点");
+            //   2026-10-23：sing-box 自定义配置现在支持 TUN（注入 tun 入口 + sniff/hijack-dns + 最小 DNS）；
+            //   xray 本身没有 tun 入站，仍然明确拒绝。
+            if (useTun && !customSingBox)
+                return (false, "自定义 xray 配置不支持 TUN 模式（xray 没有 tun 入站）—— 请关闭 TUN；"
+                             + "需要 TUN 的话请改用 sing-box 格式的自定义配置");
             if (!node.Extras.TryGetValue("config_path", out var customSrc) || !File.Exists(customSrc))
                 return (false, "自定义配置文件不存在（可能已被清理），请重新拉取订阅");
         }
@@ -332,10 +335,15 @@ public static class ConnectionService
                 Directory.CreateDirectory(customDir);
                 customConfigPath = Path.Combine(customDir, "runtime-config.json");
                 json = customSingBox
-                    ? CustomConfigBuilder.BuildSingBox(srcJson,
-                        LocalPorts.Socks, LocalPorts.Http,
-                        LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
-                        AppState.State.AllowLan)
+                    ? (useTun
+                        ? CustomConfigBuilder.BuildSingBoxTun(srcJson,
+                            LocalPorts.Socks, LocalPorts.Http,
+                            LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                            AppState.State.AllowLan, AppState.State.DnsServer)
+                        : CustomConfigBuilder.BuildSingBox(srcJson,
+                            LocalPorts.Socks, LocalPorts.Http,
+                            LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                            AppState.State.AllowLan))
                     : CustomConfigBuilder.BuildXray(srcJson,
                         LocalPorts.Socks, LocalPorts.Http,
                         LocalPorts.StatsApi, AppState.State.AllowLan, AppState.State.LogLevel);
@@ -1343,6 +1351,13 @@ public static class ConnectionService
                 // 顺带覆盖「neo 上次崩溃后留下的孤儿」：父进程虽已消失，
                 // 但它的命令行仍指向这份配置，所以仍能被准确识别（不会漏清）。
                 if (cmd.Contains(ConfigPath, StringComparison.OrdinalIgnoreCase)) return true;
+
+                // 自定义配置直通（data\custom\runtime-config.json）与 mihomo（data\mihomo\config.yaml）
+                // 的配置也都在本安装的数据目录下。之前只认 ConfigPath，导致这两类会话崩溃后
+                // 留下的孤儿内核「认不出来、不敢杀」，TUN 网卡也会因为「仍有 sing-box 在跑」被跳过拆除
+                //（实测：强杀 neo 后遗留 sing-box + neo-tun Up，一直劫持流量）。
+                var dataDir = NeoPaths.DataDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (dataDir.Length > 3 && cmd.Contains(dataDir, StringComparison.OrdinalIgnoreCase)) return true;
 
                 // 延迟测试临时配置：%TEMP%\neo-realtest*.json（RealDelayTester 生成，
                 // 见 RealDelayTester.cs 的 neo-realtest-{port}-{guid}.json / batch 版本）
