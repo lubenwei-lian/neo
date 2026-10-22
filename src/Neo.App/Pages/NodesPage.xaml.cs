@@ -70,6 +70,39 @@ public sealed partial class NodesPage : UserControl
         try { _resizeTrailTimer?.Stop(); } catch { }
     }
 
+    /// <summary>
+    /// 仅释放卡片树（保留页面本身）：节点页的内存大头是 68 张卡片（控件+画刷+模板），
+    /// 离开页面一段时间后把 ItemsSource 置空，让卡片可被回收；回来时 EnsureTiles 重建。
+    /// 实测比「整页移除」更有效——WinUI3 的页面对象/原生资源被框架保留，整页移除工作集不回落。
+    /// </summary>
+    public void ReleaseTiles()
+    {
+        try { NodeList.ItemsSource = null; } catch { }
+    }
+
+    /// <summary>回到节点页时若卡片树已被释放则重建（幂等）。</summary>
+    public void EnsureTiles()
+    {
+        try
+        {
+            if (NodeList.ItemsSource == null) RebuildList();
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 空闲释放（2026-10-23 内存优化）：切到别的页超过一段时间后，MainWindow 会调它把本页从
+    /// 可视树移除并置空。**必须先退订静态事件** —— AppState.NodesChanged 是静态事件，
+    /// 不退订的话本页一直被事件源引用，释放等于没释放。
+    /// </summary>
+    public void Release()
+    {
+        StopTimers();
+        try { AppState.NodesChanged -= RebuildList; } catch { }
+        try { AppState.UiSettingsChanged -= OnUiSettingsChanged; } catch { }
+        try { NodeList.ItemsSource = null; } catch { }
+    }
+
     /// 「真实 IP 显示」等界面设置变化时：重建卡片，并补一次出口检测（若还没测过）。
     private void OnUiSettingsChanged()
     {

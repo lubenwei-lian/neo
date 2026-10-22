@@ -49,6 +49,13 @@ public sealed partial class SettingsPage : UserControl
     public void RefreshFromState() => RefreshState();
 
     /// 退出时落盘一次，保证最后一次改动已持久化（原玻璃滑杆的防抖计时器已随设置项移除）。
+    /// <summary>空闲释放：停计时器 + 退订 ConnectionService 静态事件。</summary>
+    public void Release()
+    {
+        StopTimers();
+        try { ConnectionService.StateChanged -= RefreshState; } catch { }
+    }
+
     public void StopTimers()
     {
         try { AppState.Save(); } catch { }
@@ -917,6 +924,79 @@ public sealed partial class SettingsPage : UserControl
             GeoDataUpdater.UpdateAllAsync(stage, ct, onProgress: prog));
     }
 
+    /// <summary>
+    /// 「协议指定内核」配置弹窗：每个协议一个下拉（自动 / xray / sing-box）。
+    /// 默认自动；指定值只在能力允许时生效（KernelRouter 会校验，冲突静默回退自动）。
+    /// </summary>
+    private async void OnCoreMapClick(object sender, RoutedEventArgs e)
+    {
+        var protos = new (string Key, string Label)[]
+        {
+            ("VLESS", "VLESS"),
+            ("VMess", "VMess"),
+            ("Trojan", "Trojan"),
+            ("Shadowsocks", "Shadowsocks"),
+            ("Hysteria2", "Hysteria2"),
+            ("TUIC", "TUIC"),
+            ("AnyTls", "AnyTLS"),
+            ("Socks", "Socks5"),
+        };
+
+        var panel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "默认「自动」：按节点传输/加密能力选择内核。手动指定只在能力允许时生效"
+                 + "（例如 Hysteria2 / TUIC / AnyTLS 只能 sing-box；xhttp / mKCP / VLESS 加密只能 xray）。"
+                 + "TUN 模式固定 sing-box，映射会被忽略。",
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 11.5,
+            Opacity = 0.75,
+            Margin = new Thickness(0, 0, 0, 6),
+        });
+
+        var combos = new List<(string Key, ComboBox Box)>();
+        foreach (var (key, label) in protos)
+        {
+            var row = new Grid { Padding = new Thickness(0, 2, 0, 2) };
+            row.Children.Add(new TextBlock { Text = label, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center });
+            var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 140, FontSize = 11.5 };
+            combo.Items.Add("自动");
+            combo.Items.Add("xray");
+            combo.Items.Add("sing-box");
+            var cur = AppState.State.CoreMap.TryGetValue(key, out var v) ? v : "";
+            combo.SelectedIndex = cur switch { "xray" => 1, "sing-box" => 2, _ => 0 };
+            row.Children.Add(combo);
+            panel.Children.Add(row);
+            combos.Add((key, combo));
+        }
+
+        var dlg = new ContentDialog
+        {
+            Title = "协议指定内核",
+            Content = new ScrollViewer { Content = panel, MaxHeight = 520, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        var res = await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+        if (res != ContentDialogResult.Primary) return;
+
+        AppState.State.CoreMap.Clear();
+        foreach (var (key, box) in combos)
+        {
+            var val = box.SelectedIndex switch { 1 => "xray", 2 => "sing-box", _ => "" };
+            if (val.Length > 0) AppState.State.CoreMap[key] = val;
+        }
+        AppState.Save();   // Save 内会同步到 KernelRouter
+
+        var custom = AppState.State.CoreMap.Count;
+        LogBus.App(custom == 0
+            ? "协议→内核映射：已恢复全自动"
+            : "协议→内核映射：" + string.Join("、", AppState.State.CoreMap.Select(kv => $"{kv.Key}→{kv.Value}")), "Info");
+        RefreshState();
+    }
+
     private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
     {
         try
@@ -1157,6 +1237,12 @@ public sealed partial class SettingsPage : UserControl
         // 预发布开关：只在状态不一致时赋值，避免每次 RefreshState 都触发一次 Toggled/落盘。
         if (SwitchKernelPreRelease.IsOn != AppState.State.CheckKernelPreRelease)
             SwitchKernelPreRelease.IsOn = AppState.State.CheckKernelPreRelease;
+
+        // 协议→内核映射摘要。
+        var coreCustom = AppState.State.CoreMap.Count;
+        CoreMapHint.Text = coreCustom == 0
+            ? "默认自动：按节点传输/加密能力选择内核"
+            : $"已指定 {coreCustom} 个协议 · 其余自动";
 
         PortSocksText.Text = XrayConfigBuilder.DefaultSocksPort.ToString();
         PortHttpText.Text = XrayConfigBuilder.DefaultHttpPort.ToString();

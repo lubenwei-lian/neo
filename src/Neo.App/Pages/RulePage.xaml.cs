@@ -29,6 +29,13 @@ public sealed partial class RulePage : UserControl
     public void RefreshFromState() => RefreshAll();
 
     /// <summary>退出时停掉本页计时器（Exit 后它仍会触发并写 XAML）。</summary>
+    /// <summary>空闲释放：停计时器 + 退订 ConnectionService 静态事件。</summary>
+    public void Release()
+    {
+        StopTimers();
+        try { ConnectionService.StateChanged -= RefreshModeCard; } catch { }
+    }
+
     public void StopTimers()
     {
         try { _errorTimer.Stop(); } catch { }

@@ -255,9 +255,15 @@ public static class ConnectionService
 
         //   优先级：xray 专有能力（xhttp/kcp/VLESS 加密/pqv/vcn）优先于「明文 vless 需 sing-box」的判定，
         //   否则「明文 vless + xhttp」这类节点会被推给 sing-box，然后因为 xhttp 不支持而直接失败。
+        // ★ 2026-10-23：叠加「协议 → 内核」手动映射（设置→内核→协议指定内核）。
+        //   能力不允许时 KernelRouter 返回 Auto（保持自动判定）；TUN 恒 sing-box，映射与 TUN 冲突时忽略并留痕。
+        if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray)
+            LogBus.App("协议→内核映射要求 xray，但 TUN 模式固定 sing-box，本次忽略该映射", "Warning");
+
         bool useSingBox = useTun
-            || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-            || (node.RequiresSingBox && !node.RequiresXray);
+            || Neo.Core.Core.KernelRouter.Apply(node,
+                   node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                   || (node.RequiresSingBox && !node.RequiresXray));
 
         // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
         // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。

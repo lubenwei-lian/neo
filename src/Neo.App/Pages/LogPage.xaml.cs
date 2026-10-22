@@ -120,6 +120,14 @@ public sealed partial class LogPage : UserControl
     private bool Match(LogEntry e) => _level == "All" || e.Level == _level;
 
     /// <summary>退出时停掉本页刷新计时器（Exit 后它会继续触发并写 XAML）。</summary>
+    /// <summary>空闲释放：退订日志流 + 停刷新计时器（日志页的条目最多，释放收益明显）。</summary>
+    public void Release()
+    {
+        try { LogBus.Appended -= OnAppended; } catch { }
+        try { _flush.Stop(); } catch { }
+        try { _pending.Clear(); } catch { }
+    }
+
     public void StopTimers()
     {
         try { _flush.Stop(); } catch { }

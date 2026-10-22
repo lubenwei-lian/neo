@@ -90,8 +90,9 @@ public static class RealDelayTester
         // ★ 2026-10-23 第二批：内核选择改为「协议 + 能力」双判定（NodeItem.RequiresSingBox）：
         //   anytls / ss-plugin / h2 / hy2 gecko / 明文 vless 都只能走 sing-box；
         //   旧实现只看 hy2/tuic → 这些节点用 xray 测速必失败（配置被内核拒绝），界面显示「超时」。
-        bool useSingBox = node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-            || (node.RequiresSingBox && !node.RequiresXray);
+        //   与连接路径同口径：先按能力判定，再叠加「协议→内核」手动映射（KernelRouter 会做能力校验）。
+        bool useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (node.RequiresSingBox && !node.RequiresXray));
         var exe = Path.Combine(runtimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
         if (!File.Exists(exe))
         {
@@ -302,10 +303,11 @@ public static class RealDelayTester
         var valid = nodes.Where(n => n.IsValid).ToList();
         //   Clash 直通节点是「整份 YAML 交给 mihomo」，没有独立可测的出站 → 跳过（保持未测）。
         valid.RemoveAll(n => n.IsClashPassthrough);
-        var sbNodes = valid.Where(n =>
-            n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-            || (n.RequiresSingBox && !n.RequiresXray)).ToList();
-        var xrayNodes = valid.Where(n => !sbNodes.Contains(n)).ToList();
+        static bool BaseUseSb(NodeItem n) => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (n.RequiresSingBox && !n.RequiresXray);
+        static bool UseSb(NodeItem n) => KernelRouter.Apply(n, BaseUseSb(n));
+        var sbNodes = valid.Where(UseSb).ToList();
+        var xrayNodes = valid.Where(n => !UseSb(n)).ToList();
         var done = 0;
 
         // ★ 2026-10-23 真连测速总预算：弱网/大量死节点时避免拖到 1 分半。

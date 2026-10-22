@@ -303,6 +303,18 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
+                    <!-- 协议 → 内核手动映射（对标成熟客户端的 CoreTypeItem）：默认全自动，按能力选。 -->
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="协议指定内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="CoreMapHint" Text="默认自动：按节点传输/加密能力选择内核" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Button x:Name="BtnCoreMap" Style="{StaticResource GhostSm}" Click="OnCoreMapClick" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <TextBlock Text="配置" FontSize="11.5" />
+                        </Button>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="自动故障转移" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />

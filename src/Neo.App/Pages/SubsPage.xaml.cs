@@ -905,6 +905,15 @@ public sealed partial class SubsPage : UserControl
 
     /// 退出时停掉本页计时器。原先它没有任何 Stop 点，Exit 之后仍会继续 Tick 并写 XAML，
     /// 属于「退出期后台活动碰已销毁 UI」的一类，必须一并停掉。
+    /// <summary>空闲释放：停计时器 + 退订静态事件 + 清空卡片，避免整页被事件源拖住。</summary>
+    public void Release()
+    {
+        StopTimers();
+        try { AppState.NodesChanged -= UpdateDisplay; } catch { }
+        try { ConnectionService.StateChanged -= UpdateDisplay; } catch { }
+        try { SubCardList.Children.Clear(); } catch { }
+    }
+
     public void StopTimers()
     {
         try { _usageTimer.Stop(); } catch { }

@@ -168,6 +168,11 @@ public sealed partial class MainWindow : Window
         };
         _autoTimer.Start();
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); StatusToast.Visibility = Visibility.Collapsed; };
+
+        _pageIdleTimer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromSeconds(45) };
+        _pageIdleTimer.Tick += (_, _) => ReleaseIdlePages();
+        _pageIdleTimer.Start();
+
         NavigateTo("conn");
     }
 
@@ -178,6 +183,12 @@ public sealed partial class MainWindow : Window
 
     /// 启动时是否最大化（来自 state.StartMaximized；默认 true）。
     private bool _startMaximized;
+
+    // ★ 2026-10-23 内存优化：页面空闲释放。
+    //   现状是「惰性创建 + 永不销毁」：把所有页都点一遍后，节点页（68 张卡片）等常驻 ~35MB+。
+    //   这里在切走 45 秒后把非当前页从可视树移除并置空（页面自己退订静态事件），
+    //   再点回去时重新创建（惰性创建机制本来就在，代价 <100ms）。
+    private Microsoft.UI.Xaml.DispatcherTimer? _pageIdleTimer;
 
     private void SetupWindow()
     {
@@ -348,6 +359,10 @@ public sealed partial class MainWindow : Window
         }
         args.Cancel = true;
         try { sender.Hide(); } catch { }
+
+        // 隐藏到托盘后用户看不到任何页面：立刻释放全部页面（含当前页），
+        // 把节点页那 30MB+ 的卡片树还给系统；再点托盘图标会重新惰性创建。
+        try { ReleaseIdlePages(force: true); } catch { }
 
         _connPageVisible = false;
         try { _pageConn?.OnWindowVisibilityChanged(false); } catch { }
@@ -1012,6 +1027,68 @@ public sealed partial class MainWindow : Window
         return p;
     }
 
+    /// <summary>
+    /// 空闲释放：把「已创建、但当前不在看」的页从可视树移除并置空（连接页永不释放）。
+    /// 触发点：① 切页 45 秒后；② 窗口隐藏到托盘时（force）。释放后再次导航会重新创建。
+    /// </summary>
+    private void ReleaseIdlePages(bool force = false)
+    {
+        try { _pageIdleTimer?.Stop(); } catch { }
+        try { LogBus.App($"内存优化：开始释放空闲页面（force={force}，当前页={_currentPage}）", "Debug"); } catch { }
+        foreach (var key in new[] { "nodes", "subs", "settings", "rule", "log" })
+        {
+            if (key == _currentPage)
+            {
+                // force（隐藏到托盘）时当前页也可以释放——用户看不到它；回来导航会重建。
+                if (!force || key == "conn") continue;
+            }
+            // 节点页：先只丢卡片树（实测整页移除对工作集无效，卡片才是大头），
+            // 只有隐藏到托盘（force）时才整页释放。
+            if (key == "nodes" && !force)
+            {
+                try { _pageNodes?.ReleaseTiles(); } catch { }
+                continue;
+            }
+            ReleasePage(key);
+        }
+
+    }
+
+    private void ReleasePage(string key)
+    {
+        var page = CreatedPage(key);
+        if (page == null) return;
+        try
+        {
+            switch (key)
+            {
+                case "nodes": _pageNodes?.Release(); break;
+                case "subs": _pageSubs?.Release(); break;
+                case "settings": _pageSettings?.Release(); break;
+                case "rule": _pageRule?.Release(); break;
+                case "log": _pageLog?.Release(); break;
+            }
+        }
+        catch { }
+        // 切页动画的目标引用也会拖住页面（_pageInTarget 是强引用），释放前一并清掉。
+        try { StopPageAnim(page); } catch { }
+        if (ReferenceEquals(_pageInTarget, page)) _pageInTarget = null;
+        try { PageHost.Children.Remove(page); } catch { }
+        // 摘掉页面的内容树：PageHost 只是移除引用，页面内部仍持有整棵控件树；
+        // 清空 Content 让 XAML 树立即断开（重新导航时会重新构造）。
+        try { if (page is Microsoft.UI.Xaml.Controls.ContentControl cc) cc.Content = null; } catch { }
+        try { LogBus.App($"内存优化：已释放页面 {key}（PageHost 剩余 {PageHost.Children.Count} 个）", "Debug"); } catch { }
+        try { LogBus.App($"内存优化：已释放页面 {key}（PageHost 剩余 {PageHost.Children.Count} 个）", "Info"); } catch { }
+        switch (key)
+        {
+            case "nodes": _pageNodes = null; break;
+            case "subs": _pageSubs = null; break;
+            case "settings": _pageSettings = null; break;
+            case "rule": _pageRule = null; break;
+            case "log": _pageLog = null; break;
+        }
+    }
+
     private void OnNavClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button b && b.Tag is string key &&
@@ -1031,6 +1108,9 @@ public sealed partial class MainWindow : Window
         if (from >= 0 && to >= 0 && to != from) _navDir = to > from ? 1 : -1;
 
         _currentPage = page;
+
+        // 切页就把「空闲释放」倒计时重置（回访的页面立即重新计时）。
+        try { _pageIdleTimer?.Stop(); _pageIdleTimer?.Start(); } catch { }
 
         // 惰性创建：首次导航到该页时才建页；已建页只切 Visibility，不销毁不重建。
         var target = EnsurePage(page);
@@ -1061,6 +1141,7 @@ public sealed partial class MainWindow : Window
             {
                 case "rule": EnsureRulePage().RefreshFromState(); break;
                 case "settings": EnsureSettingsPage().RefreshFromState(); break;
+                case "nodes": EnsureNodesPage().EnsureTiles(); break;
             }
         }
         catch { }

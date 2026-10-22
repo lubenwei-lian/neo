@@ -128,6 +128,13 @@ public static class AppState
         /// </summary>
         public bool CheckKernelPreRelease { get; set; } = false;
 
+        /// <summary>
+        /// 「协议 → 内核」手动映射（对标成熟客户端的 CoreTypeItem）：
+        /// 键 = NodeProtocol 名称（VLESS/VMess/...），值 = "xray" / "sing-box"；缺省 = 自动按能力选。
+        /// 只在能力允许时生效（把 hy2 指到 xray 会被静默回退 auto，并留日志）。
+        /// </summary>
+        public Dictionary<string, string> CoreMap { get; set; } = new();
+
         /// <summary>上次更新分流数据（geoip.dat / geosite.dat / Country.mmdb / rule-set）的时间
         /// （本地时间字符串，空 = 从未通过本程序更新过）。仅用于设置页展示。</summary>
         public string GeoUpdatedAt { get; set; } = "";
@@ -233,6 +240,22 @@ public static class AppState
     ///    落盘一次，若它恰落在 Load() 替换 State 的窗口内，就会把**替换前的旧对象**写盘
     ///    —— 内存是新值、磁盘是旧值，用户的设置改动在下次启动时静默回滚。
     ///    共用锁之后，任何 Save() 要么整体发生在替换之前、要么整体发生在之后，该交错不再可能。
+    /// <summary>把持久化的协议→内核映射同步给 Core 层的路由表（连接/测速都用它）。</summary>
+    public static void SyncCoreMap()
+    {
+        try
+        {
+            Neo.Core.Core.KernelRouter.Clear();
+            foreach (var kv in State.CoreMap)
+            {
+                // 只接受已知协议名，避免脏数据让路由行为不可预期。
+                if (!Enum.TryParse<NodeProtocol>(kv.Key, ignoreCase: true, out var proto)) continue;
+                Neo.Core.Core.KernelRouter.Set(proto.ToString(), kv.Value);
+            }
+        }
+        catch { }
+    }
+
     public static void Load()
     {
         lock (SaveGate)
@@ -292,6 +315,8 @@ public static class AppState
                     CurrentNode = Nodes.FirstOrDefault(n => n.Name == State.LastNodeName);
                 if (CurrentNode == null && Nodes.Count > 0)
                     CurrentNode = Nodes[0];
+
+                SyncCoreMap();
             }
             catch (Exception ex)
             {
@@ -540,6 +565,7 @@ public static class AppState
         {
             try
             {
+                SyncCoreMap();   // 保存即生效，不用重启
                 var tmp = StatePath + ".tmp";
                 File.WriteAllText(tmp, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true }));
                 File.Move(tmp, StatePath, true);
