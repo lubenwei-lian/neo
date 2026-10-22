@@ -246,15 +246,20 @@ public static class SystemProxy
     /// 且报错五花八门，极易被误判成网络故障。
     /// 判据必须包含「该端口无人监听」这一条：若 v2rayN 等第三方代理正占用同端口，
     /// 那是它自己的合法设置，绝不能动。
-    public static bool CleanupOrphaned(int neoPort)
+    public static bool CleanupOrphaned(params int[] neoPorts)
     {
         try
         {
             if (!IsEnabled) return false;
             var server = CurrentServer;
             if (string.IsNullOrWhiteSpace(server)) return false;
-            if (!PointsToNeoPort(server, neoPort)) return false;
-            if (IsPortListening(neoPort)) return false;
+            var matched = -1;
+            foreach (var port in neoPorts)
+            {
+                if (PointsToNeoPort(server, port)) { matched = port; break; }
+            }
+            if (matched < 0) return false;
+            if (IsPortListening(matched)) return false;
             return Disable(force: true);
         }
         catch { return false; }

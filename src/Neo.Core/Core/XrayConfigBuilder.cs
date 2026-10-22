@@ -120,12 +120,21 @@ public static class XrayConfigBuilder
             },
             ["routing"] = new JsonObject
             {
-                // IPOnDemand：域名规则没命中时，遇到 IP 规则（geoip:cn）再解析域名。
+                // ★ 2026-10-22 关键修复：改为 AsIs（只按域名路由，绝不为路由去解析域名）。
+    //   真实故障现场（23:17–23:29 实测）：x.com / google / youtube / steam 全部 10–15 秒超时，
+    //   而同一节点用「不解析域名」的最小配置跑 x.com 200（4.5s）、gstatic 204 —— 节点本身是好的。
+    //   根因：IPOnDemand 会在遇到 ip 条件规则时用**国内 DNS（223.5.5.5）**解析被墙域名，
+    //   拿回的是污染地址（实测 abs.twimg.com→108.160.165.9、api.telegram.org→31.13.94.10、
+    //   x.com 里混进 204.74.111.101），随后代理被要求去连这个假 IP ⇒ 必然超时/卡死。
+    //   AsIs：带域名的连接完全不做本地解析（域名原样交给代理，由节点侧解析）；
+    //   只有本来就是 IP 目标的连接才走 ip 规则（geoip:cn 直连能力保留）。
+    //   代价：域名不在 geosite:cn 但托管在国内的站点会走代理（多花一点流量，换来稳定）。
                 //   AsIs 下 geoip:cn 规则对「域名目标」永远不生效，于是 geosite:cn 之外的
                 //   国内站点会全部走代理（实测 realme.com 就是这样，用户感知「国内站很慢」）。
                 //   改成 IPOnDemand 后：命中 geosite:cn 的照旧直连，没命中的按解析出的 CN IP 直连，
                 //   国外域名解析后仍落 balancer 走代理（已实测 google/youtube/chatgpt 不受影响）。
-                ["domainStrategy"] = "IPOnDemand",
+                // AsIs：不解析域名（见方法头注释「关键修复」），避免被污染 DNS 带偏。
+            ["domainStrategy"] = "AsIs",
                 ["rules"] = BuildRoutingRules(proxyMode, bypassPrivate, bypassCn, blockAds, customRules),
             },
         };
@@ -301,7 +310,8 @@ public static class XrayConfigBuilder
 
         var routing = new JsonObject
         {
-            ["domainStrategy"] = "IPOnDemand",
+            // AsIs：不解析域名（见方法头注释「关键修复」），避免被污染 DNS 带偏。
+            ["domainStrategy"] = "AsIs",
             ["balancers"] = new JsonArray(balancer),
             ["rules"] = rules,
         };
@@ -569,7 +579,19 @@ public static class XrayConfigBuilder
         {
             var node = rules[i]!;
             if (i >= customRuleCount && node is JsonObject obj && obj.ContainsKey("ip"))
-                ipTail.Add(node.DeepClone());
+            {
+                // ★ 2026-10-22 关键修复：IP 规则必须加 routeOnly。
+                //   不加时 xray 会把「为匹配 geoip 而解析出的 IP」当作真正目标去连
+                //   （官方文档 routing.md：解析结果默认会替换目标地址）。
+                //   而我们的 DNS 是 223.5.5.5（国内 DNS），对 x.com / api.telegram.org 等
+                //   返回的是被污染地址（实测 abs.twimg.com -> 108.160.165.9，
+                //   api.telegram.org -> 31.13.94.10），于是代理被要求去连一个假 IP，
+                //   表现就是「所有网站 15 秒超时、Steam 转圈」。
+                //   routeOnly: true ⇒ 解析结果只用于路由判断，出站仍用原域名（远端解析）。
+                var clone = (JsonObject)node.DeepClone();
+                clone["routeOnly"] = true;
+                ipTail.Add(clone);
+            }
             else
                 reordered.Add(node.DeepClone());
         }

@@ -432,8 +432,17 @@ public static class ConnectionService
         //   Enable()，开关的两种状态落到同一结果，纯属误导）。因此这里不再有任何开关判断，
         //   行为与旧版一致：连上即写、断开即清。
         //   TUN 模式走虚拟网卡接管全部流量，不需要也不应该写系统代理。
+        // ★ 2026-10-22 关键修复：系统代理必须指向「HTTP 入站」端口（10809），不是 SOCKS 端口（10808）。
+        //   Windows 的 ProxyServer 里裸写 "127.0.0.1:10808" 会被当作 **HTTP 代理**，
+        //   于是 Edge / Steam / 其它走 WinINet 的程序把 HTTP CONNECT 发到 socks 监听端口，
+        //   直接被拒（实测 curl -x http://127.0.0.1:10808 → 1ms 失败；-x http://127.0.0.1:10809 → 200）。
+        //   这也是「所有网页转圈、Steam 加载半天」的直接原因。
+        //   同时把 socks 显式写进分号串，支持 socks 的程序仍可直连 10808。
         if (!useTun)
-            SystemProxy.Enable($"127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}");
+            SystemProxy.Enable(
+                $"http=127.0.0.1:{XrayConfigBuilder.DefaultHttpPort};" +
+                $"https=127.0.0.1:{XrayConfigBuilder.DefaultHttpPort};" +
+                $"socks=127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}");
 
         // 记录本次会话是否用了 TUN：断开时据此决定是否清理 neo-tun 网卡与路由
         // （TUN 打开就"关闭不掉"的修复，见 TeardownTunNetwork 注释）
@@ -1258,7 +1267,7 @@ public static class ConnectionService
     {
         try
         {
-            if (SystemProxy.CleanupOrphaned(XrayConfigBuilder.DefaultSocksPort))
+            if (SystemProxy.CleanupOrphaned(XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort))
             {
                 LogBus.App("检测到上次异常退出残留的系统代理（端口无监听），已自动清理恢复网络", "Warning");
             }
