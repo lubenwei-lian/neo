@@ -788,8 +788,7 @@ public sealed partial class SettingsPage : UserControl
         }
     }
 
-    /// 检查 sing-box 内核更新。通道 = neo 自己的发布仓库（内容为上游官方发行版重新打包）。
-    /// 安装前校验：SHA-256 与版本串；不再要求任何自编译补丁。
+    /// 检查 sing-box 内核更新。通道 = 上游官方 SagerNet/sing-box 稳定发行版（releases/latest）。
     private async void OnCheckSingBoxUpdateClick(object sender, RoutedEventArgs e)
     {
         if (_checkingSingBoxUpdate) return;
@@ -821,8 +820,8 @@ public sealed partial class SettingsPage : UserControl
             var extra = "";
             if (hasNew)
             {
-                extra = "\n\n官方发行版内核：安装前会校验 SHA-256 与版本串。\n"
-                      + "装错或起不来时，可用 runtime\\sing-box.exe.bak-prev 回滚（覆盖回 sing-box.exe 即可）。";
+                extra = "\n\n官方发行版内核：安装前会自校验版本号；失败会保留旧内核，"
+                      + "可用 runtime\\sing-box.exe.bak-prev 回滚。";
             }
 
             var result = await ShowDialogAsync(

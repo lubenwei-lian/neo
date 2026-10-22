@@ -9,9 +9,10 @@ namespace Neo.App.Services;
 
 public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease);
 
-/// sing-box 内核发布。通道指向 **neo 自己的发布仓库**，不是上游 SagerNet。
-///   资产内容是**上游官方发行版**（zip 内含 sing-box.exe + libcronet.dll），
-///   与同名 .sha256 一起上传；应用只做 SHA-256、版本串与可执行性校验，不再要求任何自编译补丁。
+/// sing-box 内核发布。通道 = **上游官方 SagerNet/sing-box 稳定版**（releases/latest）。
+///   电脑版只用官方发行版；手机版的自编译内核与本项目无关。
+///   官方资产形如 `sing-box-1.14.3-windows-amd64.zip`（zip 内含 sing-box.exe + libcronet.dll + LICENSE），
+///   上游不提供 .sha256：安装做「可解压 + 内含 exe + version 版本串自校验」，sha256 仅记录追溯，不作为放行条件。
 public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "");
 
 public static class UpdateChecker
@@ -19,12 +20,15 @@ public static class UpdateChecker
     private const string XrayOwner = "XTLS";
     private const string XrayRepo = "Xray-core";
 
-    /// <summary>neo 自己的发布仓库（内核 + 安装包同仓，用资产名前缀区分）。</summary>
-    private const string NeoOwner = "lubenwei-lian";
-    private const string NeoRepo = "neo-desktop-release";
+    /// <summary>sing-box 上游官方发布仓库（电脑版内核只走官方稳定通道）。</summary>
+    private const string SingBoxOwner = "SagerNet";
+    private const string SingBoxRepo = "sing-box";
 
-    /// <summary>内核资产名前缀：只认这个前缀，避免把安装包当成内核。</summary>
-    public const string SingBoxAssetPrefix = "neo-singbox-";
+    /// <summary>历史自编译内核资产前缀（仅用于解析旧资产名/旧版本显示，不再用于下载）。</summary>
+    private const string LegacySingBoxAssetPrefix = "neo-singbox-";
+
+    /// <summary>最近一次 FetchLatestSingBoxAsync 的失败原因，供检查文案区分「网络不可达 / 无 windows 资产」。</summary>
+    private static string? _lastSingBoxFetchIssue;
 
     /// 取 xray 官方最新 release（**非 API 通道**，避开匿名 60次/小时 配额）。
     /// 官方从不把新版本转正，`releases/latest` 会停在最后一个 stable，
@@ -74,37 +78,55 @@ public static class UpdateChecker
         return (true, $"当前内核：xray {cur}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}", rel);
     }
 
-    /// 从 neo 自己的发布仓库取最新的 **sing-box 内核**资产（上游官方发行版重新打包）。
-    /// 走 <see cref="GitHubChannel"/>（非 API 通道）——原先用 `api.github.com/repos/.../releases`
-    /// 只认资产名前缀 <see cref="SingBoxAssetPrefix"/> 且扩展名 `.zip`，与同仓库安装包区分。
-    /// 用户看到的是长时间转圈。而内核资产按约定与最新版一起发，
-    /// 最新版没有就等于「还没发内核」——直接如实报告比慢慢翻旧版更有用。
+    /// 从上游官方 SagerNet/sing-box 取最新**稳定版**的 Windows amd64 内核资产。
+    /// 用 releases/latest（稳定版）而不是 atom（atom 会把 alpha 排在前面）；
+    /// 官方资产名形如 `sing-box-1.14.3-windows-amd64.zip`（大小写不敏感匹配）。
+    /// 找不到资产时返回 null，并把原因写进 _lastSingBoxFetchIssue 供检查文案使用。
     public static async Task<SingBoxRelease?> FetchLatestSingBoxAsync(CancellationToken ct = default)
     {
+        _lastSingBoxFetchIssue = null;
         var preferProxy = ConnectionService.IsConnected;
-        var latest = await GitHubChannel.GetLatestTagAsync(NeoOwner, NeoRepo, preferProxy, ct);
-        if (latest == null) return null;
+        var latest = await GitHubChannel.GetLatestTagAsync(SingBoxOwner, SingBoxRepo, preferProxy, ct);
+        if (latest == null)
+        {
+            _lastSingBoxFetchIssue = "网络不可达（已尝试当前代理 / 系统代理 / 直连）";
+            return null;
+        }
 
-        var assets = await GitHubChannel.GetAssetsAsync(NeoOwner, NeoRepo, latest, preferProxy, ct);
-        var asset = assets.FirstOrDefault(a =>
-            a.Name.StartsWith(SingBoxAssetPrefix, StringComparison.OrdinalIgnoreCase)
-            && a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase));
-        if (asset == null) return null;
+        var ver = latest.TrimStart('v', 'V');
+        var expected = $"sing-box-{ver}-windows-amd64.zip";
+        var assets = await GitHubChannel.GetAssetsAsync(SingBoxOwner, SingBoxRepo, latest, preferProxy, ct);
+        var asset = assets.FirstOrDefault(a => string.Equals(a.Name, expected, StringComparison.OrdinalIgnoreCase));
+        if (asset == null)
+        {
+            _lastSingBoxFetchIssue = $"上游 {latest} 没有 windows-amd64 资产（找不到 {expected}）";
+            LogBus.App($"sing-box 内核更新：{_lastSingBoxFetchIssue ?? ""}", "Warning");
+            return null;
+        }
 
         var coreVer = ExtractCoreVersion(asset.Name);
+        if (coreVer == "unknown")
+        {
+            _lastSingBoxFetchIssue = $"上游资产名无法解析版本：{asset.Name}";
+            LogBus.App(_lastSingBoxFetchIssue ?? "", "Warning");
+            return null;
+        }
         return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, asset.Name);
     }
 
     /// 从内核资产名里抽出内核版本号。
-    /// `neo-singbox-1.14.3-windows-amd64.zip` → `1.14.3`
-    /// 兼容旧命名：`neo-singbox-1.14.2-noGate-windows-amd64.zip` → `1.14.2-noGate`
-    /// 规则：去掉前缀 → 取到 `-windows-` 之前 → 去掉结尾平台的 `-amd64` 等。
+    /// 官方命名：`sing-box-1.14.3-windows-amd64.zip` → `1.14.3`
+    /// 旧自编译命名（仅兼容显示/比较，不再用于下载）：
+    ///   `neo-singbox-1.14.2-noGate-windows-amd64.zip` → `1.14.2-noGate`
+    /// 规则：去掉官方的 `sing-box-` 或历史的 `neo-singbox-` 前缀 → 去 `.zip` → 取到 `-windows-` 之前。
     /// 抽不出来（命名不符合约定）时返回 "unknown"，让上层提示而不是崩溃。
     public static string ExtractCoreVersion(string assetName)
     {
         var s = assetName ?? "";
-        if (s.StartsWith(SingBoxAssetPrefix, StringComparison.OrdinalIgnoreCase))
-            s = s[SingBoxAssetPrefix.Length..];
+        if (s.StartsWith(LegacySingBoxAssetPrefix, StringComparison.OrdinalIgnoreCase))
+            s = s[LegacySingBoxAssetPrefix.Length..];
+        else if (s.StartsWith("sing-box-", StringComparison.OrdinalIgnoreCase))
+            s = s["sing-box-".Length..];
         if (s.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             s = s[..^4];
         var cut = s.IndexOf("-windows", StringComparison.OrdinalIgnoreCase);
@@ -118,9 +140,9 @@ public static class UpdateChecker
         var rel = await FetchLatestSingBoxAsync();
         if (rel == null)
             return (false,
-                "发布仓库里暂无 sing-box 内核资产（若网络不通，请确认代理可用后重试）。\n\n" +
-                $"说明：sing-box 内核与电脑版安装包在同一个发布仓库里，" +
-                $"只有当作者发布了名为 {SingBoxAssetPrefix}… 的内核压缩包后才能从这里更新。",
+                $"检查 sing-box 内核更新失败：{_lastSingBoxFetchIssue ?? "网络不可达"}。\n\n" +
+                "说明：电脑版使用上游官方 SagerNet/sing-box **稳定版**（releases/latest），" +
+                "只从 Windows amd64 资产更新；若上游该版本没有 windows-amd64 资产，或当前网络不可达，请稍后再试。",
                 null);
 
         var cur = (currentVersion ?? "").Trim();
@@ -134,16 +156,15 @@ public static class UpdateChecker
         else
             verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
 
-        var preTag = rel.Prerelease ? " · 预发布" : "";
         return (true,
-            $"当前内核：sing-box {cur}\n最新发布：sing-box {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}",
+            $"当前内核：sing-box {cur}\n上游最新稳定：sing-box {rel.Version}（{rel.Tag}）\n\n{verdict}",
             rel);
     }
 
     /// 版本号去掉 `-noGate` / `-neo` 这类后缀，只留数字主干。
-    /// 保留原因：兼容历史资产名（`neo-singbox-1.14.2-noGate-…`）与用户机器上已装的
-    /// `1.14.2-noGate` 内核，否则 `CompareVersions("1.14.3", "1.14.2-noGate")` 里
-    /// `"2-noGate"` 会被 int.TryParse 当成 0 → 每次检查都误报"有新版本"。
+    /// 保留原因：兼容用户机器上已装的旧自编译内核（如 `1.14.2-noGate`）与历史资产名，
+    /// 否则 `CompareVersions("1.14.3", "1.14.2-noGate")` 里 `"2-noGate"` 会被 int.TryParse
+    /// 当成 0 → 每次检查都误报"有新版本"。
     public static string StripSuffix(string v)
     {
         var i = v.IndexOf('-');
@@ -327,11 +348,10 @@ public static class UpdateChecker
         catch { return ""; }
     }
 
-    /// 下载并覆盖安装 **sing-box 内核**（上游官方发行版）。
-    /// 与 xray 的差异：
-    /// ① **自校验版本**：跑 `sing-box version` 确认拿到的是期望版本；
-    /// ② 安装成功后同时重置版本缓存（下次连接重新探测内核版本）。
-    /// 不再要求 balancer 出站能力：TUN 配置只产出单节点 + direct，上游官方版即可。
+    /// 下载并覆盖安装 **sing-box 内核**（上游官方稳定版资产）。
+    /// 流程：下载 →（sha256 仅记录追溯）→ 解压并确认含 sing-box.exe → 新 exe `version` 版本号自校验
+    /// → 用当前配置预检 → 断开 → KernelInstall 原子替换（.bak-prev 备份）→ 安装后版本自校验（失败回滚）。
+    /// 上游不提供 .sha256，不再用「缺校验文件」中止。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
         SingBoxRelease rel, Action<string> progress, CancellationToken ct = default)
     {
@@ -382,24 +402,24 @@ public static class UpdateChecker
         var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "sing-box.exe");
         try
         {
-            //   缺失就中止 —— 发布方 .sha256 是唯一的下载完整性依据，不能静默跳过。
-            progress("校验 SHA-256（发布方 .sha256）…");
-            var shaAsset = string.IsNullOrEmpty(rel.AssetName) ? "" : rel.AssetName + ".sha256";
-            var shaText = shaAsset.Length == 0
-                ? null
-                : await FetchReleaseTextAsync(NeoOwner, NeoRepo, rel.Tag, shaAsset, ct);
-            if (shaText == null)
-                return (false, $"发布仓库里没有 {shaAsset}，安装中止（不安装未经验证的内核）。\n"
-                             + "请在 release 里随内核 zip 一起上传同名 .sha256 文件（内容为 SHA-256 十六进制）。");
-            if (!KernelInstall.TryParseSha256(shaText, out var expectHex2))
-                return (false, $"{shaAsset} 解析失败，安装中止。");
-            if (!KernelInstall.VerifySha256(data, expectHex2, out var actualHex2))
-                return (false, $"SHA-256 校验失败，安装中止。\n期望 {expectHex2}\n实际 {actualHex2}");
+            // 上游官方发行版不提供 .sha256 资产：不再用「缺校验文件」中止。
+            // 完整性 = 可解压且内含 sing-box.exe + 新 exe `version` 版本串自校验；
+            // sha256 只作为可追溯信息记录（日志 + IncidentLog），不作为放行条件。
+            var actualSha = KernelInstall.Sha256Hex(data);
+            LogBus.App($"sing-box 内核包 SHA-256（仅追溯）：{actualSha} · {rel.AssetName}", "Debug");
+            IncidentLog.Record("kernel-install", $"sing-box 内核包 SHA-256：{actualSha}", rel.AssetName);
 
             progress("解压校验…");
-            await File.WriteAllBytesAsync(zipPath, data, ct);
-            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
-            ZipFile.ExtractToDirectory(zipPath, extractDir);
+            try
+            {
+                await File.WriteAllBytesAsync(zipPath, data, ct);
+                if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
+                ZipFile.ExtractToDirectory(zipPath, extractDir);
+            }
+            catch (Exception ex)
+            {
+                return (false, "更新包解压失败（下载可能不完整），安装中止，未改动现有文件：" + ex.Message);
+            }
 
             // zip 内可能带一层目录（上游发布包布局），递归找一个 sing-box.exe。
             var newExe = Directory.EnumerateFiles(extractDir, "sing-box.exe", SearchOption.AllDirectories)
@@ -408,8 +428,8 @@ public static class UpdateChecker
 
             progress("校验内核版本…");
             var verOut = RunSingBoxVersion(newExe);
-            if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
-                return (false, $"新内核自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
+            if (!VersionMatches(rel.Version, verOut))
+                return (false, $"新内核版本自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
 
             progress("用当前配置预检新内核…");
             var preflight2 = await PreflightWithCurrentConfigAsync(newExe, KernelKind.SingBox, ct);
@@ -426,7 +446,7 @@ public static class UpdateChecker
             KernelInstall.ReplaceAtomically(newExe, target, backup);
 
             var installed = RunSingBoxVersion(target);
-            if (!installed.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
+            if (!VersionMatches(rel.Version, installed))
             {
                 File.Copy(backup, target, true);
                 return (false, "安装后版本校验失败，已回滚到旧内核。");
@@ -447,13 +467,24 @@ public static class UpdateChecker
                 if (backup != null && File.Exists(backup) && File.Exists(target))
                 {
                     var iv = RunSingBoxVersion(target);
-                    if (!iv.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
+                    if (!VersionMatches(rel.Version, iv))
                         File.Copy(backup, target, true);
                 }
             }
             catch { }
             return (false, "安装失败：" + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 校验 `sing-box version` 输出与期望版本一致：按解析后的 Version 比较，
+    /// 避免 "1.14.3" 子串命中 "1.14.30" 之类的误判；任一侧解析失败一律视为不一致。
+    /// </summary>
+    private static bool VersionMatches(string expected, string versionOutput)
+    {
+        var exp = KernelCompat.ParseSingBoxVersion(expected);
+        var got = KernelCompat.ParseSingBoxVersion(versionOutput);
+        return exp != null && got != null && got == exp;
     }
 
     private static string RunSingBoxVersion(string exe)
@@ -477,9 +508,9 @@ public static class UpdateChecker
         catch { return ""; }
     }
 
-    /// 取同一 tag 下的小文本资产（xray 的 .dgst / sing-box 的 .sha256）。
+    /// 取同一 tag 下的小文本资产（目前只用于 xray 官方 .dgst）。
     /// 三路（socks / 系统代理 / 直连）依次尝试；取不到返回 null
-    /// （调用方按「缺少校验文件」中止安装，不静默跳过）。
+    /// （xray 安装按「缺少校验文件」中止，不静默跳过；sing-box 官方通道没有该文件）。
     private static async Task<string?> FetchReleaseTextAsync(string owner, string repo, string tag,
         string assetName, CancellationToken ct)
     {
