@@ -12,9 +12,13 @@ public sealed record GeoTarget(string Display, string Url, string RelativePath, 
 /// 为什么需要独立于内核更新：
 ///   · geoip.dat / geosite.dat 只随内核目录一起发布，内核不更新它就永远停在发布时那一天；
 ///   · 国内直连判定（geosite:cn / geoip:cn）依赖这些文件，数据一旧就会出现
-///     「该直连的走了代理 / 该走代理的被直连」，用户只能换内核绕，成本极高。
-/// 安全策略与内核安装一致：先写 *.new → 原子替换 → 旧文件留 .bak-prev；
-/// 并且**连接中拒绝更新**（内核可能正打开着这些文件）。
+///     「该直连的走了代理 / 该走代理的被直连」。
+/// 2026-10-23 改造（用户要求同内核更新）：
+///   · 复用 <see cref="KernelDownloader"/>：断点续传 + 实时进度（不再是一次性 GetByteArrayAsync）；
+///   · **允许连接中更新**：下载走本地代理（否则 GitHub 根本不可达）；
+///   · 目标文件被内核占用（Windows 共享冲突）时，先落 *.pending，下次启动内核前自动替换
+///     （<see cref="ApplyPending"/>），不丢下载结果；
+///   · 旧文件保留 *.bak-prev。
 /// </summary>
 public static class GeoDataUpdater
 {
@@ -33,19 +37,16 @@ public static class GeoDataUpdater
     ];
 
     /// <param name="rootOverride">测试用：指定目标根目录（默认 = runtime 目录）。</param>
-    /// <param name="allowWhileConnected">测试用：跳过「连接中禁止更新」检查。</param>
     /// <param name="targetsOverride">测试用：替换下载目标清单（默认 = 上表）。正式路径不传。</param>
     public static async Task<(bool Ok, string Message)> UpdateAllAsync(
         Action<string> progress, CancellationToken ct = default,
-        string? rootOverride = null, bool allowWhileConnected = false,
-        IReadOnlyList<GeoTarget>? targetsOverride = null)
+        string? rootOverride = null, IReadOnlyList<GeoTarget>? targetsOverride = null,
+        Action<DownloadProgress>? onProgress = null)
     {
-        if (!allowWhileConnected && ConnectionService.IsConnected)
-            return (false, "当前已连接：内核正在使用这些数据文件，请先断开连接再更新（避免读到写了一半的文件）。");
-
         var root = rootOverride ?? NeoPaths.RuntimeDir;
         var targets = targetsOverride ?? Targets;
         var okCount = 0;
+        var pendingCount = 0;
         var fails = new List<string>();
         long total = 0;
 
@@ -53,82 +54,106 @@ public static class GeoDataUpdater
         {
             ct.ThrowIfCancellationRequested();
             progress($"下载 {t.Display}…");
-            byte[]? data;
-            try { data = await DownloadAsync(t.Url, ct); }
-            catch (OperationCanceledException) { throw; }
-            catch { data = null; }
 
-            if (data == null) { fails.Add(t.Display + "：网络不可达（已尝试代理 / 系统代理 / 直连）"); continue; }
-            if (data.LongLength < t.MinBytes) { fails.Add($"{t.Display}：体积异常（{data.Length} 字节 < {t.MinBytes}）"); continue; }
-            if (data.Length > 4 && (data[0] == (byte)'<' || (data[0] == 0xEF && data[1] == 0xBB))) { fails.Add(t.Display + "：返回的是网页/文本，不是数据文件"); continue; }
+            var target = Path.Combine(root, t.RelativePath);
+            var dir = Path.GetDirectoryName(target);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var downloadPath = target + ".download";
+
+            var (ok, msg) = await KernelDownloader.DownloadAsync(t.Url, downloadPath, onProgress, ct);
+            if (!ok) { fails.Add(t.Display + "：" + msg); continue; }
 
             try
             {
-                var target = Path.Combine(root, t.RelativePath);
-                var dir = Path.GetDirectoryName(target);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                // 先落一个独立下载文件，再交给 ReplaceAtomically 复制成 target.new + File.Replace。
-                //   不要把下载文件直接命名为 target + ".new"：ReplaceAtomically 内部也写 target.new，
-                //   同路径会变成「自我复制后被 finally 删掉」，实测报 FileNotFoundException（已由本测试抓到）。
-                var downloadPath = target + ".download-" + Guid.NewGuid().ToString("N")[..8];
-                await File.WriteAllBytesAsync(downloadPath, data, ct);
+                var len = new FileInfo(downloadPath).Length;
+                if (len < t.MinBytes) { fails.Add($"{t.Display}：体积异常（{len} 字节 < {t.MinBytes}）"); continue; }
+
+                // 校验：数据文件没有官方哈希；只做「不是网页」的粗检，避免把错误页当数据。
+                var head = new byte[4];
+                await using (var fs = new FileStream(downloadPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    await fs.ReadAsync(head.AsMemory(0, 4), ct);
+                }
+                if (head[0] == (byte)'<' || (head[0] == 0xEF && head[1] == 0xBB))
+                {
+                    fails.Add(t.Display + "：返回的是网页/文本，不是数据文件");
+                    continue;
+                }
+
                 try
                 {
                     KernelInstall.ReplaceAtomically(downloadPath, target, target + ".bak-prev");
+                    total += len;
+                    okCount++;
                 }
-                finally
+                catch (IOException)
                 {
-                    try { if (File.Exists(downloadPath)) File.Delete(downloadPath); } catch { }
+                    // 内核正在使用该文件（Windows 共享冲突）：留作 .pending，下次启动内核前应用。
+                    var pending = target + ".pending";
+                    try
+                    {
+                        if (File.Exists(pending)) File.Delete(pending);
+                        File.Move(downloadPath, pending, overwrite: true);
+                        pendingCount++;
+                    }
+                    catch (Exception ex2)
+                    {
+                        fails.Add($"{t.Display}：文件被占用且暂存失败（{ex2.GetType().Name}）");
+                    }
                 }
-                okCount++;
-                total += data.LongLength;
             }
             catch (Exception ex)
             {
                 fails.Add($"{t.Display}：写入失败（{ex.GetType().Name} {ex.Message}）");
             }
+            finally
+            {
+                try { if (File.Exists(downloadPath)) File.Delete(downloadPath); } catch { }
+                try { KernelDownloader.DiscardPart(downloadPath); } catch { }
+            }
         }
 
-        if (okCount == 0)
+        if (okCount == 0 && pendingCount == 0)
             return (false, "分流数据更新失败：\n" + string.Join("\n", fails));
 
-        var summary = $"已更新 {okCount}/{targets.Count} 个数据文件（{total / 1024 / 1024} MB）"
+        try
+        {
+            AppState.State.GeoUpdatedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            AppState.Save();
+        }
+        catch { }
+
+        var summary = $"已更新 {okCount}/{targets.Count} 个数据文件（{DownloadProgress.FormatBytes(total)}）"
+                    + (pendingCount > 0 ? $"，{pendingCount} 个将在下次连接时生效" : "")
                     + (fails.Count > 0 ? "\n\n失败项：\n" + string.Join("\n", fails) : "")
-                    + "\n\n新数据在下次连接（内核重新启动）时生效；旧文件保留为 *.bak-prev。";
-        return (okCount == targets.Count, summary);
+                    + "\n\n旧文件保留为 *.bak-prev。";
+        return (okCount + pendingCount == targets.Count, summary);
     }
 
-    private static async Task<byte[]?> DownloadAsync(string url, CancellationToken ct)
+    /// 启动内核前调用：把上次因文件被占用而暂存的 *.pending 顶上去。
+    /// 返回实际替换的数量（0 = 没有待应用项）。
+    public static int ApplyPending(string? rootOverride = null)
     {
-        //   与内核下载同一原则：本地 socks 优先（直连在部分网络会挂住不报错）。
-        var attempts = new[] { "socks", "direct", "sys" };
-
-        foreach (var kind in attempts)
+        var root = rootOverride ?? NeoPaths.RuntimeDir;
+        var applied = 0;
+        try
         {
-            try
+            foreach (var pending in Directory.EnumerateFiles(root, "*.pending", SearchOption.AllDirectories))
             {
-                using var handler = new HttpClientHandler();
-                switch (kind)
+                var target = pending[..^".pending".Length];
+                try
                 {
-                    case "socks":
-                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
-                        handler.UseProxy = true;
-                        break;
-                    case "sys":
-                        handler.UseProxy = true;
-                        break;
-                    default:
-                        handler.UseProxy = false;
-                        break;
+                    KernelInstall.ReplaceAtomically(pending, target, target + ".bak-prev");
+                    applied++;
                 }
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
-                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-geo-update");
-                var data = await client.GetByteArrayAsync(url, ct);
-                if (data.Length > 0) return data;
+                catch { /* 下次再试 */ }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch { }
         }
-        return null;
+        catch { }
+        if (applied > 0)
+        {
+            try { LogBus.App($"已应用 {applied} 个暂存的分流数据文件（上次更新时被内核占用）", "Info"); } catch { }
+        }
+        return applied;
     }
 }

@@ -1249,6 +1249,13 @@ public sealed partial class ConnectionPage : UserControl
         if (_mode != AppState.State.ProxyMode)
             SetMode(AppState.State.ProxyMode);
 
+        // 本地代理地址跟随后端常量（2026-10-23 端口迁移到 21xxx，避免与其它客户端撞端口）。
+        try
+        {
+            LocalProxyAddrText.Text = $"127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}";
+        }
+        catch { }
+
         bool on = ConnectionService.IsConnected;
         var selected = AppState.CurrentNode;
         var connected = ConnectionService.ConnectedNode;

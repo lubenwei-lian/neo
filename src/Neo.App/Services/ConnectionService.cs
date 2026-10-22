@@ -213,6 +213,10 @@ public static class ConnectionService
 
         if (!node.IsValid) return (false, "节点无效（缺地址或端口）");
 
+        // 上次分流数据更新时若有文件被内核占用，已暂存为 *.pending；这里在启动内核前应用，
+        // 保证「更新后连接」用到的就是新数据（否则要等下一次重启才生效）。
+        try { GeoDataUpdater.ApplyPending(); } catch { }
+
         FixedExitActive = false;
         FixedExitEntries = 0;
         FixedExitName = null;
@@ -1308,7 +1312,13 @@ public static class ConnectionService
     {
         try
         {
-            if (SystemProxy.CleanupOrphaned(XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort))
+            //   2026-10-23 端口迁移：旧版本默认 10808/10809 写进过用户注册表，
+            //   换端口后这些残留不再被认作「neo 端口」→ 必须一并纳入清理名单，
+            //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
+            //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。
+            if (SystemProxy.CleanupOrphaned(
+                    XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    10808, 10809))
             {
                 LogBus.App("检测到上次异常退出残留的系统代理（端口无监听），已自动清理恢复网络", "Warning");
             }
@@ -1908,7 +1918,7 @@ public static class ConnectionService
             var processOk = _xray != null && _xray.IsRunning;
             if (!processOk) why = "内核进程未运行";
             else if (PortFree(XrayConfigBuilder.DefaultSocksPort) || PortFree(XrayConfigBuilder.DefaultHttpPort))
-                why = "本地 10808/10809 端口未监听";
+                why = $"本地 {XrayConfigBuilder.DefaultSocksPort}/{XrayConfigBuilder.DefaultHttpPort} 端口未监听";
             else if (_tunSessionActive && !HasTunAdapter())
                 why = "TUN 网卡 neo-tun 不存在";
 

@@ -176,6 +176,9 @@ public sealed partial class MainWindow : Window
     private int _targetX = int.MinValue, _targetY = int.MinValue;
     private int _targetW = 1280, _targetH = 800;
 
+    /// 启动时是否最大化（来自 state.StartMaximized；默认 true）。
+    private bool _startMaximized;
+
     private void SetupWindow()
     {
         ExtendsContentIntoTitleBar = true;
@@ -190,6 +193,7 @@ public sealed partial class MainWindow : Window
             //   右侧内容被裁；换更小的屏幕会更糟。
             //   现在按**当前显示器工作区**（排除任务栏）夹上限与位置，坐标失效则居中。
             var st = AppState.State;
+            _startMaximized = st.StartMaximized;
             var wa = GetWorkAreaFor(st.WinX, st.WinY, st.WinW, st.WinH);
             int maxW = wa.Width > 0 ? wa.Width : 1920;
             int maxH = wa.Height > 0 ? wa.Height : 1080;
@@ -286,6 +290,17 @@ public sealed partial class MainWindow : Window
             catch { }
         }
 
+        if (args.DidPresenterChange)
+        {
+            // 记住「这次是不是最大化退出」：下次启动按同样状态出现（用户要求默认最大化）。
+            try
+            {
+                AppState.State.StartMaximized = AppWindow.Presenter is OverlappedPresenter op
+                                                && op.State == OverlappedPresenterState.Maximized;
+            }
+            catch { }
+        }
+
         if (args.DidVisibilityChange || args.DidPresenterChange)
             SyncConnPageWindowVisibility();
     }
@@ -351,12 +366,26 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var p = AppWindow.Position;
-            var s = AppWindow.Size;
-            AppState.State.WinX = p.X;
-            AppState.State.WinY = p.Y;
-            AppState.State.WinW = s.Width;
-            AppState.State.WinH = s.Height;
+            // 最大化时不要把「铺满屏幕的边界」写成还原态，否则用户点还原会得到一个和屏幕
+            // 一样大的窗口（等于还原无效）。只记状态，边界沿用上次还原态。
+            var maximized = false;
+            try
+            {
+                maximized = AppWindow.Presenter is OverlappedPresenter op
+                            && op.State == OverlappedPresenterState.Maximized;
+            }
+            catch { }
+            AppState.State.StartMaximized = maximized;
+
+            if (!maximized)
+            {
+                var p = AppWindow.Position;
+                var s = AppWindow.Size;
+                AppState.State.WinX = p.X;
+                AppState.State.WinY = p.Y;
+                AppState.State.WinW = s.Width;
+                AppState.State.WinH = s.Height;
+            }
             AppState.Save();
         }
         catch { }
@@ -1272,6 +1301,21 @@ public sealed partial class MainWindow : Window
             App.StartupMark($"窗口已显示（分层透明={layered}），开始预热渲染");
 
             AppWindow.Show();
+
+            // ★ 2026-10-23：默认最大化。实测「Show() 之前 Maximize()」会被 Show 复位成
+            //   「工作区大小的还原窗口」（IsZoomed=False，标题栏按钮也不显示还原态）；
+            //   放在 Show() 之后才真正进入最大化状态。此时窗口还是全透明（下面才 Reveal），
+            //   所以用户看不到尺寸跳变。
+            if (_startMaximized)
+            {
+                try
+                {
+                    if (AppWindow.Presenter is OverlappedPresenter opMax
+                        && opMax.State != OverlappedPresenterState.Maximized)
+                        opMax.Maximize();
+                }
+                catch { }
+            }
 
             var revealed = false;
             void Reveal()

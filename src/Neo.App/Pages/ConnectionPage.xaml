@@ -501,7 +501,7 @@
                                            Foreground="{ThemeResource NeoAccent}" />
                                 <TextBlock Text="网络设置" Style="{StaticResource HomeCardHead}" />
                             </StackPanel>
-                            <TextBlock Text="127.0.0.1:10808" Style="{StaticResource HomeCardHint}"
+                            <TextBlock x:Name="LocalProxyAddrText" Text="127.0.0.1:21808" Style="{StaticResource HomeCardHint}"
                                        FontFamily="{StaticResource NeoMonoFont}" HorizontalAlignment="Right" />
                         </Grid>
 

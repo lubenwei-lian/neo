@@ -68,6 +68,14 @@ public static class AppState
         public int WinY { get; set; } = int.MinValue;
         public int WinW { get; set; } = 1280;
         public int WinH { get; set; } = 800;
+
+        /// <summary>
+        /// 启动时默认最大化（2026-10-23 用户要求）。关闭窗口时记录当前呈现器状态：
+        /// 最大化退出 → 下次仍最大化；手动还原并调整过窗口 → 记住还原后的位置/尺寸。
+        /// 注意：最大化时会话里 WinX/WinY/WinW/WinH 保存的是**还原态**边界，
+        /// 这样用户点「还原」不会得到一个铺满屏幕的窗口。
+        /// </summary>
+        public bool StartMaximized { get; set; } = true;
         public bool AutoUpdate { get; set; } = true;
 
         public bool FailoverEnabled { get; set; } = true;

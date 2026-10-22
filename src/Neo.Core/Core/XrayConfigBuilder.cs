@@ -25,10 +25,16 @@ public static class XrayConfigBuilder
     //     · dns.serveStale：默认永不淘汰的陈旧记录可能导致连接失败 → 不动
     //   待实测（见 planning\2026-10-22-稳定路线与测速改造\子报告-内核性能调优.md）：mux、bufferSize、dns 乐观缓存
 
-    public const int DefaultSocksPort = 10808;
-    public const int DefaultHttpPort = 10809;
+    // ★ 2026-10-23 改默认端口：10808/10809 是同类客户端最常见的默认值，
+    //   同时装两个客户端必然抢端口（实测 v2rayN 正在运行 → neo 连接被拒「10808 被占用」）。
+    //   换成 21xxx 段是为了「不与现有代理软件冲突」，不是随机值：
+    //   · 21xxx 没有主流代理客户端的默认占用（1080/1087/7890–7897/10808–10810/20171 全部避开）
+    //   · 四个端口连续（socks/http/stats/clash-api）便于记忆与防火墙放行
+    public const int DefaultSocksPort = 21808;
+    public const int DefaultHttpPort = 21809;
 
-    public const int StatsApiPort = 10085;
+    /// xray 统计 API 端口（仅本机回环）。
+    public const int StatsApiPort = 21810;
 
     /// observatory（leastLoad/leastPing 的延迟与存活探测）所用目标。
     ///   observatory 每个探测周期会把**全部出站**各探一次，单次含 TLS 握手约 32 KB。

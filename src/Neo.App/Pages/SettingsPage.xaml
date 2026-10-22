@@ -146,6 +146,33 @@
                         </Border>
                     </Grid>
 
+                    <!-- ★ 2026-10-23：内核/数据下载的**页内进度条**（不再用弹窗）。
+                         用户反馈「更新时没有进度、会误导」→ 所有下载任务的百分比、速度、已下载量
+                         直接显示在这里；取消按钮 = 暂停并保留断点（下次更新续传）。 -->
+                    <StackPanel x:Name="KernelTaskPanel" Visibility="Collapsed" Margin="0,2,0,8" Spacing="6">
+                        <Grid>
+                            <TextBlock
+                                x:Name="KernelTaskText"
+                                Text="准备中…"
+                                FontSize="10.5"
+                                TextWrapping="Wrap"
+                                Foreground="{ThemeResource NeoText2}"
+                                VerticalAlignment="Center"
+                                Margin="0,0,60,0"
+                            />
+                            <Button
+                                x:Name="BtnCancelKernelTask"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                Style="{StaticResource GhostSm}"
+                                Click="OnCancelKernelTaskClick"
+                                Content="取消"
+                                FontSize="11"
+                            />
+                        </Grid>
+                        <ProgressBar x:Name="KernelTaskBar" Minimum="0" Maximum="100" Value="0" Height="4" IsIndeterminate="True" />
+                    </StackPanel>
+
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="SOCKS5 端口" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
@@ -256,7 +283,7 @@
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="分流数据" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="GeoDataHint" Text="决定国内站点直连是否准确" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0"
-                                       ToolTipService.ToolTip="geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set。先写临时文件再原子替换，旧文件保留为 *.bak-prev；连接中不可更新。" />
+                                       ToolTipService.ToolTip="geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set。下载支持断点续传；先写临时文件再原子替换，旧文件保留为 *.bak-prev；连接中也可更新（走本地代理），被占用时下次连接前自动应用。" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <Button x:Name="BtnUpdateGeo" Style="{StaticResource GhostSm}" Click="OnUpdateGeoClick">

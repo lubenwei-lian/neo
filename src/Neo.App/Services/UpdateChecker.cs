@@ -7,18 +7,18 @@ using Neo.Core.Core;
 
 namespace Neo.App.Services;
 
-public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease);
+public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string? Sha256 = null);
 
 /// sing-box 内核发布。通道 = **上游官方 SagerNet/sing-box 稳定版**（releases/latest）。
 ///   电脑版只用官方发行版；手机版的自编译内核与本项目无关。
 ///   官方资产形如 `sing-box-1.14.3-windows-amd64.zip`（zip 内含 sing-box.exe + libcronet.dll + LICENSE），
 ///   上游不提供 .sha256：安装做「可解压 + 内含 exe + version 版本串自校验」，sha256 仅记录追溯，不作为放行条件。
-public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "");
+public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "", string? Sha256 = null);
 
 /// mihomo（Clash.Meta）内核发布。通道 = 上游 MetaCubeX/mihomo 稳定版（releases/latest）。
 /// Windows amd64 的 v1 系列资产名形如 `mihomo-windows-amd64-v1-v1.19.33.zip`（tag 自带 v 前缀）。
 /// 上游没有 .sha256 资产：安装做「可解压 + 内含 exe + 版本串自校验」，与 sing-box 同策略。
-public sealed record MihomoRelease(string Version, string Tag, string AssetName, string DownloadUrl, long SizeBytes, bool Prerelease);
+public sealed record MihomoRelease(string Version, string Tag, string AssetName, string DownloadUrl, long SizeBytes, bool Prerelease, string? Sha256 = null);
 
 public static class UpdateChecker
 {
@@ -84,7 +84,10 @@ public static class UpdateChecker
             var asset = assets.FirstOrDefault(a =>
                 string.Equals(a.Name, "Xray-windows-64.zip", StringComparison.OrdinalIgnoreCase));
             if (asset == null) continue;   // 该版本无 x64 资产，看下一个
-            return new XrayRelease(ver, tag, asset.DownloadUrl, asset.SizeBytes, false);
+            // 官方 SHA-256：GitHub API 的 asset.digest（一次请求）；失败留给安装阶段用 .dgst 兜底。
+            var sha = await GitHubChannel.GetAssetDigestAsync(XrayOwner, XrayRepo, tag, asset.Name, preferProxy, ct);
+            if (!string.IsNullOrEmpty(sha)) KernelHashCache.Put(XrayOwner, XrayRepo, tag, asset.Name, sha);
+            return new XrayRelease(ver, tag, asset.DownloadUrl, asset.SizeBytes, false, sha);
         }
         return null;
     }
@@ -142,7 +145,9 @@ public static class UpdateChecker
             LogBus.App(_lastSingBoxFetchIssue ?? "", "Warning");
             return null;
         }
-        return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, asset.Name);
+        var sbSha = await GitHubChannel.GetAssetDigestAsync(SingBoxOwner, SingBoxRepo, latest, asset.Name, preferProxy, ct);
+        if (!string.IsNullOrEmpty(sbSha)) KernelHashCache.Put(SingBoxOwner, SingBoxRepo, latest, asset.Name, sbSha);
+        return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, asset.Name, sbSha);
     }
 
     /// 从内核资产名里抽出内核版本号。
@@ -221,7 +226,9 @@ public static class UpdateChecker
             LogBus.App($"mihomo 内核更新：{_lastMihomoFetchIssue}", "Warning");
             return null;
         }
-        return new MihomoRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, false);
+        var mhSha = await GitHubChannel.GetAssetDigestAsync(MihomoOwner, MihomoRepo, tag, asset.Name, preferProxy, ct);
+        if (!string.IsNullOrEmpty(mhSha)) KernelHashCache.Put(MihomoOwner, MihomoRepo, tag, asset.Name, mhSha);
+        return new MihomoRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, false, mhSha);
     }
 
     public static async Task<(bool Ok, string Message, MihomoRelease? Release)> CheckMihomoAsync(string? currentVersion)
@@ -248,55 +255,21 @@ public static class UpdateChecker
     /// 下载并安装 mihomo：下载 zip → 解压找 exe → 版本自校验 → 备份 → 覆盖 runtime\mihomo.exe → 复核。
     /// mihomo 目前不参与拨号（TUN/系统代理仍由 xray / sing-box 承载），所以无需先断开连接。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallMihomoAsync(
-        MihomoRelease rel, Action<string> progress, CancellationToken ct = default)
+        MihomoRelease rel, Action<string> progress, CancellationToken ct = default,
+        Action<DownloadProgress>? onProgress = null)
     {
         var zipPath = Path.Combine(Path.GetTempPath(), "neo-mihomo-update.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), "neo-mihomo-update");
 
-        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
-        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
-        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
-        var attempts = new[] { "socks", "direct", "sys" };
-
-        byte[]? data = null;
-        foreach (var kind in attempts)
-        {
-            try
-            {
-                progress(kind == "direct" ? "直连下载源…" : "经代理连接下载源…");
-                using var handler = new HttpClientHandler();
-                switch (kind)
-                {
-                    case "socks":
-                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
-                        handler.UseProxy = true;
-                        break;
-                    case "sys":
-                        handler.UseProxy = true;
-                        break;
-                    default:
-                        handler.UseProxy = false;
-                        break;
-                }
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
-                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
-                progress(rel.SizeBytes > 1024 * 1024
-                    ? $"下载 {rel.AssetName}（{rel.SizeBytes / 1024 / 1024}MB）…"
-                    : $"下载 {rel.AssetName}…");
-                data = await client.GetByteArrayAsync(rel.DownloadUrl, ct);
-                if (data.Length < 1024 * 1024) { data = null; continue; }   // 过小=错误页/被劫持
-                break;
-            }
-            catch (OperationCanceledException) { return (false, "下载已取消。"); }
-            catch { }
-        }
-
-        if (data == null) return (false, "下载失败：网络不可达（可先连接代理后再试）");
+        var mhSha = rel.Sha256 ?? KernelHashCache.TryGet(MihomoOwner, MihomoRepo, rel.Tag, rel.AssetName);
+        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, rel.AssetName,
+            mhSha, progress, onProgress, ct, MihomoOwner, MihomoRepo, rel.Tag, rel.AssetName);
+        if (!fetched.Ok) return (false, fetched.Message);
 
         try
         {
             progress("解压校验…");
-            await File.WriteAllBytesAsync(zipPath, data, ct);
+                // zip 已由 FetchKernelZipAsync 落盘并校验，这里只解压
             if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
             ZipFile.ExtractToDirectory(zipPath, extractDir);
 
@@ -383,67 +356,80 @@ public static class UpdateChecker
         return i > 0 ? v[..i] : v;
     }
 
+    /// <summary>
+    /// 下载内核更新包：断点续传 + 实时进度 + SHA-256 校验（2026-10-23 改造）。
+    /// expectedSha 为 null 表示上游没给官方哈希（API 被限流且无 sidecar）：此时只记录实际值并如实提示，
+    /// 不假装「校验通过」——宁可告诉用户「无官方哈希」，也不做虚假保证。
+    /// </summary>
+    private static async Task<(bool Ok, string Message)> FetchKernelZipAsync(
+        string url, string zipPath, string displayName, string? expectedSha,
+        Action<string> progress, Action<DownloadProgress>? onProgress, CancellationToken ct,
+        string? cacheOwner = null, string? cacheRepo = null, string? cacheTag = null, string? cacheAsset = null)
+    {
+        // 官方哈希来源优先级：本次检查拿到的 API digest → 本地缓存（之前拿到的官方值）→ xray .dgst。
+        if (string.IsNullOrEmpty(expectedSha)
+            && cacheOwner != null && cacheRepo != null && cacheTag != null && cacheAsset != null)
+        {
+            expectedSha = KernelHashCache.TryGet(cacheOwner, cacheRepo, cacheTag, cacheAsset);
+        }
+
+        progress($"下载 {displayName}…");
+        var (ok, msg) = await KernelDownloader.DownloadAsync(url, zipPath, onProgress, ct);
+        if (!ok) return (false, msg);
+
+        progress("校验 SHA-256…");
+        var (match, actual) = await KernelDownloader.VerifySha256Async(zipPath, expectedSha, ct);
+        if (!match)
+        {
+            KernelDownloader.DiscardPart(zipPath);
+            try { File.Delete(zipPath); } catch { }
+            return (false, $"SHA-256 校验失败，安装中止（已删除下载包）。\n期望 {expectedSha}\n实际 {actual}");
+        }
+
+        if (string.IsNullOrEmpty(expectedSha))
+        {
+            progress($"校验完成（上游未提供官方哈希，已记录实际 SHA-256：{actual}）…");
+            LogBus.App($"内核更新包 {displayName} 上游未提供官方哈希，实际 SHA-256：{actual}", "Warning");
+            IncidentLog.Record("kernel-install", "内核更新包无官方哈希（已记录实际值）", $"{displayName} · {actual}");
+        }
+        else
+        {
+            progress("SHA-256 校验通过…");
+            LogBus.App($"内核更新包 {displayName} SHA-256 校验通过：{actual}", "Debug");
+            // 只有「已经用官方值验过」的哈希才写缓存；无官方值时缓存的只是自算值，再拿来当依据
+            // 等于自我循环校验（假安全），所以绝不写入。
+            if (cacheOwner != null && cacheRepo != null && cacheTag != null && cacheAsset != null)
+                KernelHashCache.Put(cacheOwner, cacheRepo, cacheTag, cacheAsset, actual);
+        }
+        return (true, msg);
+    }
+
     /// 下载并覆盖安装内核：下载 zip → 解压校验 → （必要时自动断开连接）→ 备份 → 覆盖 → 运行验证，失败自动回滚。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallAsync(
-        XrayRelease rel, Action<string> progress, CancellationToken ct = default)
+        XrayRelease rel, Action<string> progress, CancellationToken ct = default,
+        Action<DownloadProgress>? onProgress = null)
     {
         var zipPath = Path.Combine(Path.GetTempPath(), "neo-xray-update.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), "neo-xray-update");
 
-        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
-        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
-        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
-        var attempts = new[] { "socks", "direct", "sys" };
-
-        byte[]? data = null;
-        foreach (var kind in attempts)
+        // 官方哈希：优先用检查更新时拿到的 API digest；拿不到再退回 xray 官方 .dgst。
+        var expectedSha = rel.Sha256;
+        if (string.IsNullOrEmpty(expectedSha))
         {
-            try
-            {
-                progress(kind == "direct" ? "直连下载源…" : "经代理连接下载源…");
-                using var handler = new HttpClientHandler();
-                switch (kind)
-                {
-                    case "socks":
-                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
-                        handler.UseProxy = true;
-                        break;
-                    case "sys":
-                        handler.UseProxy = true;
-                        break;
-                    default:
-                        handler.UseProxy = false;
-                        break;
-                }
-
-                //   内核压缩包 <100 MB，10 分钟足够；真取消由调用方传进来的 ct 负责。
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
-                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
-
-                progress($"下载 Xray-windows-64.zip（{rel.SizeBytes / 1024 / 1024}MB）…");
-                data = await client.GetByteArrayAsync(rel.DownloadUrl, ct);
-                if (data.Length < 1024 * 1024) { data = null; continue; } // 过小=被劫持/错误页，换路径重试
-                break;
-            }
-            catch (OperationCanceledException) { return (false, "下载已取消。"); }
-            catch { }
+            var dgstText = await FetchReleaseTextAsync(XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip.dgst", ct);
+            if (dgstText != null && KernelInstall.TryParseSha256(dgstText, out var fromDgst)) expectedSha = fromDgst;
         }
 
-        if (data == null) return (false, "下载失败：网络不可达（可先连接代理后再试）");
+        // 断点续传 + 实时进度 + SHA-256 校验（失败/取消保留 .part，可续传）。
+        // 缓存里可能已有上次拿到的官方哈希（API 限流时仍能校验同一个包）。
+        expectedSha ??= KernelHashCache.TryGet(XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip");
+        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, "Xray-windows-64.zip",
+            expectedSha, progress, onProgress, ct, XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip");
+        if (!fetched.Ok) return (false, fetched.Message);
 
         try
         {
-            progress("校验 SHA-256（官方 .dgst）…");
-            var dgstText = await FetchReleaseTextAsync(XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip.dgst", ct);
-            if (dgstText == null)
-                return (false, "未找到官方 .dgst 校验文件，安装中止（不安装未经验证的内核）。");
-            if (!KernelInstall.TryParseSha256(dgstText, out var expectHex))
-                return (false, "官方 .dgst 解析失败，安装中止。");
-            if (!KernelInstall.VerifySha256(data, expectHex, out var actualHex))
-                return (false, $"SHA-256 校验失败，安装中止。\n期望 {expectHex}\n实际 {actualHex}");
-
             progress("解压校验…");
-            await File.WriteAllBytesAsync(zipPath, data, ct);
             if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
             ZipFile.ExtractToDirectory(zipPath, extractDir);
 
@@ -566,51 +552,18 @@ public static class UpdateChecker
     /// → 用当前配置预检 → 断开 → KernelInstall 原子替换（.bak-prev 备份）→ 安装后版本自校验（失败回滚）。
     /// 上游不提供 .sha256，不再用「缺校验文件」中止。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
-        SingBoxRelease rel, Action<string> progress, CancellationToken ct = default)
+        SingBoxRelease rel, Action<string> progress, CancellationToken ct = default,
+        Action<DownloadProgress>? onProgress = null)
     {
         var zipPath = Path.Combine(Path.GetTempPath(), "neo-singbox-update.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), "neo-singbox-update");
 
-        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
-        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
-        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
-        var attempts = new[] { "socks", "direct", "sys" };
-
-        byte[]? data = null;
-        foreach (var kind in attempts)
-        {
-            try
-            {
-                progress(kind == "direct" ? "直连下载源…" : "经代理连接下载源…");
-                using var handler = new HttpClientHandler();
-                switch (kind)
-                {
-                    case "socks":
-                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
-                        handler.UseProxy = true;
-                        break;
-                    case "sys":
-                        handler.UseProxy = true;
-                        break;
-                    default:
-                        handler.UseProxy = false;
-                        break;
-                }
-
-                //   内核压缩包 <100 MB，10 分钟足够；真取消由调用方传进来的 ct 负责。
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
-                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
-
-                progress($"下载 sing-box 内核（{rel.SizeBytes / 1024 / 1024}MB）…");
-                data = await client.GetByteArrayAsync(rel.DownloadUrl, ct);
-                if (data.Length < 1024 * 1024) { data = null; continue; }
-                break;
-            }
-            catch (OperationCanceledException) { return (false, "下载已取消。"); }
-            catch { }
-        }
-
-        if (data == null) return (false, "下载失败：网络不可达（可先连接代理后再试）");
+        var assetName = string.IsNullOrEmpty(rel.AssetName) ? "sing-box.exe" : rel.AssetName;
+        var sboxSha = rel.Sha256 ?? KernelHashCache.TryGet(SingBoxOwner, SingBoxRepo, rel.Tag, assetName);
+        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath,
+            string.IsNullOrEmpty(rel.AssetName) ? "sing-box 内核" : rel.AssetName,
+            sboxSha, progress, onProgress, ct, SingBoxOwner, SingBoxRepo, rel.Tag, assetName);
+        if (!fetched.Ok) return (false, fetched.Message);
 
         string? backup = null;
         var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "sing-box.exe");
@@ -619,14 +572,14 @@ public static class UpdateChecker
             // 上游官方发行版不提供 .sha256 资产：不再用「缺校验文件」中止。
             // 完整性 = 可解压且内含 sing-box.exe + 新 exe `version` 版本串自校验；
             // sha256 只作为可追溯信息记录（日志 + IncidentLog），不作为放行条件。
-            var actualSha = KernelInstall.Sha256Hex(data);
+            var actualSha = KernelInstall.Sha256Hex(await File.ReadAllBytesAsync(zipPath, ct));
             LogBus.App($"sing-box 内核包 SHA-256（仅追溯）：{actualSha} · {rel.AssetName}", "Debug");
             IncidentLog.Record("kernel-install", $"sing-box 内核包 SHA-256：{actualSha}", rel.AssetName);
 
             progress("解压校验…");
             try
             {
-                await File.WriteAllBytesAsync(zipPath, data, ct);
+            // zip 已由 FetchKernelZipAsync 落盘并校验，这里只解压
                 if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
                 ZipFile.ExtractToDirectory(zipPath, extractDir);
             }

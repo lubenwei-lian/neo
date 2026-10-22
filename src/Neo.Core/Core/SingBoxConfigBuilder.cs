@@ -11,7 +11,8 @@ public static class SingBoxConfigBuilder
     public const string RuleSetGeoipCn = "rule-sets/geoip-cn.srs";
     public const string RuleSetAds = "rule-sets/geosite-category-ads-all.srs";
 
-    public const int ClashApiPort = 10086;
+    /// <summary>sing-box 的 Clash API 端口（仅本机回环；与 xray 的 21xxx 端口段一致）。</summary>
+    public const int ClashApiPort = 21811;
     public const string ClashApiSecret = "neo-local-stats";
 
     public static string Build(NodeItem node, int socksPort, int httpPort, string proxyMode, bool bypassPrivate,

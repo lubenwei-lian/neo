@@ -21,10 +21,6 @@ public sealed partial class SettingsPage : UserControl
     public event EventHandler? OpenRulesRequested;
 
     private bool _syncing;
-    private bool _checkingUpdate;
-    private bool _checkingSingBoxUpdate;
-    private bool _checkingMihomoUpdate;
-    private bool _updatingGeo;
 
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
@@ -725,276 +721,219 @@ public sealed partial class SettingsPage : UserControl
         RuleSetCountText.Text = $"{n} 组已启用";
     }
 
-    private async void OnCheckXrayUpdateClick(object sender, RoutedEventArgs e)
+    // ================= 2026-10-23：内核/数据更新的「页内进度」实现 =================
+    // 用户要求：内核更新不要弹窗，改为在 UI 栏显示下载进度；支持断点续传；下载完校验哈希。
+    // 所有下载任务的进度统一走 KernelTaskPanel（说明文字 + 百分比/速度 + ProgressBar + 取消）。
+
+    private CancellationTokenSource? _kernelTaskCts;
+    private bool _kernelTaskActive;
+    private XrayRelease? _pendingXrayRelease;
+    private SingBoxRelease? _pendingSingBoxRelease;
+    private MihomoRelease? _pendingMihomoRelease;
+
+    private void BeginKernelTask(string title)
     {
-        if (_checkingUpdate) return;
-        _checkingUpdate = true;
-        var wasConnected = ConnectionService.IsConnected;
-        var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
-        SetCheckingUi(RingXrayUpdate, BtnCheckXrayUpdate, null, true);
-        XrayVersionHint.Text = "正在检查更新…";
-        try
-        {
-            var xray = ConnectionService.XrayVersion ?? "—";
-            var (ok, msg, rel) = await UpdateChecker.CheckXrayAsync(
-                ConnectionService.XrayVersion, AppState.State.CheckKernelPreRelease);
-            if (!ok)
-            {
-                XrayVersionHint.Text = "检查失败 · " + msg;
-                await ShowDialogAsync("检查 xray 更新", msg, "知道了", "");
-                return;
-            }
-
-            var hasNew = rel is { } r
-                && xray != "—"
-                && UpdateChecker.CompareVersions(r.Version, xray) > 0;
-
-            var latest = rel?.Version ?? "—";
-            XrayVersionHint.Text = hasNew
-                ? $"发现新版本 {latest}（当前 {xray}）"
-                : $"已是最新版本（{xray}）";
-
-            var result = await ShowDialogAsync(
-                "检查 xray 内核",
-                $"内置内核：xray {xray}\n\n{msg}",
-                hasNew ? "暂不" : "知道了",
-                hasNew ? "立即更新" : "");
-
-            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
-            {
-                await InstallXrayUpdateAsync(chosen);
-                await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
-            }
-        }
-        finally
-        {
-            _checkingUpdate = false;
-            SetCheckingUi(RingXrayUpdate, BtnCheckXrayUpdate, null, false);
-            RefreshState();
-        }
+        _kernelTaskActive = true;
+        _kernelTaskCts = new CancellationTokenSource();
+        KernelTaskPanel.Visibility = Visibility.Visible;
+        KernelTaskText.Text = title;
+        KernelTaskBar.IsIndeterminate = true;
+        KernelTaskBar.Value = 0;
+        BtnCancelKernelTask.IsEnabled = true;
+        BtnCancelKernelTask.Content = "取消";
     }
 
-    /// 检查 sing-box 内核更新。通道 = 上游官方 SagerNet/sing-box 稳定发行版（releases/latest）。
-    private async void OnCheckSingBoxUpdateClick(object sender, RoutedEventArgs e)
+    private void UpdateKernelTask(string? text, DownloadProgress? p = null)
     {
-        if (_checkingSingBoxUpdate) return;
-        _checkingSingBoxUpdate = true;
-        var wasConnected = ConnectionService.IsConnected;
-        var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
-        SetCheckingUi(RingSingBoxUpdate, BtnCheckSingBoxUpdate, null, true);
-        SingBoxVersionHint.Text = "正在检查更新…";
-        try
+        void apply()
         {
-            var cur = ConnectionService.SingBoxVersion ?? "—";
-            var (ok, msg, rel) = await UpdateChecker.CheckSingBoxAsync(ConnectionService.SingBoxVersion);
-            if (!ok)
+            if (!string.IsNullOrEmpty(text))
+                KernelTaskText.Text = p == null ? text : $"{text} · {p.Text()}";
+            if (p is { Total: > 0 })
             {
-                SingBoxVersionHint.Text = "检查失败 · " + msg;
-                await ShowDialogAsync("检查 sing-box 更新", msg, "知道了", "");
-                return;
+                KernelTaskBar.IsIndeterminate = false;
+                KernelTaskBar.Value = p.Percent;
             }
-
-            var hasNew = rel is { } r
-                && cur != "—"
-                && UpdateChecker.CompareVersions(
-                       UpdateChecker.StripSuffix(r.Version), UpdateChecker.StripSuffix(cur)) > 0;
-
-            SingBoxVersionHint.Text = hasNew
-                ? $"发现新版本 {rel!.Version}（当前 {cur}）"
-                : $"已是最新版本（{cur}）";
-
-            var extra = "";
-            if (hasNew)
+            else
             {
-                extra = "\n\n官方发行版内核：安装前会自校验版本号；失败会保留旧内核，"
-                      + "可用 runtime\\sing-box.exe.bak-prev 回滚。";
-            }
-
-            var result = await ShowDialogAsync(
-                "检查 sing-box 内核",
-                $"内置内核：sing-box {cur}\n\n{msg}{extra}",
-                hasNew ? "暂不" : "知道了",
-                hasNew ? "立即更新" : "");
-
-            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
-            {
-                await InstallSingBoxUpdateAsync(chosen);
-                await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
+                KernelTaskBar.IsIndeterminate = true;
             }
         }
-        finally
-        {
-            _checkingSingBoxUpdate = false;
-            SetCheckingUi(RingSingBoxUpdate, BtnCheckSingBoxUpdate, null, false);
-            RefreshState();
-        }
+        try { if (DispatcherQueue.HasThreadAccess) apply(); else DispatcherQueue.TryEnqueue(apply); } catch { }
     }
 
-    /// 检查 mihomo 内核（第三内核：只纳入安装/更新管理，连接仍由 xray / sing-box 承载）。
-    private async void OnCheckMihomoUpdateClick(object sender, RoutedEventArgs e)
+    private void EndKernelTask(string finalText)
     {
-        if (_checkingMihomoUpdate) return;
-        _checkingMihomoUpdate = true;
-        SetCheckingUi(RingMihomoUpdate, BtnCheckMihomoUpdate, null, true);
-        MihomoVersionHint.Text = "正在检查更新…";
-        try
+        _kernelTaskActive = false;
+        try { _kernelTaskCts?.Dispose(); } catch { }
+        _kernelTaskCts = null;
+        void apply()
         {
-            var cur = KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "";
-            var (ok, msg, rel) = await UpdateChecker.CheckMihomoAsync(cur);
-            if (!ok)
-            {
-                MihomoVersionHint.Text = "检查失败 · " + msg;
-                await ShowDialogAsync("检查 mihomo 更新", msg, "知道了", "");
-                return;
-            }
-
-            var hasNew = rel is { } r2 && (cur.Length == 0 || UpdateChecker.CompareVersions(r2.Version, cur) > 0);
-            var curText = cur.Length == 0 ? "未安装" : cur;
-            MihomoVersionHint.Text = hasNew
-                ? (cur.Length == 0 ? $"未安装 · 可更新到 {rel!.Version}" : $"发现新版本 {rel!.Version}（当前 {cur}）")
-                : $"已是最新版本（{curText}）";
-
-            var primary = hasNew ? (cur.Length == 0 ? "立即下载" : "立即更新") : "";
-            var result = await ShowDialogAsync(
-                "检查 mihomo 内核",
-                $"内置内核：mihomo {curText}\n\n{msg}\n\n说明：mihomo 目前只作为可选内核纳入安装与更新管理，"
-                    + "不会自动参与拨号；TUN / 系统代理仍由 xray 与 sing-box 承载。",
-                hasNew ? "暂不" : "知道了",
-                primary);
-
-            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
-                await InstallMihomoUpdateAsync(chosen);
+            KernelTaskText.Text = finalText;
+            KernelTaskBar.IsIndeterminate = false;
+            KernelTaskBar.Value = 0;
+            BtnCancelKernelTask.IsEnabled = false;
         }
-        finally
-        {
-            _checkingMihomoUpdate = false;
-            SetCheckingUi(RingMihomoUpdate, BtnCheckMihomoUpdate, null, false);
-            RefreshState();
-        }
+        try { if (DispatcherQueue.HasThreadAccess) apply(); else DispatcherQueue.TryEnqueue(apply); } catch { }
+        _ = HideKernelTaskLaterAsync();
     }
 
-    private async Task InstallMihomoUpdateAsync(MihomoRelease rel)
+    private async Task HideKernelTaskLaterAsync()
     {
-        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
-        {
-            Text = "准备中…",
-            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
-        };
-        var cts = new CancellationTokenSource();
-        var prog = new ContentDialog
-        {
-            Title = $"更新 mihomo {rel.Version}",
-            Content = tb,
-            CloseButtonText = "取消",
-            XamlRoot = XamlRoot,
-        };
-        prog.CloseButtonClick += (_, _) => cts.Cancel();
-        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
-        bool ok;
-        string msg;
         try
         {
-            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallMihomoAsync(
-                rel,
-                s => DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (App.IsShuttingDown) return;
-                    tb.Text = s;
-                }),
+            await Task.Delay(7000);
+            if (_kernelTaskActive) return;
+            KernelTaskPanel.Visibility = Visibility.Collapsed;
+        }
+        catch { }
+    }
+
+    private void OnCancelKernelTaskClick(object sender, RoutedEventArgs e)
+    {
+        try { _kernelTaskCts?.Cancel(); } catch { }
+        BtnCancelKernelTask.IsEnabled = false;
+        UpdateKernelTask("正在停止…（已下载的部分会保留，下次续传）");
+    }
+
+    /// 统一任务执行器：进度回调 → 页内进度条；取消 → 保留断点；结束刷新页面状态。
+    private async Task RunKernelTaskAsync(
+        string title,
+        Func<Action<string>, Action<DownloadProgress>, CancellationToken, Task<(bool Ok, string Message)>> work)
+    {
+        if (_kernelTaskActive) return;
+        BeginKernelTask(title);
+        var cts = _kernelTaskCts!;
+        try
+        {
+            var (ok, msg) = await Task.Run(async () => await work(
+                s => UpdateKernelTask(s),
+                p => UpdateKernelTask("下载中", p),
                 cts.Token));
+            EndKernelTask((ok ? "完成：" : "失败：") + msg);
+            if (!ok) LogBus.App("内核/数据更新失败：" + msg, "Warning");
         }
         catch (OperationCanceledException)
         {
-            ok = false;
-            msg = "已取消，未做任何改动。";
+            EndKernelTask("已暂停：已下载的部分保留，下次点同一按钮会断点续传。");
         }
         catch (Exception ex)
         {
-            ok = false;
-            msg = "安装过程中出现异常：" + ex.Message;
+            EndKernelTask("失败：" + ex.Message);
+            LogBus.App($"内核/数据更新异常：[{ex.GetType().Name}] {ex.Message}", "Warning");
         }
         finally
         {
-            try { cts.Dispose(); } catch { }
-            try { prog.Hide(); } catch { }
+            RefreshState();
         }
-
-        try { await showTask.ConfigureAwait(true); } catch { }
-        RefreshState();
-        await ShowDialogAsync(ok ? "安装完成" : "安装失败", msg, "知道了", "");
     }
 
-    /// 更新分流数据（geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set）。
-    /// 连接中不允许更新：内核可能正打开这些文件。
-    private async void OnUpdateGeoClick(object sender, RoutedEventArgs e)
+    /// 检查 xray 更新（页内显示，不弹窗）；发现新版本后同一按钮再点一次开始下载安装。
+    private async void OnCheckXrayUpdateClick(object sender, RoutedEventArgs e)
     {
-        if (_updatingGeo) return;
-        if (ConnectionService.IsConnected)
+        if (_kernelTaskActive) return;
+
+        if (_pendingXrayRelease is { } pending)
         {
-            await ShowDialogAsync("更新分流数据", "当前已连接。请先断开连接再更新——内核可能正在使用这些数据文件。", "知道了", "");
+            _pendingXrayRelease = null;
+            var wasConnected = ConnectionService.IsConnected;
+            var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
+            await RunKernelTaskAsync($"更新 xray {pending.Version}", (stage, prog, ct) =>
+                UpdateChecker.DownloadAndInstallAsync(pending, stage, ct, prog));
+            await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
+            XrayVersionHint.Text = ConnectionService.XrayVersion is { } v ? $"本机内置内核 · {v}" : "检查更新";
             return;
         }
 
-        var confirm = await ShowDialogAsync(
-            "更新分流数据",
-            "将更新：\n· geosite.dat / geoip.dat（国内直连判定）\n· Country.mmdb\n· sing-box rule-set（CN 分流）\n\n"
-                + "来源为上游公开数据仓库；先写临时文件再原子替换，旧文件保留为 *.bak-prev。\n新数据在下次连接时生效。",
-            "取消", "开始更新");
-        if (confirm != ContentDialogResult.Primary) return;
-
-        _updatingGeo = true;
-        SetCheckingUi(RingGeoUpdate, BtnUpdateGeo, null, true);
-        GeoDataHint.Text = "正在更新分流数据…";
-        try
+        await RunKernelTaskAsync("检查 xray 更新", async (stage, _, ct) =>
         {
-            var tb = new Microsoft.UI.Xaml.Controls.TextBlock { Text = "准备中…", TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap };
-            var cts = new CancellationTokenSource();
-            var prog = new ContentDialog
-            {
-                Title = "更新分流数据",
-                Content = tb,
-                CloseButtonText = "取消",
-                XamlRoot = XamlRoot,
-            };
-            prog.CloseButtonClick += (_, _) => cts.Cancel();
-            var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
-            bool ok;
-            string msg;
-            try
-            {
-                (ok, msg) = await Task.Run(() => GeoDataUpdater.UpdateAllAsync(
-                    s => DispatcherQueue.TryEnqueue(() =>
-                    {
-                        if (App.IsShuttingDown) return;
-                        tb.Text = s;
-                    }),
-                    cts.Token));
-            }
-            catch (OperationCanceledException)
-            {
-                ok = false;
-                msg = "已取消，未做任何改动。";
-            }
-            catch (Exception ex)
-            {
-                ok = false;
-                msg = "更新过程中出现异常：" + ex.Message;
-            }
-            finally
-            {
-                try { cts.Dispose(); } catch { }
-                try { prog.Hide(); } catch { }
-            }
+            stage("正在检查 xray 更新…");
+            var cur = ConnectionService.XrayVersion ?? "—";
+            var (ok, msg, rel) = await UpdateChecker.CheckXrayAsync(cur, AppState.State.CheckKernelPreRelease);
+            if (!ok) return (false, msg);
+            var hasNew = rel is { } r && cur != "—" && UpdateChecker.CompareVersions(r.Version, cur) > 0;
+            if (!hasNew) return (true, $"xray 已是最新版本（{cur}）");
+            _pendingXrayRelease = rel;
+            return (true, $"发现 xray {rel!.Version}（当前 {cur}）：再点一次「检查更新」立即下载");
+        });
 
-            try { await showTask.ConfigureAwait(true); } catch { }
-            await ShowDialogAsync(ok ? "更新完成" : "更新未完成", msg, "知道了", "");
+        if (_pendingXrayRelease is { } p2)
+            XrayVersionHint.Text = $"发现新版本 {p2.Version} · 再点「检查更新」开始下载";
+    }
+
+    /// 检查 sing-box 更新（页内显示，不弹窗）。
+    private async void OnCheckSingBoxUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_kernelTaskActive) return;
+
+        if (_pendingSingBoxRelease is { } pending)
+        {
+            _pendingSingBoxRelease = null;
+            var wasConnected = ConnectionService.IsConnected;
+            var prevNode = ConnectionService.ConnectedNode ?? AppState.CurrentNode;
+            await RunKernelTaskAsync($"更新 sing-box {pending.Version}", (stage, prog, ct) =>
+                UpdateChecker.DownloadAndInstallSingBoxAsync(pending, stage, ct, prog));
+            await TryReconnectAfterKernelUpdateAsync(wasConnected, prevNode);
+            SingBoxVersionHint.Text = ConnectionService.SingBoxVersion is { } v ? $"本机内置内核 · {v}" : "检查更新";
+            return;
         }
-        finally
+
+        await RunKernelTaskAsync("检查 sing-box 更新", async (stage, _, ct) =>
         {
-            _updatingGeo = false;
-            SetCheckingUi(RingGeoUpdate, BtnUpdateGeo, null, false);
+            stage("正在检查 sing-box 更新…");
+            var cur = ConnectionService.SingBoxVersion ?? "—";
+            var (ok, msg, rel) = await UpdateChecker.CheckSingBoxAsync(cur);
+            if (!ok) return (false, msg);
+            var hasNew = rel is { } r && cur != "—"
+                         && UpdateChecker.CompareVersions(UpdateChecker.StripSuffix(r.Version), UpdateChecker.StripSuffix(cur)) > 0;
+            if (!hasNew) return (true, $"sing-box 已是最新版本（{cur}）");
+            _pendingSingBoxRelease = rel;
+            return (true, $"发现 sing-box {rel!.Version}（当前 {cur}）：再点一次「检查更新」立即下载");
+        });
+
+        if (_pendingSingBoxRelease is { } p2)
+            SingBoxVersionHint.Text = $"发现新版本 {p2.Version} · 再点「检查更新」开始下载";
+    }
+
+    /// 检查 mihomo 更新（可选内核；页内显示，不弹窗）。
+    private async void OnCheckMihomoUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_kernelTaskActive) return;
+
+        if (_pendingMihomoRelease is { } pending)
+        {
+            _pendingMihomoRelease = null;
+            await RunKernelTaskAsync($"安装 mihomo {pending.Version}", (stage, prog, ct) =>
+                UpdateChecker.DownloadAndInstallMihomoAsync(pending, stage, ct, prog));
             RefreshState();
+            return;
         }
+
+        await RunKernelTaskAsync("检查 mihomo 更新", async (stage, _, ct) =>
+        {
+            stage("正在检查 mihomo 更新…");
+            var cur = KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "";
+            var (ok, msg, rel) = await UpdateChecker.CheckMihomoAsync(cur);
+            if (!ok) return (false, msg);
+            var hasNew = rel is { } r && (cur.Length == 0 || UpdateChecker.CompareVersions(r.Version, cur) > 0);
+            if (!hasNew) return (true, $"mihomo 已是最新版本（{cur}）");
+            _pendingMihomoRelease = rel;
+            var curText = cur.Length == 0 ? "未安装" : cur;
+            return (true, $"发现 mihomo {rel!.Version}（当前 {curText}）：再点一次「检查更新」开始下载安装");
+        });
+
+        if (_pendingMihomoRelease is { } p2)
+            MihomoVersionHint.Text = $"发现新版本 {p2.Version} · 再点「检查更新」开始下载";
+    }
+
+    /// 更新分流数据（geoip/geosite/Country.mmdb/rule-set）：页内进度、无弹窗、连接中拒绝。
+    private async void OnUpdateGeoClick(object sender, RoutedEventArgs e)
+    {
+        if (_kernelTaskActive) return;
+        // 连接中也可以更新：下载走本地代理（否则 GitHub 不可达）；
+        // 若目标文件正被内核占用，GeodataUpdater 会暂存 *.pending，下次启动内核前自动应用。
+        await RunKernelTaskAsync("更新分流数据", (stage, prog, ct) =>
+            GeoDataUpdater.UpdateAllAsync(stage, ct, onProgress: prog));
     }
 
     private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
@@ -1023,114 +962,8 @@ public sealed partial class SettingsPage : UserControl
         }
         catch (Exception ex)
         {
-            LogBus.App($"内核更新后自动重连异常：{ex.GetType().Name} {ex.Message}", "Warning");
+            LogBus.App($"内核更新后自动重连异常：[{ex.GetType().Name}] {ex.Message}", "Warning");
         }
-    }
-
-    /// <summary>一键更新 sing-box 内核：进度弹窗 → 下载 + 双重自校验 → 覆盖安装 → 结果弹窗。</summary>
-    private async Task InstallSingBoxUpdateAsync(SingBoxRelease rel)
-    {
-        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
-        {
-            Text = "准备中…",
-            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
-        };
-        //   解压与 RunVersion 期间进度窗冻结）；进度回调 marshal 回 UI 线程。
-        //   与 xray 路径保持一致（原先只在 finally 里 await，时间差会撞 8 秒门闩超时）。
-        var cts = new CancellationTokenSource();
-        var prog = new ContentDialog
-        {
-            Title = $"更新 sing-box {rel.Version}",
-            Content = tb,
-            CloseButtonText = "取消",
-            XamlRoot = XamlRoot,
-        };
-        prog.CloseButtonClick += (_, _) => cts.Cancel();
-        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
-        bool ok;
-        string msg;
-        try
-        {
-            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallSingBoxAsync(
-                rel,
-                s => DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (App.IsShuttingDown) return;
-                    tb.Text = s;
-                }),
-                cts.Token));
-        }
-        catch (OperationCanceledException)
-        {
-            ok = false;
-            msg = "已取消，未做任何改动。";
-        }
-        catch (Exception ex)
-        {
-            ok = false;
-            msg = "安装过程中出现异常：" + ex.Message;
-        }
-        finally
-        {
-            try { cts.Dispose(); } catch { }
-            try { prog.Hide(); } catch { }
-        }
-
-        try { await showTask.ConfigureAwait(true); } catch { }   
-        if (ok) RefreshState();
-        await ShowDialogAsync(ok ? "更新完成" : "更新失败", msg, "知道了", "");
-    }
-
-    /// 一键更新：进度弹窗 → 下载覆盖安装 → 结果弹窗。全程无需手动替换文件。
-    private async Task InstallXrayUpdateAsync(XrayRelease rel)
-    {
-        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
-        {
-            Text = "准备中…",
-            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
-        };
-        var cts = new CancellationTokenSource();
-        var prog = new ContentDialog
-        {
-            Title = $"更新 xray {rel.Version}",
-            Content = tb,
-            CloseButtonText = "取消",
-            XamlRoot = XamlRoot,
-        };
-        prog.CloseButtonClick += (_, _) => cts.Cancel();
-        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
-        bool ok;
-        string msg;
-        try
-        {
-            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallAsync(
-                rel,
-                s => DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (App.IsShuttingDown) return;
-                    tb.Text = s;
-                }),
-                cts.Token));
-        }
-        catch (OperationCanceledException)
-        {
-            ok = false;
-            msg = "已取消，未做任何改动。";
-        }
-        catch (Exception ex)
-        {
-            ok = false;
-            msg = "安装过程中出现异常：" + ex.Message;
-        }
-        finally
-        {
-            try { cts.Dispose(); } catch { }
-            try { prog.Hide(); } catch { }
-        }
-
-        try { await showTask.ConfigureAwait(true); } catch { }   
-        if (ok) RefreshState();
-        await ShowDialogAsync(ok ? "更新完成" : "更新失败", msg, "知道了", "");
     }
 
     private async Task<ContentDialogResult> ShowDialogAsync(string title, string content, string closeText, string primaryText)

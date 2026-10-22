@@ -147,6 +147,46 @@ public static class GitHubChannel
             }
         }, ct);
 
+    /// <summary>
+    /// 取某个 release 资产的官方 SHA-256：GitHub 的 REST API 从 2025 年起为每个资产提供
+    /// digest: "sha256:..." 字段（sing-box / mihomo 都没有独立的 .sha256 资产文件，只能走这里）。
+    /// 被匿名限流或网络不可达返回 null —— 调用方必须能接受「没有官方哈希」并如实提示。
+    /// </summary>
+    public static Task<string?> GetAssetDigestAsync(string owner, string repo, string tag, string assetName,
+        bool preferProxy, CancellationToken ct = default)
+        => RaceAsync<string>(preferProxy, async (handler, _, token) =>
+        {
+            using (handler)
+            {
+                try
+                {
+                    using var client = new HttpClient(handler) { Timeout = Timeout };
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+                    using var resp = await client.GetAsync(
+                        $"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", token);
+                    if (!resp.IsSuccessStatusCode) return null;
+                    var json = await resp.Content.ReadAsStringAsync(token);
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("assets", out var assets)) return null;
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        if (!a.TryGetProperty("name", out var n)) continue;
+                        if (!string.Equals(n.GetString(), assetName, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!a.TryGetProperty("digest", out var d)
+                            || d.ValueKind != System.Text.Json.JsonValueKind.String) return null;
+                        var digest = d.GetString() ?? "";
+                        var idx = digest.IndexOf(':');
+                        var hex = idx >= 0 ? digest[(idx + 1)..] : digest;
+                        return hex.Length == 64 ? hex.ToLowerInvariant() : null;
+                    }
+                    return null;
+                }
+                catch (OperationCanceledException) { return null; }
+                catch { return null; }
+            }
+        }, ct);
+
     /// <summary>从 releases.atom 取版本 tag 列表（最新在前）。取不到时返回空表（调用方无需判 null）。</summary>
     public static async Task<List<string>> GetTagsFromAtomAsync(string owner, string repo, bool preferProxy, CancellationToken ct = default)
     {
