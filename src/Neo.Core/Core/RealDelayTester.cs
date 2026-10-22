@@ -533,13 +533,19 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            // ★ 2026-10-23 批量路径去掉「预热请求」：预热原是为了扣除建连耗时，但代价是双倍连接数；
-            //   68 节点批量测速时那会直接把商家侧连接数翻倍（容易被判扫描/限流）。
-            //   这里只发**一次计时请求**，延迟口径按「首字节时间」（包含建连 + TLS + 首包），
-            //   比预热后的纯 HTTP 往返略高，但用于「挑节点排序」足够，换来速度与更低连接数。
-            //   注意：RealPingAsync（单节点临时内核）与公开 PingViaSocksAsync 的预热逻辑保持不变。
+            // ★ 2026-10-23 修正：恢复「预热 + 计时」两步，但**复用同一条 HTTP 连接**。
+            //   为什么必须热：去掉预热后计时把 TCP + TLS 握手（校园无线/手机热点的建连经常 1–3 秒）
+            //   也算进了「延迟」，节点页一片 1000ms+、p50 1718ms，用户直接看不出哪个能用
+            //   （实测 00:13 那轮：<200ms 0 个、≥1000ms 147 个）。
+            //   现在：先发一次不计时的预热请求（SocketsHttpHandler 会复用到同一节点的连接），
+            //   再计时第二次请求 —— 口径回到「已建连后的 HTTP 往返」，与旧版可比。
+            //   代价：每节点多 1 次请求（原来就是这样），总耗时只回升几秒。
             foreach (var url in ProbeUrls)
             {
+                try { using var warm = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { /* 预热失败不影响下面正式计时（可能是目标抖动，换下一个目标） */ }
+
                 try
                 {
                     var sw = Stopwatch.StartNew();
