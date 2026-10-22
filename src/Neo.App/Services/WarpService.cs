@@ -77,9 +77,9 @@ public static class WarpService
                 "&address=" + Uri.EscapeDataString(v4 + "/32") +
                 "&mtu=1280&keepalive=25&dns=1.1.1.1" +
                 "&reserved=" + Uri.EscapeDataString(reserved) +
-                "#WARP（Cloudflare 免费出口）";
+                "#WARP（Cloudflare 免费出口）· " + reserved;
             LogBus.App($"WARP 注册成功：endpoint={host}，address={v4}/32，reserved={reserved}", "Info");
-            return (true, $"WARP 节点已生成（{host} · {v4}/32）", link);
+            return (true, $"WARP 节点已生成（{host} · {v4}/32）\n节点名：WARP（Cloudflare 免费出口）· {reserved}", link);
         }
         catch (Exception ex)
         {

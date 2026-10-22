@@ -950,7 +950,7 @@ public sealed partial class NodesPage : UserControl
             await Neo.App.Ui.DialogGuard.ShowAsync(new ContentDialog
             {
                 Title = "WARP 节点已添加",
-                Content = msg + "\n\n请在节点列表选择「WARP（Cloudflare 免费出口）」后连接。",
+                Content = msg + "\n\n请在节点列表选择刚添加的「WARP」节点后连接（重复注册会生成不同后缀的节点，可分别测速后保留快的）。",
                 CloseButtonText = "知道了",
                 XamlRoot = XamlRoot,
             });
