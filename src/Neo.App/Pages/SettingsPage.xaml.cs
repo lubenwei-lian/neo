@@ -390,7 +390,9 @@ public sealed partial class SettingsPage : UserControl
             if (!r.HasNew)
             {
                 _pendingUpdate = null;
+                _downloadedSetupPath = null;
                 BtnDownloadUpdate.Visibility = Visibility.Collapsed;
+                if (BtnDownloadUpdate.Content is TextBlock tb0) tb0.Text = "下载并更新";
                 UpdateStatusText.Text = $"已是最新版本（{AppUpdateService.CurrentVersion}）";
                 return;   // 结果直接显示在卡片里，不再弹窗打断
             }
@@ -406,131 +408,110 @@ public sealed partial class SettingsPage : UserControl
         }
     }
 
+    private string? _downloadedSetupPath;
+
     private async void OnDownloadUpdateClick(object sender, RoutedEventArgs e)
         => await StartUpdateDownloadAsync();
 
+    /// 2026-10-23：更新包下载改为「页内进度 + 断点续传 + SHA-256」，不再用弹窗；
+    /// 下载完成后按钮变成「安装并重启」，再点才进入安装确认（避免下完直接退出）。
     private async Task StartUpdateDownloadAsync()
     {
-        if (_downloadingUpdate) return;
+        if (_downloadingUpdate || _kernelTaskActive) return;
         if (_pendingUpdate is not { HasNew: true } u || string.IsNullOrEmpty(u.AssetUrl)) return;
+
+        // 已经下载过（且文件还在）：直接进入安装确认。
+        if (!string.IsNullOrEmpty(_downloadedSetupPath) && System.IO.File.Exists(_downloadedSetupPath))
+        {
+            await ConfirmAndInstallUpdateAsync(u, _downloadedSetupPath);
+            return;
+        }
+
         _downloadingUpdate = true;
+        BeginKernelTask($"下载更新 {u.LatestTag}");
+        var cts = _kernelTaskCts!;
         try
         {
-            var prog = new ProgressBar { Minimum = 0, Maximum = 1, Width = 320 };
-            var txt = new TextBlock { Text = "正在从 GitHub 下载更新包…", FontSize = 12, TextWrapping = TextWrapping.Wrap };
-            var panel = new StackPanel { Spacing = 12, MinWidth = 360 };
-            panel.Children.Add(txt);
-            panel.Children.Add(prog);
+            var (ok, path, msg) = await Task.Run(() => AppUpdateService.DownloadResumableAsync(
+                assetUrl: u.AssetUrl,
+                assetName: u.AssetName,
+                progress: p => UpdateKernelTask("下载更新包", p),
+                expectedSha256: u.Sha256,
+                ct: cts.Token));
 
-            var cts = new CancellationTokenSource();
-            var dlg = new ContentDialog
+            if (!ok || path == null)
             {
-                Title = "下载更新",
-                Content = panel,
-                CloseButtonText = "取消",
-                XamlRoot = XamlRoot,
-            };
-            dlg.CloseButtonClick += (_, _) => cts.Cancel();
-
-            var showTask = Neo.App.Ui.DialogGuard.ShowAsync(dlg);
-            string? path = null;
-
-            // 关键：必须用 try/finally 保证 dlg.Hide() 一定执行。
-            // DialogGuard 的门闩由「对话框关闭」释放；只要有一条异常路径跳过 Hide()，
-            // 这个对话框就永远开着、门闩永远不释放 → 此后**全 app 所有**走 DialogGuard
-            // 的弹窗（添加订阅 / 删除确认 / 手动节点 / 切换节点 / TUN 提示 / 反馈…）
-            // 全部永久挂起，用户看到「点什么都还是没反应」。
-            // （原先这里只 catch OperationCanceledException，而 DownloadAsync 里
-            try
-            {
-                //   全用命名参数，避免服务侧参数顺序调整时调用点错位。
-                path = await Task.Run(() => AppUpdateService.DownloadAsync(
-                    assetUrl: u.AssetUrl,
-                    assetName: u.AssetName,
-                    progress: p => DispatcherQueue.TryEnqueue(() =>
-                    {
-                        if (App.IsShuttingDown) return;
-                        prog.Value = p;
-                    }),
-                    expectedSize: u.AssetSize,
-                    expectedSha256: u.Sha256,
-                    ct: cts.Token));
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                LogBus.Exception("下载更新包失败", ex);
-            }
-            finally
-            {
-                try { dlg.Hide(); } catch { }
-            }
-            //   但「不 await 完成」这一半是真问题，我确认并在此修）：
-            //   原写法 `_ = showTask;` 表示「丢弃这个 Task、不关心它何时结束」。
-            //   而 DialogGuard.ShowAsync 的 finally 才会 `Gate.Release()` ——
-            //   上面执行的 `dlg.Hide()` 只是让对话框视觉关闭，门闩的释放**要等 showTask 跑完**。
-            //   两者之间存在时间差：若紧接着调用另一个 DialogGuard.ShowAsync，
-            //   它会卡在门闩上并最多等 8 秒（GateTimeoutMs），超时后被"强制放行"
-            //   → 两个对话框并发显示 → 正是 DialogGuard 要防的 0x80000019。
-            //   现在改为「等它结束」，消除该时间差。用 try/catch 包住：
-            //   ShowAsync 内部已有 finally 保 Release，这里只需吞掉可能的异常
-            //   （如 XamlRoot 失效），不影响后续流程。最多等 8 秒（内部上限），不阻塞界面。
-            try { await showTask.ConfigureAwait(true); } catch { }
-
-            if (path == null)
-            {
+                EndKernelTask("失败：" + msg);
                 await ShowSettingsInfo("下载失败",
-                    "无法下载更新包（网络不可达，或内容校验未通过）。\n\n" +
-                    "直连不通时请先开启代理后重试；若反复失败，请查看日志（更新包哈希不符会记 Error）。");
+                    msg + "\n\n直连不通时请先开启代理后重试；已下载的部分会保留，再点一次可断点续传。");
                 return;
             }
 
-            // 文件可能已被清理/被杀软删掉：这里也要容错，否则会在 async void 路径上逃逸。
-            double sizeMb;
-            try { sizeMb = new System.IO.FileInfo(path).Length / 1048576.0; }
-            catch (Exception ex)
-            {
-                LogBus.Exception("读取更新包大小失败", ex);
-                await ShowSettingsInfo("安装更新", "更新包已下载但无法读取（可能被清理或拦截），请重试。");
-                return;
-            }
-
-            var confirm = new ContentDialog
-            {
-                Title = "安装更新",
-                Content = new TextBlock
-                {
-                    Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n"
-                         + (string.IsNullOrEmpty(u.Sha256)
-                             ? "本次发布未提供哈希，仅校验了体积。\n"
-                             : "安装包 SHA-256 已校验通过。\n")
-                         + "\n点「立即更新」后 neo 会先断开当前连接并自动关闭，然后开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
-                    TextWrapping = TextWrapping.Wrap,
-                    FontSize = 12.5,
-                },
-                PrimaryButtonText = "立即更新",
-                CloseButtonText = "稍后",
-                DefaultButton = ContentDialogButton.Primary,
-                XamlRoot = XamlRoot,
-            };
-            var res = await Neo.App.Ui.DialogGuard.ShowAsync(confirm);
-            if (res == ContentDialogResult.Primary)
-            {
-                var (launchOk, launchErr) = await AppUpdateService.LaunchInstallerAndExitAsync(path, u.LatestTag);
-                if (!launchOk)
-                {
-                    // 等待器没起来（例如 powershell 不可用）→ 不退出，提示并保留现状。
-                    await ShowSettingsInfo("更新未开始", "无法安排「退出后安装」，本次未退出，更新已取消。\n\n"
-                        + (launchErr ?? "未知原因")
-                        + "\n\n可手动运行已下载的安装包：\n" + path);
-                    return;
-                }
-                // 等待器已启动：立刻有序退出；它会在本进程退出（AppMutex 释放）后再启动安装器。
-                App.MainWindowInstance?.ExitForUpdate();
-            }
+            _downloadedSetupPath = path;
+            EndKernelTask("完成：" + msg);
+            UpdateStatusText.Text = $"已下载 {u.LatestTag} · 点「安装并重启」";
+            if (BtnDownloadUpdate.Content is TextBlock tb) tb.Text = "安装并重启";
+            await ConfirmAndInstallUpdateAsync(u, path);
         }
-        finally { _downloadingUpdate = false; }
+        catch (OperationCanceledException)
+        {
+            EndKernelTask("已暂停：更新包下载保留断点，下次点「下载并更新」继续。");
+        }
+        catch (Exception ex)
+        {
+            EndKernelTask("失败：" + ex.Message);
+            LogBus.Exception("下载更新包失败", ex);
+        }
+        finally
+        {
+            _downloadingUpdate = false;
+        }
     }
+
+    private async Task ConfirmAndInstallUpdateAsync(AppUpdateService.UpdateInfo u, string path)
+    {
+        double sizeMb = 0;
+        try { sizeMb = new System.IO.FileInfo(path).Length / 1048576.0; }
+        catch (Exception ex)
+        {
+            LogBus.Exception("读取更新包大小失败", ex);
+            await ShowSettingsInfo("安装更新", "更新包已下载但无法读取（可能被清理或拦截），请重试。");
+            return;
+        }
+
+        var confirm = new ContentDialog
+        {
+            Title = "安装更新",
+            Content = new TextBlock
+            {
+                Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n"
+                     + (string.IsNullOrEmpty(u.Sha256)
+                         ? "本次发布未提供哈希，仅记录了实际 SHA-256。\n"
+                         : "安装包 SHA-256 已校验通过。\n")
+                     + "\n点「立即更新」后 neo 会先断开当前连接并自动关闭，然后开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12.5,
+            },
+            PrimaryButtonText = "立即更新",
+            CloseButtonText = "稍后",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        var res = await Neo.App.Ui.DialogGuard.ShowAsync(confirm);
+        if (res != ContentDialogResult.Primary) return;
+
+        var (launchOk, launchErr) = await AppUpdateService.LaunchInstallerAndExitAsync(path, u.LatestTag);
+        if (!launchOk)
+        {
+            await ShowSettingsInfo("更新未开始", "无法安排「退出后安装」，本次未退出，更新已取消。\n\n"
+                + (launchErr ?? "未知原因")
+                + "\n\n可手动运行已下载的安装包：\n" + path);
+            return;
+        }
+        // 等待器已启动：立刻有序退出；它会在本进程退出（AppMutex 释放）后再启动安装器。
+        App.MainWindowInstance?.ExitForUpdate();
+    }
+
 
     private void OnAutoCheckUpdateToggled(object sender, RoutedEventArgs e)
     {

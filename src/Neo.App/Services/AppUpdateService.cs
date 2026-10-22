@@ -330,6 +330,50 @@ public static class AppUpdateService
     ///      在 /SILENT + SUPPRESSMSGBOXES 下默认取消（实测 exit=1，什么都不装）。
     /// 调用方拿到 Ok 后应立即 ExitForUpdate()。
     /// </summary>
+    /// <summary>
+    /// 2026-10-23：更新包下载改走 KernelDownloader——**断点续传 + 实时进度 + SHA-256 校验**，
+    /// 与内核/分流数据同一套链路（用户要求「不只是这次更新，都能借鉴的都做」）。
+    /// 旧实现在这里用一次性流拷贝：没有续传、进度只有百分比、且下载进度只能塞进弹窗。
+    /// </summary>
+    public static async Task<(bool Ok, string? Path, string Message)> DownloadResumableAsync(
+        string assetUrl, string assetName, Action<DownloadProgress>? progress,
+        string? expectedSha256, CancellationToken ct)
+    {
+        string dest;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "neo-update");
+            Directory.CreateDirectory(dir);
+            dest = Path.Combine(dir, assetName);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, "无法创建更新包下载目录：" + ex.Message);
+        }
+
+        var (ok, msg) = await KernelDownloader.DownloadAsync(assetUrl, dest, progress, ct);
+        if (!ok) return (false, null, msg);
+
+        var (match, actual) = await KernelDownloader.VerifySha256Async(dest, expectedSha256, ct);
+        if (!match)
+        {
+            KernelDownloader.DiscardPart(dest);
+            try { File.Delete(dest); } catch { }
+            LogBus.App($"更新包哈希校验失败（期望 {expectedSha256}，实际 {actual}，{assetName}）——已删除本次下载", "Error");
+            IncidentLog.Record("update", "更新包哈希校验失败", $"{assetName} 期望 {expectedSha256} 实际 {actual}");
+            return (false, null, $"更新包 SHA-256 校验失败，已删除下载文件。\n期望 {expectedSha256}\n实际 {actual}");
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedSha256))
+        {
+            LogBus.App($"更新包未提供官方哈希，已记录实际 SHA-256：{actual}（{assetName}）", "Warning");
+            return (true, dest, $"已下载（发布方未提供哈希，实际 SHA-256：{actual}）");
+        }
+
+        LogBus.App($"更新包哈希校验通过：{actual}（{assetName}）", "Debug");
+        return (true, dest, $"已下载并通过 SHA-256 校验（{actual}）");
+    }
+
     public static async Task<(bool Ok, string? Error)> LaunchInstallerAndExitAsync(string setupPath, string? expectedVersion = null)
     {
         try

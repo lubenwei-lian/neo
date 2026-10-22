@@ -60,9 +60,14 @@ Name: "startmenuicon"; Description: "创建开始菜单快捷方式"; GroupDescr
 ; SHA256SUMS.txt 只是发布校验清单（publish.ps1 生成），不属于程序文件，不装进用户机器。
 ; 用户已更新到的 xray 26.10.17 覆盖回了 26.9.30。内核升级统一走应用内更新链路（SHA-256 校验/回滚），
 ; 安装包只在全新安装或文件缺失时补种。
-Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe,app\runtime\mihomo.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\publish\app\runtime\xray.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
 Source: "..\dist\publish\app\runtime\sing-box.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+; mihomo 是「按需下载」的可选内核：发布目录通常不带它；若这次带了，同样只在缺失时补种，
+; 绝不用安装包覆盖用户已经升级过的版本（xray/sing-box 同理，见上面两行）。
+#if FileExists("..\dist\publish\app\runtime\mihomo.exe")
+Source: "..\dist\publish\app\runtime\mihomo.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+#endif
 
 ;
 ; 该目录继承的是 Program Files 的 ACL：BUILTIN\Users 只有 (I)(RX)，即**只读**。
