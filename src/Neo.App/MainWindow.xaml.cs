@@ -174,6 +174,9 @@ public sealed partial class MainWindow : Window
         _pageIdleTimer.Start();
 
         NavigateTo("conn");
+
+        // 安全模式横幅：上次启动若被判定为内核异常，常驻提示（用户可「知道了」关闭本次会话的提示）。
+        RefreshSafeModeBanner();
     }
 
     /// 目标几何（启动时应停放的位置/尺寸）。构造时记录，等窗口在屏幕外渲染完成后再搬过去。
@@ -1555,8 +1558,57 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 安全模式横幅：State.SafeModeAt 非空且 7 天内 → 显示；用户点「知道了」仅关闭本会话的提示，
+    /// 不篡改持久化状态（恢复设置由设置页负责）。启动失败/看门狗触发的安全模式与它共用同一字段。
+    /// </summary>
+    private bool _safeModeBannerDismissed;
+
+    private void RefreshSafeModeBanner()
+    {
+        try
+        {
+            if (SafeModeBanner == null) return;
+            if (_safeModeBannerDismissed)
+            {
+                SafeModeBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var at = AppState.State.SafeModeAt ?? "";
+            if (at.Length == 0)
+            {
+                SafeModeBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+            var recent = DateTime.TryParse(at, out var dt) && (DateTime.Now - dt).TotalDays <= 7;
+            if (!recent)
+            {
+                SafeModeBanner.Visibility = Visibility.Collapsed;
+                return;
+            }
+            SafeModeText.Text = $"安全模式：{at} 启动时检测到上一次内核异常，已自动关闭 TUN / 固定出口。"
+                              + "如果这只是偶发问题，可以继续使用；要恢复之前的设置，请到 设置 → 安全模式 里恢复。";
+            SafeModeBanner.Visibility = Visibility.Visible;
+        }
+        catch { }
+    }
+
+    private void OnSafeModeLogClick(object sender, RoutedEventArgs e)
+    {
+        _safeModeBannerDismissed = true;
+        SafeModeBanner.Visibility = Visibility.Collapsed;
+        NavigateTo("log");
+    }
+
+    private void OnSafeModeDismissClick(object sender, RoutedEventArgs e)
+    {
+        _safeModeBannerDismissed = true;
+        RefreshSafeModeBanner();
+    }
+
     private void UpdateConnUi()
     {
+        RefreshSafeModeBanner();
         bool on = ConnectionService.IsConnected;
         bool connecting = ConnectionService.IsConnecting;
 
