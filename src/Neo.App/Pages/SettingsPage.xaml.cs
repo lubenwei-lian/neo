@@ -1096,7 +1096,7 @@ public sealed partial class SettingsPage : UserControl
         st.AutoRepairSystemProxy = true; st.AutoRestartCore = true;
         st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
-        st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.ShowRealIp = false;
+        st.AutoSpeedTest = true; st.StartupSpeedTest = false; st.ShowRealIp = false;
         st.AutoCheckUpdate = true; st.UpdateCheckTime = "12:00"; st.GameDirectEnabled = true;
         AppState.Save();
         AppState.NotifyUiSettingsChanged();

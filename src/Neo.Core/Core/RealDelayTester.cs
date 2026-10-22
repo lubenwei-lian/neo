@@ -25,6 +25,18 @@ public static class RealDelayTester
 
     private const string Target = "https://www.google.com/generate_204";
 
+    /// 延迟/可用性探测的目标序列（按顺序退让，第一个成功即采用）。
+    /// 为什么不止 google：2026-10-22 在本机实测同一节点 108 秒 36 次采样里
+    ///   x.com 36/36 成功，而 google/generate_204 只有 24/36（其余 5s 超时）——
+    ///   单目标会把「google 这条线被限速/抖动」误判成「节点死了」，
+    ///   而故障转移挑备选时正是用这个结果判定存活，会把整组备选判死。
+    /// cloudflare 204 是明文 HTTP、开销比 TLS 小，且 xray observatory 已在用（同口径）。
+    private static readonly string[] ProbeUrls =
+    {
+        Target,
+        "http://cp.cloudflare.com/generate_204",
+    };
+
     public static async Task<int> RealPingAsync(NodeItem node, string runtimeDir,
         int timeoutMs = DefaultTimeoutMs, CancellationToken ct = default)
     {
@@ -97,12 +109,22 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            var sw = Stopwatch.StartNew();
-            using var resp = await http.GetAsync(Target, HttpCompletionOption.ResponseHeadersRead, ct);
-            sw.Stop();
-
-            var code = (int)resp.StatusCode;
-            return code is 200 or 204 ? (int)sw.ElapsedMilliseconds : -1;
+            // 多目标退让：google 204 失败（超时/限速）时再用 cloudflare 204 判一次，
+            // 避免「google 抖一下」被当成节点不可用。
+            foreach (var url in ProbeUrls)
+            {
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                    sw.Stop();
+                    var code = (int)resp.StatusCode;
+                    if (code is 200 or 204) return (int)sw.ElapsedMilliseconds;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { /* 换下一个目标 */ }
+            }
+            return -1;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -153,15 +175,25 @@ public static class RealDelayTester
                 };
                 using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-                var sw = Stopwatch.StartNew();
-                using var resp = await http.GetAsync(target, HttpCompletionOption.ResponseHeadersRead, ct);
-                sw.Stop();
-
-                var code = (int)resp.StatusCode;
-                if (code is 200 or 204)
+                // 默认目标时按 ProbeUrls 退让（google 抖动时换 cloudflare 再判一次）；
+                // 调用方显式指定 target 时只用它，保持接口语义不变。
+                foreach (var url in target == Target ? ProbeUrls : new[] { target })
                 {
-                    var ms = (int)sw.ElapsedMilliseconds;
-                    if (best < 0 || ms < best) best = ms;
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                        sw.Stop();
+                        var code = (int)resp.StatusCode;
+                        if (code is 200 or 204)
+                        {
+                            var ms = (int)sw.ElapsedMilliseconds;
+                            if (best < 0 || ms < best) best = ms;
+                            break;
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch { /* 换下一个目标 */ }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -305,20 +337,29 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            // 预热：节点 TCP+TLS 握手发生在这条请求（不计入延迟口径，对齐 v2rayN——
-            // 它的计时只覆盖已建连后的 HTTP 往返，节点握手在内核后台完成）
-            try
+            foreach (var url in ProbeUrls)
             {
-                using var warm = new HttpRequestMessage(HttpMethod.Get, Target);
-                using var wr = await http.SendAsync(warm, HttpCompletionOption.ResponseHeadersRead, ct);
-            }
-            catch { /* 预热失败不影响正式计时 */ }
+                // 预热：节点 TCP+TLS 握手发生在这条请求（不计入延迟口径，对齐 v2rayN——
+                // 它的计时只覆盖已建连后的 HTTP 往返，节点握手在内核后台完成）
+                try
+                {
+                    using var warm = new HttpRequestMessage(HttpMethod.Get, url);
+                    using var wr = await http.SendAsync(warm, HttpCompletionOption.ResponseHeadersRead, ct);
+                }
+                catch { /* 预热失败不影响正式计时，也不换目标：正式请求会再试 */ }
 
-            var sw = Stopwatch.StartNew();
-            using var resp = await http.GetAsync(Target, HttpCompletionOption.ResponseHeadersRead, ct);
-            sw.Stop();
-            var code = (int)resp.StatusCode;
-            return code is 200 or 204 ? (int)sw.ElapsedMilliseconds : -1;
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                    sw.Stop();
+                    var code = (int)resp.StatusCode;
+                    if (code is 200 or 204) return (int)sw.ElapsedMilliseconds;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { /* 换下一个目标 */ }
+            }
+            return -1;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
