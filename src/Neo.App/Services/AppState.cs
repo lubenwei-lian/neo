@@ -1023,6 +1023,7 @@ public static class AppState
         NodeProtocol.MihomoConfig => "Clash 直通",
         NodeProtocol.WireGuard => "WireGuard",
         NodeProtocol.CustomConfig => "自定义配置",
+        NodeProtocol.Naive => "naive",
         _ => "Unknown",
     };
 

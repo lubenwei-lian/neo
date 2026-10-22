@@ -738,4 +738,125 @@ public static class UpdateChecker
         }
         return 0;
     }
+
+    // ================= 2026-10-23 第十九批：naiveproxy 内核（辅助进程） =================
+
+    private const string NaiveOwner = "klzgrad";
+    private const string NaiveRepo = "naiveproxy";
+
+    public sealed record NaiveRelease(string Version, string Tag, string AssetName, string DownloadUrl, long SizeBytes, string? Sha256);
+
+    private static string? _lastNaiveFetchIssue;
+
+    /// <summary>取 naiveproxy 最新 Windows x64 资产（naiveproxy-&lt;ver&gt;-win-x64.zip）。</summary>
+    public static async Task<NaiveRelease?> FetchLatestNaiveAsync(CancellationToken ct = default)
+    {
+        _lastNaiveFetchIssue = null;
+        var preferProxy = ConnectionService.IsConnected;
+        var tag = await GitHubChannel.GetLatestTagAsync(NaiveOwner, NaiveRepo, preferProxy, ct);
+        if (tag == null)
+        {
+            _lastNaiveFetchIssue = "网络不可达（已尝试当前代理 / 系统代理 / 直连）";
+            return null;
+        }
+        var ver = tag.TrimStart('v', 'V');
+        var assets = await GitHubChannel.GetAssetsAsync(NaiveOwner, NaiveRepo, tag, preferProxy, ct);
+        var asset = assets.FirstOrDefault(a =>
+            a.Name.EndsWith("-win-x64.zip", StringComparison.OrdinalIgnoreCase));
+        if (asset == null)
+        {
+            _lastNaiveFetchIssue = $"上游 {tag} 没有 win-x64 资产";
+            LogBus.App($"naive 内核更新：{_lastNaiveFetchIssue}", "Warning");
+            return null;
+        }
+        var sha = await GitHubChannel.GetAssetDigestAsync(NaiveOwner, NaiveRepo, tag, asset.Name, preferProxy, ct);
+        if (!string.IsNullOrEmpty(sha)) KernelHashCache.Put(NaiveOwner, NaiveRepo, tag, asset.Name, sha);
+        return new NaiveRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, sha);
+    }
+
+    public static async Task<(bool Ok, string Message, NaiveRelease? Release)> CheckNaiveAsync(string? currentVersion)
+    {
+        var rel = await FetchLatestNaiveAsync();
+        if (rel == null)
+            return (false, $"检查 naive 内核失败：{_lastNaiveFetchIssue ?? "网络不可达"}", null);
+        var cur = (currentVersion ?? "").Trim();
+        string verdict;
+        if (cur.Length == 0) verdict = "本机未安装 naive 内核，可一键下载安装。";
+        else if (CompareVersions(rel.Version, cur) > 0) verdict = "发现新版本，可一键覆盖安装。";
+        else if (CompareVersions(rel.Version, cur) == 0) verdict = "已是最新版本，无需更新。";
+        else verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
+        var curText = cur.Length == 0 ? "未安装" : cur;
+        return (true, $"当前内核：naive {curText}\n上游最新：naive {rel.Version}（{rel.Tag}）\n\n{verdict}", rel);
+    }
+
+    /// <summary>下载并安装 naive：zip → 找 naive.exe → 版本自校验（取不到版本则只校验文件名）→ 原子替换 → 复核。</summary>
+    public static async Task<(bool Ok, string Message)> DownloadAndInstallNaiveAsync(
+        NaiveRelease rel, Action<string> progress, CancellationToken ct = default,
+        Action<DownloadProgress>? onProgress = null)
+    {
+        var zipPath = Path.Combine(Path.GetTempPath(), "neo-naive-update.zip");
+        var extractDir = Path.Combine(Path.GetTempPath(), "neo-naive-update");
+        try
+        {
+            var sha = rel.Sha256 ?? KernelHashCache.TryGet(NaiveOwner, NaiveRepo, rel.Tag, rel.AssetName);
+            var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, rel.AssetName,
+                sha, progress, onProgress, ct, NaiveOwner, NaiveRepo, rel.Tag, rel.AssetName);
+            if (!fetched.Ok) return (false, fetched.Message);
+
+            progress("解压校验…");
+            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
+            ZipFile.ExtractToDirectory(zipPath, extractDir);
+            var newExe = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories)
+                               .FirstOrDefault(f => Path.GetFileName(f).Equals("naive.exe", StringComparison.OrdinalIgnoreCase))
+                         ?? Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories).FirstOrDefault();
+            if (newExe == null) return (false, "解压后未找到 naive.exe，安装中止。");
+
+            var verOut = RunNaiveVersion(newExe);
+            if (verOut.Length > 0 && !verOut.Contains(rel.Version.Split('.')[0], StringComparison.Ordinal))
+                return (false, $"新 naive 版本自校验不符（期望 {rel.Version}，实得 {verOut}），安装中止，未改动现有文件。");
+
+            var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "naive.exe");
+            var backup = target + ".bak-prev";
+            progress("覆盖安装…");
+            KernelInstall.ReplaceAtomically(newExe, target, backup);
+            KernelCatalog.ResetVersion(CoreEngine.Naive);
+
+            progress("清理临时文件…");
+            try { Directory.Delete(extractDir, true); } catch { }
+            try { File.Delete(zipPath); } catch { }
+            return (true, $"naive 已更新到 {rel.Version}。\n\n说明：naive 只提供 socks 入口，连接时由 sing-box 前置承载 http/TUN。");
+        }
+        catch (Exception ex)
+        {
+            return (false, "安装失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>naive --version 的输出（Chromium 风格，可能是 "naive 154.0.x" 或只有版本号）。</summary>
+    public static string RunNaiveVersion(string exe)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = "--version",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = Neo.Core.NeoPaths.RuntimeDir,
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return "";
+            var so = p.StandardOutput.ReadToEnd();
+            var se = p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } }
+            var text = (so + "\n" + se).Trim();
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"(\d+\.\d+\.\d+)");
+            return m.Success ? m.Groups[1].Value : "";
+        }
+        catch { return ""; }
+    }
+
 }

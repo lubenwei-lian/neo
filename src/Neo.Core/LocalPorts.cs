@@ -13,6 +13,8 @@ public static class LocalPorts
     public const int DefaultHttp = 21809;
     public const int FixedStatsApi = 21810;
     public const int FixedClashApi = 21811;
+    /// <summary>naive.exe 辅助进程的 socks 监听端口（前置内核通过 socks 出站接它；固定、不对用户开放）。</summary>
+    public const int NaiveListen = 21812;
 
     public static int Socks { get; private set; } = DefaultSocks;
     public static int Http { get; private set; } = DefaultHttp;

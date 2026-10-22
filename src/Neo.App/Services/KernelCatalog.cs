@@ -10,6 +10,7 @@ public enum CoreEngine
     Xray,
     SingBox,
     Mihomo,
+    Naive,
 }
 
 /// <summary>
@@ -32,6 +33,8 @@ public static class KernelCatalog
         new(CoreEngine.Xray, "xray", "xray.exe", "XTLS", "Xray-core", true),
         new(CoreEngine.SingBox, "sing-box", "sing-box.exe", "SagerNet", "sing-box", false),
         new(CoreEngine.Mihomo, "mihomo", "mihomo.exe", "MetaCubeX", "mihomo", false),
+        // naiveproxy：naive.exe 作为辅助进程（socks 入口），前置由 sing-box 承载
+        new(CoreEngine.Naive, "naive", "naive.exe", "klzgrad", "naiveproxy", false),
     ];
 
     private static readonly Dictionary<CoreEngine, string?> VersionCache = new();
@@ -62,6 +65,7 @@ public static class KernelCatalog
                 {
                     CoreEngine.Xray => "-version",
                     CoreEngine.SingBox => "version",
+                    CoreEngine.Naive => "--version",
                     _ => "-v",
                 };
                 var psi = new ProcessStartInfo

@@ -26,6 +26,8 @@ public static class ShareLinkParser
             if (link.StartsWith("anytls://", StringComparison.OrdinalIgnoreCase)) return ParseAnyTls(link);
             if (link.StartsWith("wireguard://", StringComparison.OrdinalIgnoreCase)
                 || link.StartsWith("wg://", StringComparison.OrdinalIgnoreCase)) return ParseWireGuard(link);
+            // naiveproxy：naive+https://user:pass@host:port（naive+quic 暂只当 https 处理不了，明确不认）。
+            if (link.StartsWith("naive+https://", StringComparison.OrdinalIgnoreCase)) return ParseNaive(link);
             if (link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5h://", StringComparison.OrdinalIgnoreCase)) return ParseSocks(link);
@@ -277,6 +279,37 @@ public static class ShareLinkParser
         ApplyCommonQuery(node, ParseQuery(uri.Query));
         node.Security = "tls";
         return node;
+    }
+
+    /// <summary>
+    /// naiveproxy 分享链接（对标主流客户端 NaiveFmt）：
+    ///   naive+https://user:pass@host:port#name
+    /// naive 走 HTTP/2 CONNECT，实际连接由 naive.exe 完成；这里只保留认证与 SNI 信息。
+    /// </summary>
+    private static NodeItem? ParseNaive(string link)
+    {
+        try
+        {
+            var body = link[("naive+https://".Length)..];
+            var uri = new Uri("https://" + body);
+            var user = Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[0]);
+            var pass = uri.UserInfo.Contains(':') ? Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[1]) : "";
+            var q = ParseQuery(uri.Query);
+            var node = new NodeItem
+            {
+                Protocol = NodeProtocol.Naive,
+                Server = StripBrackets(uri.Host),
+                Port = uri.Port > 0 ? uri.Port : 443,
+                Username = user,
+                Password = pass,
+                Security = "tls",
+                Sni = OrNull(G(q, "sni")) ?? StripBrackets(uri.Host),
+                Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
+            };
+            if (node.Name.Length == 0) node.Name = "naive " + node.EndPoint;
+            return node.IsValid && !string.IsNullOrEmpty(node.Username) ? node : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>

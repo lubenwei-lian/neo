@@ -62,7 +62,7 @@ Name: "startmenuicon"; Description: "创建开始菜单快捷方式"; GroupDescr
 ; 安装包只在全新安装或文件缺失时补种。
 ; 2026-10-23：分流数据（geoip/geosite/Country.mmdb/rule-sets）也属于「应用内可更新」的资产，
 ; 安装包更新时**不得覆盖**用户已经更新过的版本（否则每次升级都会把数据回退到发布时那一天）。
-Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe,app\runtime\mihomo.exe,app\runtime\geoip.dat,app\runtime\geosite.dat,app\runtime\Country.mmdb,app\runtime\rule-sets\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe,app\runtime\mihomo.exe,app\runtime\naive.exe,app\runtime\geoip.dat,app\runtime\geosite.dat,app\runtime\Country.mmdb,app\runtime\rule-sets\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\publish\app\runtime\xray.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
 Source: "..\dist\publish\app\runtime\sing-box.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
 ; mihomo 是「按需下载」的可选内核：发布目录通常不带它；若这次带了，同样只在缺失时补种，

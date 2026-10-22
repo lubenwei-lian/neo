@@ -29,6 +29,13 @@ public enum NodeProtocol
     WireGuard,
 
     /// <summary>
+    /// naiveproxy（HTTP/2 隧道）：项目里由「naive.exe 辅助进程 + sing-box 前置」两段组成
+    /// （naive 只提供 socks 入口，系统代理/TUN 需要前置内核提供 http 入站）。
+    /// 分享链接：naive+https://user:pass@host:port#name。
+    /// </summary>
+    Naive,
+
+    /// <summary>
     /// 自定义配置直通：订阅里给的是**整份 xray/sing-box JSON**（不是单个节点）。
     /// 连接时只改写本地接入端口/统计接口，其余 inbounds 之外的 outbounds/routing 原样保留。
     /// Extras["config_path"] = 保存的 JSON 路径；Extras["engine"] = "xray" / "sing-box"。
@@ -201,6 +208,9 @@ public sealed class NodeItem
 
     /// <summary>自定义整份配置直通节点。</summary>
     public bool IsCustomConfig => Protocol is NodeProtocol.CustomConfig;
+
+    /// <summary>naiveproxy 节点（两段式：naive.exe 辅助 + 前置内核）。</summary>
+    public bool IsNaive => Protocol is NodeProtocol.Naive;
 
     /// <summary>自定义配置使用的内核（"xray" / "sing-box"；由导入时探测）。</summary>
     public string CustomEngine => Extras.TryGetValue("engine", out var e) ? e : "xray";

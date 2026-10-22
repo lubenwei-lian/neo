@@ -11,6 +11,9 @@ public static class ConnectionService
 {
     private static CoreProcess? _xray;
 
+    /// naive 节点的辅助进程（naive.exe 只提供 socks 入口；前置 sing-box 负责 http/TUN）。
+    private static CoreProcess? _naive;
+
     /// 内核最近输出（仅内存，最近 60 行）。用途：内核秒退/崩溃时，把 FATAL 原因写进 Error 日志。
     /// 因为 sing-box 的 FATAL 行被判成 Info 后被级别门控吞掉（LogBus.Core 已同步修）。
     private static readonly System.Collections.Concurrent.ConcurrentQueue<string> _kernelTail = new();
@@ -241,6 +244,15 @@ public static class ConnectionService
             }
         }
 
+        // ★ 2026-10-23：naiveproxy（两段式：naive.exe 辅助 + sing-box 前置）。
+        bool useNaive = node.IsNaive;
+        string? naiveConfigPath = null;
+        if (useNaive)
+        {
+            if (!KernelCatalog.IsInstalled(CoreEngine.Naive))
+                return (false, "naive 节点需要 naive 内核：请到 设置 → 内核 → naive，点「检查更新」按需安装后再连接");
+        }
+
         // ★ 2026-10-23：自定义配置直通（订阅给的是整份 xray/sing-box JSON）。
         //   限制：暂不支持 TUN（不做 tun inbound 注入），固定出口也跳过（会破坏用户自己的路由）。
         bool useCustom = node.IsCustomConfig;
@@ -276,7 +288,9 @@ public static class ConnectionService
         if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray)
             LogBus.App("协议→内核映射要求 xray，但 TUN 模式固定 sing-box，本次忽略该映射", "Warning");
 
-        bool useSingBox = useCustom
+        bool useSingBox = useNaive
+            ? true   // naive 的前置固定用 sing-box（socks 出站 + 可选 tun 入站）
+            : useCustom
             ? customSingBox
             : useTun
             || Neo.Core.Core.KernelRouter.Apply(node,
@@ -327,7 +341,39 @@ public static class ConnectionService
         string json;
         try
         {
-            if (useCustom)
+            if (useNaive)
+            {
+                // naive 配置 + 前置 sing-box 配置（socks 出站指向 127.0.0.1:NaiveListen）。
+                var naiveDir = Path.Combine(NeoPaths.DataDir, "naive");
+                Directory.CreateDirectory(naiveDir);
+                naiveConfigPath = Path.Combine(naiveDir, "config.json");
+                var naiveJson = NaiveConfigBuilder.Build(node, LocalPorts.NaiveListen);
+                var ntmp = naiveConfigPath + ".tmp";
+                File.WriteAllText(ntmp, naiveJson);
+                File.Move(ntmp, naiveConfigPath, true);
+
+                var frontNode = new NodeItem
+                {
+                    Protocol = NodeProtocol.Socks,
+                    Server = "127.0.0.1",
+                    Port = LocalPorts.NaiveListen,
+                    Name = node.Name,
+                    Security = "none",
+                };
+                json = useTun
+                    ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.Socks, LocalPorts.Http,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.LogLevel, AppState.State.DnsServer,
+                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
+                    : SingBoxConfigBuilder.Build(frontNode, LocalPorts.Socks, LocalPorts.Http,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.LogLevel, AppState.State.DnsServer,
+                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
+                CoreKind = "naive";
+            }
+            else if (useCustom)
             {
                 // 自定义整份配置：原样保留 outbounds/routing，只改本地接入层与统计接口。
                 var srcJson = File.ReadAllText(node.Extras["config_path"]);
@@ -415,7 +461,7 @@ public static class ConnectionService
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
             }
-            if (!useMihomo && !useCustom) CoreKind = useSingBox ? "sing-box" : "xray";
+            if (!useMihomo && !useCustom && !useNaive) CoreKind = useSingBox ? "sing-box" : "xray";
         }
         catch (Exception ex)
         {
@@ -557,6 +603,36 @@ public static class ConnectionService
         try
         {
             _kernelTail.Clear();
+
+            // naive：先起辅助进程并等 socks 端口就绪，再起前置 sing-box。
+            if (useNaive && naiveConfigPath != null)
+            {
+                var naiveExe = KernelCatalog.ExePath(CoreEngine.Naive);
+                _naive = new CoreProcess(naiveExe, Path.GetDirectoryName(naiveConfigPath)!);
+                _naive.LogLine += line => LogBus.Core("[naive] " + line);
+                _naive.Exited += code => LogBus.App($"naive 辅助进程退出（exit code {code}）", "Warning");
+                _naive.Start(naiveConfigPath, new[] { naiveConfigPath });
+                var ready = false;
+                for (var i = 0; i < 25 && !ready; i++)
+                {
+                    await Task.Delay(100);
+                    try
+                    {
+                        using var c = new System.Net.Sockets.TcpClient();
+                        await c.ConnectAsync(System.Net.IPAddress.Loopback, LocalPorts.NaiveListen);
+                        ready = true;
+                    }
+                    catch { }
+                }
+                if (!ready)
+                {
+                    try { _naive.StopAndVerify(); } catch { }
+                    _naive = null;
+                    return (false, "naive 辅助进程启动失败（socks 入口未就绪），请检查 naive 内核是否完整");
+                }
+                LogBus.App($"naive 辅助进程已就绪（PID {_naive.Pid} · 本地 socks {LocalPorts.NaiveListen}）");
+            }
+
             _xray = new CoreProcess(exe, NeoPaths.RuntimeDir);
             _xray.LogLine += line =>
             {
@@ -886,6 +962,15 @@ public static class ConnectionService
         catch (Exception ex) { LogBus.Exception("停止内核失败", ex); }
         _xray = null;
 
+        // naive 辅助进程：必须一起停，否则它会一直占着 socks 入口。
+        try
+        {
+            if (_naive != null && !_naive.StopAndVerify())
+                LogBus.App("naive 辅助进程未能在超时内退出", "Warning");
+        }
+        catch (Exception ex) { LogBus.Exception("停止 naive 辅助进程失败", ex); }
+        _naive = null;
+
         //   本方法是在 **UI 线程**上被同步调用的（MainWindow.StopTimersAndDisconnect / 关窗口 /
         //   退出流程都会走到它），而 TeardownTunNetwork 内部会串行启动两条 PowerShell
         //   （Get-NetAdapter / Get-NetRoute），每条冷启动数百毫秒、最坏各等 8 秒超时。
@@ -1103,7 +1188,7 @@ public static class ConnectionService
         catch { }
 
         // ② 名字匹配兜底（带二次确认）
-        foreach (var name in new[] { "xray", "sing-box" })
+        foreach (var name in new[] { "xray", "sing-box", "naive" })
         {
             Process[] procs;
             try { procs = Process.GetProcessesByName(name); } catch { continue; }
@@ -2164,6 +2249,8 @@ public static class ConnectionService
                 why = $"本地 {LocalPorts.Socks}/{LocalPorts.Http} 端口未监听";
             else if (_tunSessionActive && !HasTunAdapter())
                 why = "TUN 网卡 neo-tun 不存在";
+            else if (_naive != null && !_naive.IsRunning)
+                why = "naive 辅助进程未运行";
 
             // stats API：仅 xray 有 10085（sing-box 用 clash_api，不按这个口径判卡死）。
             // 用现有 XrayStats.Query（xray api statsquery）探活，3s 超时；连续 3 次（约 60s）无响应 = 卡死。

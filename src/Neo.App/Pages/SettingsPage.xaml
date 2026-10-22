@@ -302,6 +302,24 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="naive 内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="NaiveVersionHint" Text="可选内核 · 未安装（按需下载；辅助进程）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border MinWidth="96" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0">
+                                <TextBlock x:Name="NaiveVersionText" Text="—" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
+                                           Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            </Border>
+                            <Button x:Name="BtnCheckNaiveUpdate" Style="{StaticResource GhostSm}" Click="OnCheckNaiveUpdateClick">
+                                <TextBlock Text="检查更新" FontSize="11.5" />
+                            </Button>
+                            <ProgressRing x:Name="RingNaiveUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="分流数据" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="GeoDataHint" Text="决定国内站点直连是否准确" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0"
                                        ToolTipService.ToolTip="geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set。下载支持断点续传；先写临时文件再原子替换，旧文件保留为 *.bak-prev；连接中也可更新（走本地代理），被占用时下次连接前自动应用。" />

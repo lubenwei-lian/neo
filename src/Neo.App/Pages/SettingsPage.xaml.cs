@@ -718,6 +718,7 @@ public sealed partial class SettingsPage : UserControl
     private XrayRelease? _pendingXrayRelease;
     private SingBoxRelease? _pendingSingBoxRelease;
     private MihomoRelease? _pendingMihomoRelease;
+    private UpdateChecker.NaiveRelease? _pendingNaiveRelease;
 
     private void BeginKernelTask(string title)
     {
@@ -912,6 +913,37 @@ public sealed partial class SettingsPage : UserControl
 
         if (_pendingMihomoRelease is { } p2)
             MihomoVersionHint.Text = $"发现新版本 {p2.Version} · 再点「检查更新」开始下载";
+    }
+
+    /// 检查 naive 更新（可选内核；naive.exe 只作为辅助进程，前置由 sing-box 承载）。
+    private async void OnCheckNaiveUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_kernelTaskActive) return;
+
+        if (_pendingNaiveRelease is { } pending)
+        {
+            _pendingNaiveRelease = null;
+            await RunKernelTaskAsync($"安装 naive {pending.Version}", (stage, prog, ct) =>
+                UpdateChecker.DownloadAndInstallNaiveAsync(pending, stage, ct, prog));
+            RefreshState();
+            return;
+        }
+
+        await RunKernelTaskAsync("检查 naive 更新", async (stage, _, ct) =>
+        {
+            stage("正在检查 naive 更新…");
+            var cur = KernelCatalog.ReadVersion(CoreEngine.Naive) ?? "";
+            var (ok, msg, rel) = await UpdateChecker.CheckNaiveAsync(cur);
+            if (!ok) return (false, msg);
+            var hasNew = rel is { } r && (cur.Length == 0 || UpdateChecker.CompareVersions(r.Version, cur) > 0);
+            if (!hasNew) return (true, $"naive 已是最新版本（{cur}）");
+            _pendingNaiveRelease = rel;
+            var curText = cur.Length == 0 ? "未安装" : cur;
+            return (true, $"发现 naive {rel!.Version}（当前 {curText}）：再点一次「检查更新」开始下载安装");
+        });
+
+        if (_pendingNaiveRelease is { } p2)
+            NaiveVersionHint.Text = $"发现新版本 {p2.Version} · 再点「检查更新」开始下载";
     }
 
     /// 更新分流数据（geoip/geosite/Country.mmdb/rule-set）：页内进度、无弹窗、连接中拒绝。
@@ -1376,6 +1408,13 @@ public sealed partial class SettingsPage : UserControl
         MihomoVersionHint.Text = KernelCatalog.IsInstalled(CoreEngine.Mihomo)
             ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Mihomo)}"
             : "可选内核 · 未安装（按需下载）";
+
+        // naive（辅助内核）：naive.exe + sing-box 前置。
+        var naiveInstalled = KernelCatalog.IsInstalled(CoreEngine.Naive);
+        NaiveVersionText.Text = naiveInstalled ? (KernelCatalog.ReadVersion(CoreEngine.Naive) ?? "已安装") : "—";
+        NaiveVersionHint.Text = naiveInstalled
+            ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Naive)}（辅助进程）"
+            : "可选内核 · 未安装（按需下载；辅助进程）";
 
         // 分流数据：显示上次通过本程序更新的时间。
         var geoAt = AppState.State.GeoUpdatedAt;
