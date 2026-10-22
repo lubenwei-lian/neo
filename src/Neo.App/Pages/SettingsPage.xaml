@@ -73,6 +73,15 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="真连测速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="开启后节点页测速走真实连接（慢但能判断能否真的访问网站）；关闭则用 TCP 握手测延迟，和 v2rayN 一致" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchRealDelayTest" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnRealDelayTestToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="关闭窗口时最小化到托盘" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock Text="保持代理在后台运行" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>

@@ -470,6 +470,7 @@ public static class ConnectionService
         _lastCoreStartAt = DateTime.Now;   // 供「内核是否稳定运行过」判断使用
         _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
         _ = WarmupDnsAsync();                 // 连接成功后预热 DNS（x.com / cloudflare），减轻首访冷启动
+        StartWatchdog(node);                  // 内核兜底：每 20s 检查进程/端口/TUN/stats API
         var gdCount = (useSingBox && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
         LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
                    (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
@@ -678,6 +679,9 @@ public static class ConnectionService
     {
         // 断开 / 切换会话：取消尚未完成的连接后自检。
         CancelPostConnectSelfCheck();
+        CancelWatchdog();
+        // 会话真正结束（非看门狗发起的重启）时，把「看门狗连续触发」计数归零。
+        if (!_watchdogRestarting) _watchdogTriggerCount = 0;
 
         // 用户主动断开 / 退出程序：清掉「故障转移放弃后重连」的待办，
         // 避免用户刚点断开，5 分钟后又被自动连回去。
@@ -1631,6 +1635,7 @@ public static class ConnectionService
             StartBackgroundTunTeardown("内核意外退出");
         }
 
+        CancelWatchdog();   // 内核已退出：交给现有「内核意外退出自动重启」路径，避免看门狗重复重启
         _xray = null;
         var crashTail = KernelTailText();
         LogBus.App($"内核意外退出（exit code {code}）— 已自动断开并清理系统代理"
@@ -1724,6 +1729,17 @@ public static class ConnectionService
     private static bool _coreRestartInProgress;
     private static CancellationTokenSource? _coreRestartCts;
 
+    // ---- 内核看门狗（兜底）----
+    // 针对 v2rayN「内核死掉不重启」的痛点：连接成功后每 20s 主动检查
+    //   ① 10808/10809 是否仍监听、② 内核进程 IsRunning、③ TUN 网卡是否还在、
+    //   ④ xray stats API（10085）是否连续 60s 无响应（卡死）。
+    // 连续失败 2 次 → 复用 TryAutoRestartCoreAsync；重启失败或连续触发 3 次 → 进入安全模式。
+    private static CancellationTokenSource? _watchdogCts;
+    private const int WatchdogIntervalSeconds = 20;
+    private const int WatchdogMaxTriggers = 3;
+    private static int _watchdogTriggerCount;   // 跨自动重启保留；会话真正结束/进入安全模式时清零
+    private static bool _watchdogRestarting;    // 看门狗发起的重启中（Disconnect 不清零触发计数）
+
     /// 内核稳定运行超过这个时长后再次崩溃，视为「新事件」，重置重试计数。
     private const int StableUptimeSeconds = 60;
 
@@ -1811,6 +1827,138 @@ public static class ConnectionService
         }
     }
 
+    // ---- 内核看门狗实现 ----
+    private static void StartWatchdog(NodeItem node)
+    {
+        CancelWatchdog();
+        var cts = new CancellationTokenSource();
+        _watchdogCts = cts;
+        _ = Task.Run(async () =>
+        {
+            try { await WatchdogLoopAsync(node, cts.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { LogBus.App($"内核兜底：看门狗异常退出：[{ex.GetType().Name}] {ex.Message}", "Error"); }
+            finally
+            {
+                if (ReferenceEquals(_watchdogCts, cts)) _watchdogCts = null;
+                try { cts.Dispose(); } catch { }
+            }
+        });
+    }
+
+    private static void CancelWatchdog()
+    {
+        var cts = _watchdogCts;
+        _watchdogCts = null;
+        try { cts?.Cancel(); } catch { }
+    }
+
+    private static async Task WatchdogLoopAsync(NodeItem node, CancellationToken ct)
+    {
+        var fails = 0;
+        var statsFails = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(WatchdogIntervalSeconds), ct);
+            if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
+            if (_watchdogRestarting) return;   // 已在本看门狗发起的重启流程里
+
+            var why = "";
+            var processOk = _xray != null && _xray.IsRunning;
+            if (!processOk) why = "内核进程未运行";
+            else if (PortFree(XrayConfigBuilder.DefaultSocksPort) || PortFree(XrayConfigBuilder.DefaultHttpPort))
+                why = "本地 10808/10809 端口未监听";
+            else if (_tunSessionActive && !HasTunAdapter())
+                why = "TUN 网卡 neo-tun 不存在";
+
+            // stats API：仅 xray 有 10085（sing-box 用 clash_api，不按这个口径判卡死）。
+            // 用现有 XrayStats.Query（xray api statsquery）探活，3s 超时；连续 3 次（约 60s）无响应 = 卡死。
+            var statsKill = false;
+            if (why.Length == 0 && CoreKind == "xray")
+            {
+                if (XrayStats.Query() != null) statsFails = 0;
+                else
+                {
+                    statsFails++;
+                    LogBus.App($"内核兜底：stats API 无响应（连续 {statsFails}/{WatchdogMaxTriggers} 次，约 {statsFails * WatchdogIntervalSeconds}s）", "Warning");
+                    if (statsFails >= WatchdogMaxTriggers)
+                    {
+                        statsKill = true;
+                        why = "stats API 连续 60 秒无响应（内核卡死）";
+                    }
+                }
+            }
+            else if (why.Length > 0 || CoreKind != "xray")
+            {
+                statsFails = 0;
+            }
+
+            if (why.Length == 0)
+            {
+                fails = 0;
+                continue;
+            }
+
+            fails++;
+            LogBus.App($"内核兜底：检测到异常（{why}），连续 {fails}/2 次", "Warning");
+            if (!statsKill && fails < 2) continue;
+
+            _watchdogTriggerCount++;
+            IncidentLog.Record("watchdog", statsKill ? "内核无响应" : "内核看门狗触发",
+                $"{why}（第 {_watchdogTriggerCount}/{WatchdogMaxTriggers} 次）");
+            LogBus.App($"内核兜底：{why}，开始自动重启内核（第 {_watchdogTriggerCount}/{WatchdogMaxTriggers} 次）", "Warning");
+
+            if (_watchdogTriggerCount >= WatchdogMaxTriggers)
+            {
+                EnterSafeMode($"看门狗连续触发 {_watchdogTriggerCount} 次（最后原因：{why}）");
+                return;
+            }
+
+            if (_coreRestartInProgress)
+            {
+                LogBus.App("内核兜底：已有内核自动重启在进行，看门狗让行", "Warning");
+                return;
+            }
+
+            _watchdogRestarting = true;
+            try { await TryAutoRestartCoreAsync(node); }
+            catch (Exception ex) { LogBus.App($"内核兜底：看门狗发起自动重启异常：[{ex.GetType().Name}] {ex.Message}", "Error"); }
+            finally { _watchdogRestarting = false; }
+
+            if (ct.IsCancellationRequested || App.IsShuttingDown) return;   // 重启期间用户已断开/退出：不判失败
+            if (_coreRestartInProgress)
+            {
+                LogBus.App("内核兜底：看门狗已让行给现有自动重启", "Warning");
+                return;
+            }
+            if (!IsConnected) EnterSafeMode($"看门狗自动重启后仍未连接（最后原因：{why}）");
+            return;   // 成功重启后 ConnectAsync 已启动新看门狗，本循环结束
+        }
+    }
+
+    private static void EnterSafeMode(string reason)
+    {
+        _watchdogTriggerCount = 0;
+        try
+        {
+            var st = AppState.State;
+            st.SafeModePrevTun = st.UseTun;
+            st.SafeModePrevFixedExit = st.FixedExitEnabled;
+            st.SafeModeAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+            st.UseTun = false;
+            st.FixedExitEnabled = false;
+            AppState.Save();
+            AppState.SafeModeActive = true;
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"内核兜底：写入安全模式设置失败：[{ex.GetType().Name}] {ex.Message}", "Error");
+        }
+
+        try { Disconnect("内核兜底：进入安全模式"); } catch { }
+        LogBus.App($"内核兜底：已进入安全模式（原因：{reason}）—— TUN 与固定出口已关闭，请检查内核日志/配置后在设置页按需重新开启", "Error");
+        IncidentLog.Record("watchdog", "看门狗进入安全模式", reason);
+    }
     /// 解析固定出口的出口节点：优先用户手动指定的键，否则自动选延迟最好的非 REALITY 节点。
     private static NodeItem? ResolveFixedExitNode()
     {

@@ -108,6 +108,11 @@ public static class AppState
         /// 打开后节点页会自动在后台检测一次。
         public bool ShowRealIp { get; set; } = false;
 
+        /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（v2rayN 风格，快）；
+        /// true = 走真实连接（慢但能判断是否真的能访问网站）。
+        /// 关闭时节点页隐藏「真连测速」按钮、把「快速测延迟」升为主按钮；卡片主徽标显示 TCP 延迟。
+        public bool RealDelayTestEnabled { get; set; } = false;
+
         public int AutoUpdateHours { get; set; } = 12;
 
         public bool AutoCheckUpdate { get; set; } = true;

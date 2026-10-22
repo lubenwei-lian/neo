@@ -228,7 +228,9 @@ public static class ClashYamlParser
         var node = new NodeItem
         {
             Name = Str(item, "name"),
-            Server = Str(item, "server"),
+            // ★ 2026-10-23 IPv6 方括号：Clash 的 server 也可能写成 "[2001:db8::1]"；
+            //   解析阶段统一剥掉，xray 与 sing-box 两条路径都受益（Xray 构建器不在本次写入范围）。
+            Server = StripBrackets(Str(item, "server")),
             Port = Int(item, "port"),
         };
         if (node.Port <= 0 || node.Server.Length == 0) return null;
@@ -245,6 +247,10 @@ public static class ClashYamlParser
                 node.Protocol = NodeProtocol.Shadowsocks;
                 node.Method = Str(item, "cipher");
                 node.Password = Str(item, "password");
+                // ★ 2026-10-23 ss-plugin：Clash 的 ss 条目用 plugin / plugin-opts(map) 描述 SIP003；
+                //   与分享链接一样落到 NodeItem.Plugin/PluginOpts，由 SingBoxConfigBuilder 写进 outbound。
+                node.Plugin = StrOrNull(item, "plugin");
+                node.PluginOpts = PluginOptsToString(item);
                 break;
 
             case "vmess":
@@ -324,6 +330,25 @@ public static class ClashYamlParser
         if (Bool(item, "skip-cert-verify")) node.AllowInsecure = true;
     }
 
+
+    /// <summary>把 Clash 的 plugin-opts map 拼成 SIP003 的 "k=v;k=v" 串；也兼容字符串写法。</summary>
+    private static string? PluginOptsToString(Dictionary<string, object> item)
+    {
+        var direct = StrOrNull(item, "plugin-opts") ?? StrOrNull(item, "plugin_opts");
+        if (direct != null) return direct;
+        var map = Map(item, "plugin-opts") ?? Map(item, "plugin_opts");
+        if (map == null) return null;
+        var parts = new List<string>();
+        foreach (var kv in map)
+        {
+            if (kv.Value is string s && s.Length > 0) parts.Add($"{kv.Key}={s}");
+        }
+        return parts.Count > 0 ? string.Join(";", parts) : null;
+    }
+
+    /// <summary>去掉 IPv6 字面量两侧的方括号。</summary>
+    private static string StripBrackets(string host) =>
+        host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
 
     private static string Str(Dictionary<string, object> m, string k) =>
         m.TryGetValue(k, out var v) && v is string s ? s : "";

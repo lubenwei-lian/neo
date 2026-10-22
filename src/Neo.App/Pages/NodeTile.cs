@@ -103,7 +103,9 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         string text, fgKey;
         Color fgFallback;
-        var ms = Node.RealDelay;
+        // 关闭「真连测速」时主徽标显示 TCP 握手延迟（v2rayN 风格）；开启后按现有 RealDelay 语义显示。
+        var useReal = AppState.State.RealDelayTestEnabled;
+        var ms = useReal ? Node.RealDelay : Node.TcpDelay;
 
         if (ms > 0)
         {
@@ -118,7 +120,7 @@ public sealed class NodeTile : INotifyPropertyChanged
             fgKey = "NeoRed";
             fgFallback = Color.FromArgb(255, 0xDC, 0x26, 0x26);
         }
-        else if (ms == RealDelayTester.BatchFailed)
+        else if (useReal && ms == RealDelayTester.BatchFailed)
         {
             //   与「超时」区分：显示为「本机失败」并配中性色，避免用户误判成节点问题。
             text = "本机失败";
@@ -127,7 +129,8 @@ public sealed class NodeTile : INotifyPropertyChanged
         }
         else
         {
-            text = "未测";
+            // 关闭真连测速时更明确地写「未测速」（此时徽标代表 TCP 握手延迟）。
+            text = useReal ? "未测" : "未测速";
             fgKey = "NeoText3";
             fgFallback = Color.FromArgb(255, 0x98, 0xA0, 0xAA);
         }
@@ -163,7 +166,7 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         Node.TcpDelay = ms;
         Node.TcpDelayAt = DateTime.Now;
-        RefreshMeta();
+        RefreshDelay();   // 关闭真连时它就是主徽标；同时内部会刷新 meta
         LogBus.App($"TCP 延迟 {Node.Name} → " + (ms > 0 ? $"{ms} ms" : ms == -1 ? "超时" : "跳过"), "Debug");
     }
 

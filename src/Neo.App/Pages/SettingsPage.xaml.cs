@@ -108,6 +108,15 @@ public sealed partial class SettingsPage : UserControl
         AppState.NotifyUiSettingsChanged();
     }
 
+    private void OnRealDelayTestToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.RealDelayTestEnabled = SwitchRealDelayTest.IsOn;
+        AppState.Save();
+        // 节点页立即切换：主按钮（真连/快速）与卡片主徽标（TCP/真连）都按开关重绘
+        AppState.NotifyUiSettingsChanged();
+    }
+
     private void OnMinTrayToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -1069,6 +1078,7 @@ public sealed partial class SettingsPage : UserControl
         st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.AutoSpeedTest = true; st.StartupSpeedTest = false; st.ShowRealIp = false;
+        st.RealDelayTestEnabled = false;
         st.AutoCheckUpdate = true; st.GameDirectEnabled = true;
         AppState.Save();
         AppState.NotifyUiSettingsChanged();
@@ -1087,6 +1097,7 @@ public sealed partial class SettingsPage : UserControl
         SwitchAutoConnect.IsOn = AppState.State.AutoConnect;
         SwitchStartupSpeedTest.IsOn = AppState.State.StartupSpeedTest;
         SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
+        SwitchRealDelayTest.IsOn = AppState.State.RealDelayTestEnabled;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchAutoRepairProxy.IsOn = AppState.State.AutoRepairSystemProxy;
         SwitchAutoRestartCore.IsOn = AppState.State.AutoRestartCore;

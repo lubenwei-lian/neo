@@ -33,6 +33,15 @@ public sealed class NodeItem
     public string? ServiceName { get; set; }
     public string? HeaderType { get; set; }
 
+    /// <summary>
+    /// Shadowsocks SIP003 插件名（如 obfs-local / v2ray-plugin / shadow-tls）；null = 无插件。
+    /// 仅 sing-box 路径会写入 outbound（xray 不支持 SIP003 插件）；可空，兼容旧 state/subscription-cache。
+    /// </summary>
+    public string? Plugin { get; set; }
+
+    /// <summary>SIP003 插件参数（如 "obfs=http;obfs-host=bing.com"）；null/空 = 无参数。</summary>
+    public string? PluginOpts { get; set; }
+
     public string Security { get; set; } = "none";
     public string? Sni { get; set; }
     public string? Fingerprint { get; set; }

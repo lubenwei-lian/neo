@@ -143,7 +143,9 @@ public static class SingBoxConfigBuilder
         var o = new JsonObject
         {
             ["tag"] = "proxy",
-            ["server"] = n.Server,
+            // ★ 2026-10-23 IPv6 方括号：vless/trojan 的 uri.Host 会带 []（.NET 行为），写进 outbound 前统一剥掉。
+            //   xray 侧同一问题由 ShareLinkParser/ClashYamlParser 在解析阶段剥（Xray 构建器不在本次写入范围）。
+            ["server"] = StripBrackets(n.Server),
             ["server_port"] = n.Port,
             ["domain_resolver"] = "dns-direct",
         };
@@ -178,6 +180,16 @@ public static class SingBoxConfigBuilder
                 o["type"] = "shadowsocks";
                 o["method"] = n.Method ?? "aes-128-gcm";
                 o["password"] = n.Password ?? "";
+                // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：sing-box 1.14 的 shadowsocks 出站支持
+                //   `plugin` / `plugin_opts` 两个字段（SIP003，如 obfs-local / v2ray-plugin / shadow-tls）。
+                //   旧实现把 ss 的 plugin 只塞在 Extras["query"]、全仓无读取方 → 插件节点被静默降级成裸 SS
+                //   （能导入、必连不上）。字段名已按 sing-box 1.14 文档核对（v2rayN 也是这两个字段）。
+                //   注意：xray 不支持 SIP003 插件，xray 路径保持原样（这类节点需走 TUN/sing-box）。
+                if (!string.IsNullOrEmpty(n.Plugin))
+                {
+                    o["plugin"] = n.Plugin;
+                    if (!string.IsNullOrEmpty(n.PluginOpts)) o["plugin_opts"] = n.PluginOpts;
+                }
                 break;
 
             case NodeProtocol.Hysteria2:
@@ -191,11 +203,14 @@ public static class SingBoxConfigBuilder
                         ob["password"] = obPwd;
                     o["obfs"] = ob;
                 }
-                if (n.Extras.TryGetValue("mport", out var mport) && mport.Contains('-'))
-                {
-                    var parts = mport.Split('-', 2);
-                    o["server_ports"] = new JsonArray($"{parts[0].Trim()}:{parts[1].Trim()}");
-                }
+                // ★ 2026-10-23 hy2 端口跳跃（v2rayN 标准写法 host:443,5000-6000）：
+                //   sing-box 1.14 的 hysteria2 出站字段是 `server_ports`（字符串数组），区间写成 "start:end"。
+                //   优先用分享链接解析出的 server_ports；兼容旧的 mport=20000-30000 查询参数写法。
+                var portsRaw = "";
+                if (n.Extras.TryGetValue("server_ports", out var sp) && !string.IsNullOrWhiteSpace(sp)) portsRaw = sp;
+                else if (n.Extras.TryGetValue("mport", out var mp) && !string.IsNullOrWhiteSpace(mp)) portsRaw = mp;
+                var serverPorts = BuildServerPorts(portsRaw);
+                if (serverPorts != null) o["server_ports"] = serverPorts;
                 if (n.Extras.TryGetValue("up", out var up) && int.TryParse(up, out var upMbps)) o["up_mbps"] = upMbps;
                 if (n.Extras.TryGetValue("down", out var down) && int.TryParse(down, out var downMbps)) o["down_mbps"] = downMbps;
                 break;
@@ -227,7 +242,7 @@ public static class SingBoxConfigBuilder
         var tls = new JsonObject
         {
             ["enabled"] = true,
-            ["server_name"] = n.Sni ?? n.HostHeader ?? n.Server,
+            ["server_name"] = n.Sni ?? n.HostHeader ?? StripBrackets(n.Server),
         };
         if (n.AllowInsecure) tls["insecure"] = true;
 
@@ -295,7 +310,7 @@ public static class SingBoxConfigBuilder
             case "http":
             case "h2":
                 var host = new JsonArray();
-                host.Add(n.HostHeader ?? n.Server);
+                host.Add(n.HostHeader ?? StripBrackets(n.Server));
                 o["transport"] = new JsonObject
                 {
                     ["type"] = "http",
@@ -406,6 +421,29 @@ public static class SingBoxConfigBuilder
 
     private static string StripBrackets(string host) =>
         host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+
+    /// <summary>
+    /// 把 "443,5000-6000" / "20000-30000" / "443,5000:6000" 归一化成 sing-box server_ports 数组
+    /// （区间用 "start:end"，多个用逗号）；只有单个端口且无跳跃时返回 null（沿用 server_port，不重复写字段）。
+    /// </summary>
+    private static JsonArray? BuildServerPorts(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var arr = new JsonArray();
+        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var segs = part.Replace('-', ':').Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (segs.Length == 0 || !int.TryParse(segs[0], out var a) || a <= 0) continue;
+            if (segs.Length >= 2 && int.TryParse(segs[1], out var b) && b > 0) arr.Add($"{a}:{b}");
+            // ★ sing-box 的 server_ports 每项必须是 "start:end" 区间格式：
+            //   实测（sing-box 1.14.2 check）写单端口 "443" 会 FATAL `bad port range: 443`，
+            //   必须写成 "443:443"；这里把单端口也归一成同值区间。
+            else arr.Add($"{a}:{a}");
+        }
+        if (arr.Count == 0) return null;
+        var hasJump = raw.Contains(',') || raw.Contains('-') || raw.Contains(':') || arr.Count > 1;
+        return hasJump ? arr : null;
+    }
 
     private static JsonObject BuildRoute(string mode, bool bypassPrivate, bool bypassCn, bool blockAds,
         IReadOnlyList<RouteRule>? customRules, bool tunMode,

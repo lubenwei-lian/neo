@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 using Neo.Core.Models;
 
 namespace Neo.Core.Parsing;
@@ -141,21 +142,62 @@ public static class SubscriptionFetcher
             return yr;
         }
 
+        // ★ 2026-10-23 新增 SIP008（Shadowsocks 官方 JSON，根对象 `servers` 数组）识别。
+        //   只在「JSON 根对象确实有 servers 数组」时按 SIP008 处理，不对其它 JSON 乱猜；
+        //   识别/解析失败仍走现有「未解析出任何有效节点」提示。
+        if (LooksLikeSip008(text))
+        {
+            var (sipNodes, skipped) = ParseSip008(text);
+            if (skipped > 0)
+                LogBus($"SIP008 解析：跳过 {skipped} 条无效条目（缺 server/port/method/password 等）");
+            if (sipNodes.Count == 0)
+            {
+                LogBus("SIP008 解析：识别到 servers 数组，但 0 个可用节点");
+                return SubscriptionFetchResult.Fail("检测到 Shadowsocks SIP008 格式，但未解析出可用节点（格式可能不受支持）");
+            }
+            var sr = SubscriptionFetchResult.Ok(text);
+            sr.Nodes.AddRange(sipNodes);
+            return sr;
+        }
+
         string content = text;
         var compact = new string(text.Where(c => !char.IsWhiteSpace(c)).ToArray());
         var decoded = ShareLinkParser.TryB64Decode(compact);
-        if (decoded != null && decoded.Contains("://")) content = decoded;
+        if (decoded != null)
+        {
+            // ★ 2026-10-23 新增「base64 包着 Clash YAML」识别：部分面板把 Clash 配置也统一 b64，
+            //   旧逻辑只接受解码后含 "://" 的内容 → 这类订阅直接判「未解析出节点」。
+            //   只对确实像 Clash（含顶层 proxies:）的解码结果走 YAML 解析，其余仍按原文处理。
+            if (LooksLikeClashYaml(decoded))
+            {
+                var b64YamlNodes = ClashYamlParser.Parse(decoded);
+                if (b64YamlNodes.Count == 0)
+                {
+                    LogBus("订阅：base64 解码后是 Clash YAML，但未解析出可用节点");
+                    return SubscriptionFetchResult.Fail("检测到 Clash YAML 格式，但未解析出可用节点（格式可能不受支持）");
+                }
+                var br = SubscriptionFetchResult.Ok(decoded);
+                br.Nodes.AddRange(b64YamlNodes);
+                return br;
+            }
+            if (decoded.Contains("://")) content = decoded;
+            else LogBus("订阅：base64 解码成功但既非 Clash YAML 也不含分享链接，按原文解析");
+        }
 
         var result = SubscriptionFetchResult.Ok(content);
         var lines = content.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
         var meta = lines.Where(l => !l.Contains("://")).Take(3).ToList();
 
+        var parseFailed = 0;
         foreach (var line in lines)
         {
             var node = ShareLinkParser.Parse(line);
             if (node != null && node.IsValid) result.Nodes.Add(node);
+            else if (line.Contains("://")) parseFailed++;
         }
+        // 解析失败保持静默跳过（不阻断整份订阅），但留一条 Debug 日志便于排障（Logger 由上层接到 Debug）。
+        if (parseFailed > 0) LogBus($"订阅：{parseFailed} 行分享链接无法解析（已静默跳过）");
 
         var kept = new List<NodeItem>();
         foreach (var n in result.Nodes)
@@ -185,6 +227,82 @@ public static class SubscriptionFetcher
         }
         return false;
     }
+
+    /// <summary>
+    /// SIP008 识别：JSON 根对象且含 `servers` 数组（Shadowsocks 官方订阅格式）。
+    /// 只做这一条判定，避免把普通 JSON（例如 Clash 的其它导出）误当 SIP008。
+    /// </summary>
+    private static bool LooksLikeSip008(string text)
+    {
+        var t = text.Trim();
+        if (!t.StartsWith("{")) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(t);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("servers", out var servers)
+                && servers.ValueKind == JsonValueKind.Array;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 解析 SIP008：servers[] 每项 { server, server_port, method, password, remarks?, plugin?, plugin_opts? }。
+    /// 无效条目静默跳过并计数（调用方写 Debug 日志）；解析器本身不抛异常。
+    /// </summary>
+    private static (List<NodeItem> Nodes, int Skipped) ParseSip008(string json)
+    {
+        var nodes = new List<NodeItem>();
+        var skipped = 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("servers", out var servers) || servers.ValueKind != JsonValueKind.Array)
+                return (nodes, skipped);
+
+            foreach (var el in servers.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) { skipped++; continue; }
+                try
+                {
+                    var node = new NodeItem
+                    {
+                        Protocol = NodeProtocol.Shadowsocks,
+                        Name = Sip008Str(el, "remarks"),
+                        Server = StripBrackets(Sip008Str(el, "server")),
+                        Port = int.TryParse(Sip008Str(el, "server_port"), out var port) ? port : 0,
+                        Method = Sip008Str(el, "method"),
+                        Password = Sip008Str(el, "password"),
+                    };
+                    var plugin = Sip008Str(el, "plugin");
+                    if (plugin.Length > 0) node.Plugin = plugin;
+                    var pluginOpts = Sip008Str(el, "plugin_opts");
+                    if (pluginOpts.Length == 0) pluginOpts = Sip008Str(el, "plugin-opts");
+                    if (pluginOpts.Length > 0) node.PluginOpts = pluginOpts;
+                    if (!node.IsValid || string.IsNullOrEmpty(node.Method)) { skipped++; continue; }
+                    if (node.Name.Length == 0) node.Name = $"{node.Server}:{node.Port}";
+                    nodes.Add(node);
+                }
+                catch { skipped++; }
+            }
+        }
+        catch { /* LooksLikeSip008 已确认是合法 JSON；这里兜底，不把订阅判死 */ }
+        return (nodes, skipped);
+    }
+
+    private static string Sip008Str(JsonElement el, string name)
+    {
+        if (!el.TryGetProperty(name, out var v)) return "";
+        return v.ValueKind switch
+        {
+            JsonValueKind.String => v.GetString() ?? "",
+            JsonValueKind.Number => v.GetRawText(),
+            _ => "",
+        };
+    }
+
+    private static string StripBrackets(string host) =>
+        host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
 
     private static readonly System.Text.RegularExpressions.Regex MetaNameRe = new(
         @"^\s*(剩余流量|已用流量|已用|套餐到期|到期时间|到期|距离下次重置|重置时间|官网|订阅地址)\s*[：:]",

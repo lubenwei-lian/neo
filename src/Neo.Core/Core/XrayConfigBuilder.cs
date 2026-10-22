@@ -613,9 +613,21 @@ public static class XrayConfigBuilder
         return reordered;
     }
 
+    /// <summary>
+    /// 去掉 IPv6 字面量两侧的方括号（旧 state/subscription-cache 里的 Server 可能带 "[::1]"）。
+    /// 只剥首尾 []，不做其它规范化。
+    /// </summary>
+    private static string StripBrackets(string host) =>
+        host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+
     private static JsonObject BuildProxyOutbound(NodeItem n)
     {
         var stream = BuildStreamSettings(n);
+
+        // ★ 2026-10-23 IPv6 方括号兜底：vless/trojan 的 uri.Host 或旧 state/cache 里的 Server
+        //   可能是 "[::1]" 形式，而 xray 的 address 字段要裸地址；这里统一去掉首尾方括号。
+        //   BuildFixedExit 复用本方法（入口 hop 与出口 chain 都走这里），因此同样生效。
+        var server = StripBrackets(n.Server);
 
         switch (n.Protocol)
         {
@@ -628,7 +640,7 @@ public static class XrayConfigBuilder
                     {
                         ["vnext"] = new JsonArray(new JsonObject
                         {
-                            ["address"] = n.Server,
+                            ["address"] = server,
                             ["port"] = n.Port,
                             ["users"] = new JsonArray(new JsonObject
                             {
@@ -656,7 +668,7 @@ public static class XrayConfigBuilder
                     {
                         ["vnext"] = new JsonArray(new JsonObject
                         {
-                            ["address"] = n.Server,
+                            ["address"] = server,
                             ["port"] = n.Port,
                             ["users"] = new JsonArray(vlessUser),
                         }),
@@ -673,7 +685,7 @@ public static class XrayConfigBuilder
                     {
                         ["servers"] = new JsonArray(new JsonObject
                         {
-                            ["address"] = n.Server,
+                            ["address"] = server,
                             ["port"] = n.Port,
                             ["password"] = n.Password ?? "",
                         }),
@@ -690,7 +702,7 @@ public static class XrayConfigBuilder
                     {
                         ["servers"] = new JsonArray(new JsonObject
                         {
-                            ["address"] = n.Server,
+                            ["address"] = server,
                             ["port"] = n.Port,
                             ["password"] = n.Password ?? "",
                             ["method"] = n.Method ?? "aes-128-gcm",

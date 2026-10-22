@@ -43,6 +43,7 @@ public sealed partial class NodesPage : UserControl
         AppState.UiSettingsChanged += OnUiSettingsChanged;
         Loaded += (_, _) =>
         {
+            UpdateTestButtonMode();
             RebuildList();
             try { Ui.Ripple.Attach(RealTestBtn, App.MainWindowInstance?.RippleLayerHost); } catch { }
             // 自动检测只在「页面真正可见」时触发（见 Visibility 回调），
@@ -72,8 +73,28 @@ public sealed partial class NodesPage : UserControl
     /// 「真实 IP 显示」等界面设置变化时：重建卡片，并补一次出口检测（若还没测过）。
     private void OnUiSettingsChanged()
     {
+        UpdateTestButtonMode();
         RebuildList();
         TryAutoDetectLocations();
+    }
+
+    /// <summary>
+    /// 按「设置 → 通用 → 真连测速」切换工具栏主按钮：
+    /// 关闭（默认）= 隐藏「真连测速」，「快速测延迟」(TCP) 变主按钮；
+    /// 开启 = 「真连测速」恢复主按钮，「快速测延迟」降为次要按钮。
+    /// </summary>
+    private void UpdateTestButtonMode()
+    {
+        try
+        {
+            var real = AppState.State.RealDelayTestEnabled;
+            RealTestBtn.Visibility = real ? Visibility.Visible : Visibility.Collapsed;
+            TcpTestBtn.Style = (Style)Resources[real ? "ToolBtn" : "ToolBtnPrimary"];
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"切换测速按钮失败（不影响测速）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+        }
     }
 
     private void RebuildList()

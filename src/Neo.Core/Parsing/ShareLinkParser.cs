@@ -98,7 +98,9 @@ public static class ShareLinkParser
         {
             Protocol = NodeProtocol.VLESS,
             Uuid = Uri.UnescapeDataString(uri.UserInfo),
-            Server = uri.Host,
+            // ★ 2026-10-23 IPv6 方括号：.NET 的 uri.Host 对 IPv6 字面量会带 []（实测），
+            //   写进 xray/sing-box 的 address/server 前统一剥掉；同时让 EndPoint/NodeKey 口径一致。
+            Server = StripBrackets(uri.Host),
             Port = uri.Port,
             Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
         };
@@ -114,7 +116,8 @@ public static class ShareLinkParser
         {
             Protocol = NodeProtocol.Trojan,
             Password = Uri.UnescapeDataString(uri.UserInfo),
-            Server = uri.Host,
+            // ★ 2026-10-23 IPv6 方括号：同 vless，解析阶段就去掉 []（xray/sing-box 共用）。
+            Server = StripBrackets(uri.Host),
             Port = uri.Port,
             Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
             Security = "tls",
@@ -184,27 +187,43 @@ public static class ShareLinkParser
             Method = method,
             Password = password,
         };
-        if (!string.IsNullOrEmpty(query)) node.Extras["query"] = Uri.UnescapeDataString(query);
+        if (!string.IsNullOrEmpty(query))
+        {
+            // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：v2rayN 的 ss:// 用
+            //   `plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dbing.com`（SIP003）描述插件；
+            //   旧实现只把整串 query 塞进 Extras["query"]、全仓无读取方 → 插件节点被当裸 SS（必连不上）。
+            //   这里保留原串（兼容旧缓存/排障），并解析出 Plugin/PluginOpts 供 sing-box 出站使用。
+            node.Extras["query"] = Uri.UnescapeDataString(query);
+            ApplySsPlugin(node, ParseQuery(query));
+        }
         return node;
     }
 
     private static NodeItem? ParseHysteria2(string link)
     {
         var body = link[(link.IndexOf("://", StringComparison.Ordinal) + 3)..];
-        var (auth, host, port, query, name) = SplitAuthority(body);
-        if (host.Length == 0 || port <= 0) return null;
+        var (auth, host, portExpr, query, name) = SplitAuthority(body);
+        if (host.Length == 0) return null;
 
+        // ★ 2026-10-23 hy2 端口跳跃（v2rayN 标准写法）：
+        //   hysteria2://auth@host:443,5000-6000/?...
+        //   旧实现用 int.TryParse 解析端口 → "443,5000-6000" → 0 → 整条节点被丢；
+        //   省略端口（默认 443）也会被丢。这里归一化成 sing-box 的 server_ports 写法
+        //   （区间用 "start:end"，多个用逗号），Port 取第一个端口供 UI/排序使用。
+        var portSpec = NormalizePortSpec(portExpr);
+        var firstPort = FirstPort(portSpec);
         var q = ParseQuery(query);
         var node = new NodeItem
         {
             Protocol = NodeProtocol.Hysteria2,
             Password = auth,
             Server = host,
-            Port = port,
+            Port = firstPort > 0 ? firstPort : 443,
             Name = name,
             Security = "tls",
             Sni = OrNull(G(q, "sni")) ?? OrNull(G(q, "peer")),
         };
+        if (portSpec.Length > 0) node.Extras["server_ports"] = portSpec;
         node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure"));
         Copy(node, q, "obfs");
         Copy(node, q, "obfs-password");
@@ -219,7 +238,8 @@ public static class ShareLinkParser
     private static NodeItem? ParseTuic(string link)
     {
         var body = link[(link.IndexOf("://", StringComparison.Ordinal) + 3)..];
-        var (auth, host, port, query, name) = SplitAuthority(body);
+        var (auth, host, portExpr, query, name) = SplitAuthority(body);
+        var port = FirstPort(NormalizePortSpec(portExpr));
         if (host.Length == 0 || port <= 0) return null;
 
         var q = ParseQuery(query);
@@ -248,7 +268,7 @@ public static class ShareLinkParser
         return node;
     }
 
-    private static (string auth, string host, int port, string query, string name) SplitAuthority(string body)
+    private static (string auth, string host, string portExpr, string query, string name) SplitAuthority(string body)
     {
         string name = "";
         var hash = body.IndexOf('#');
@@ -260,10 +280,32 @@ public static class ShareLinkParser
 
         body = body.TrimEnd('/');
         var at = body.LastIndexOf('@');
-        if (at < 0) return ("", "", 0, query, name);
+        if (at < 0) return ("", "", "", query, name);
         var auth = Uri.UnescapeDataString(body[..at]);
-        var (host, port) = SplitHostPort(body[(at + 1)..]);
-        return (auth, host, port, query, name);
+        var (host, portExpr) = SplitHostPortExpr(body[(at + 1)..]);
+        return (auth, host, portExpr, query, name);
+    }
+
+    /// <summary>
+    /// 拆分 host[:portExpr]。与 SplitHostPort 的区别：portExpr 原样保留（可为 "443,5000-6000"
+    /// 这类端口跳跃写法，也可省略为空串由调用方给默认值）；IPv6 仍沿用 [..] 形式，端口从 "]" 之后取。
+    /// </summary>
+    private static (string host, string portExpr) SplitHostPortExpr(string hostPort)
+    {
+        hostPort = hostPort.Trim().Trim('/');
+        if (hostPort.StartsWith('['))
+        {
+            var close = hostPort.IndexOf(']');
+            if (close > 0)
+            {
+                var h6 = hostPort[1..close];
+                var rest = hostPort[(close + 1)..].Trim();
+                return (h6, rest.StartsWith(':') ? rest[1..].Trim() : "");
+            }
+        }
+        var idx = hostPort.LastIndexOf(':');
+        if (idx < 0) return (hostPort, "");
+        return (hostPort[..idx], hostPort[(idx + 1)..].Trim());
     }
 
     private static string G(Dictionary<string, string> q, string k) =>
@@ -299,8 +341,9 @@ public static class ShareLinkParser
         node.ServiceName = OrNull(G("serviceName"));
         node.HeaderType = OrNull(G("headerType"));
 
-        var allow = G("allowInsecure");
-        node.AllowInsecure = allow == "1" || string.Equals(allow, "true", StringComparison.OrdinalIgnoreCase);
+        // ★ 2026-10-23 insecure 别名：v2rayN 分享链接同时存在 insecure=1 与 allowInsecure=1 两种写法，
+        //   旧实现只认后者 → insecure=1 被静默忽略（证书校验没跳过，节点连不上）。两者任一为真即视为跳过校验。
+        node.AllowInsecure = ParseBool(G("allowInsecure")) || ParseBool(G("insecure"));
 
         foreach (var kv in q)
         {
@@ -320,6 +363,7 @@ public static class ShareLinkParser
                 case "servicename":
                 case "headertype":
                 case "allowinsecure":
+                case "insecure":
                     break;
                 default:
                     node.Extras[kv.Key] = kv.Value;
@@ -358,6 +402,63 @@ public static class ShareLinkParser
         var idx = hostPort.LastIndexOf(':');
         if (idx < 0) return (hostPort, 0);
         return (hostPort[..idx], int.TryParse(hostPort[(idx + 1)..], out var p) ? p : 0);
+    }
+
+    /// <summary>去掉 IPv6 字面量两侧的方括号（.NET 的 uri.Host 会保留 []）。</summary>
+    private static string StripBrackets(string host) =>
+        host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+
+    /// <summary>
+    /// 解析 Shadowsocks SIP003 插件：v2rayN/分享链接常见写法是
+    /// `plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dbing.com`（分号分隔）；
+    /// 也兼容 `plugin=...&plugin-opts=k%3Dv%3B...` 的分离写法。
+    /// 存入 NodeItem.Plugin / PluginOpts，由 SingBoxConfigBuilder 写进 sing-box 出站。
+    /// </summary>
+    private static void ApplySsPlugin(NodeItem node, Dictionary<string, string> q)
+    {
+        var raw = G(q, "plugin");
+        if (raw.Length == 0) return;
+        var parts = raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return;
+        node.Plugin = parts[0];
+        var opts = new List<string>();
+        for (var i = 1; i < parts.Length; i++)
+            if (parts[i].Length > 0) opts.Add(parts[i]);
+        var extra = G(q, "plugin-opts");
+        if (extra.Length == 0) extra = G(q, "plugin_opts");
+        if (extra.Length > 0)
+        {
+            foreach (var o in extra.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                if (o.Length > 0) opts.Add(o);
+        }
+        if (opts.Count > 0) node.PluginOpts = string.Join(";", opts);
+    }
+
+    /// <summary>
+    /// 归一化 hy2 端口写法：逗号分隔的 "443,5000-6000" / "5000:6000" → "443,5000:6000"
+    /// （sing-box server_ports 用冒号表示区间）；无法解析的片段直接丢弃。
+    /// </summary>
+    private static string NormalizePortSpec(string expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return "";
+        var list = new List<string>();
+        foreach (var part in expr.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var segs = part.Replace('-', ':').Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (segs.Length == 0 || !int.TryParse(segs[0], out var a) || a <= 0) continue;
+            if (segs.Length >= 2 && int.TryParse(segs[1], out var b) && b > 0) list.Add($"{a}:{b}");
+            else list.Add(a.ToString());
+        }
+        return list.Count == 0 ? "" : string.Join(",", list);
+    }
+
+    /// <summary>取归一化端口串里的第一个端口（供 NodeItem.Port 使用；0 表示无）。</summary>
+    private static int FirstPort(string spec)
+    {
+        if (spec.Length == 0) return 0;
+        var first = spec.Split(',', 2)[0];
+        var head = first.Split(':', 2)[0];
+        return int.TryParse(head, out var p) ? p : 0;
     }
 
     public static string? TryB64Decode(string s)
