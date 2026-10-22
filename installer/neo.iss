@@ -60,13 +60,28 @@ Name: "startmenuicon"; Description: "创建开始菜单快捷方式"; GroupDescr
 ; SHA256SUMS.txt 只是发布校验清单（publish.ps1 生成），不属于程序文件，不装进用户机器。
 ; 用户已更新到的 xray 26.10.17 覆盖回了 26.9.30。内核升级统一走应用内更新链路（SHA-256 校验/回滚），
 ; 安装包只在全新安装或文件缺失时补种。
-Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe,app\runtime\mihomo.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 2026-10-23：分流数据（geoip/geosite/Country.mmdb/rule-sets）也属于「应用内可更新」的资产，
+; 安装包更新时**不得覆盖**用户已经更新过的版本（否则每次升级都会把数据回退到发布时那一天）。
+Source: "..\dist\publish\*"; DestDir: "{app}"; Excludes: "SHA256SUMS.txt,app\runtime\xray.exe,app\runtime\sing-box.exe,app\runtime\mihomo.exe,app\runtime\geoip.dat,app\runtime\geosite.dat,app\runtime\Country.mmdb,app\runtime\rule-sets\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\publish\app\runtime\xray.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
 Source: "..\dist\publish\app\runtime\sing-box.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
 ; mihomo 是「按需下载」的可选内核：发布目录通常不带它；若这次带了，同样只在缺失时补种，
 ; 绝不用安装包覆盖用户已经升级过的版本（xray/sing-box 同理，见上面两行）。
 #if FileExists("..\dist\publish\app\runtime\mihomo.exe")
 Source: "..\dist\publish\app\runtime\mihomo.exe"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+#endif
+; 分流数据：同样只在缺失时补种（全新安装/文件被删才会写），绝不用安装包覆盖用户更新过的数据。
+#if FileExists("..\dist\publish\app\runtime\geoip.dat")
+Source: "..\dist\publish\app\runtime\geoip.dat"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+#endif
+#if FileExists("..\dist\publish\app\runtime\geosite.dat")
+Source: "..\dist\publish\app\runtime\geosite.dat"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+#endif
+#if FileExists("..\dist\publish\app\runtime\Country.mmdb")
+Source: "..\dist\publish\app\runtime\Country.mmdb"; DestDir: "{app}\app\runtime"; Flags: onlyifdoesntexist
+#endif
+#if FileExists("..\dist\publish\app\runtime\rule-sets\geoip-cn.srs")
+Source: "..\dist\publish\app\runtime\rule-sets\*"; DestDir: "{app}\app\runtime\rule-sets"; Flags: onlyifdoesntexist recursesubdirs
 #endif
 
 ;

@@ -167,13 +167,28 @@ public static class SubscriptionFetcher
             if (LooksLikeClashYaml(attempt))
             {
                 var yamlNodes = ClashYamlParser.Parse(attempt);
+                var yr = SubscriptionFetchResult.Ok(attempt);
+                yr.Nodes.AddRange(yamlNodes);
+
+                // ★ 2026-10-23：Clash 订阅额外生成一个「Clash 直通」节点（整份 YAML 交给 mihomo）。
+                //   理由：proxy-providers / 复杂 rule-provider / 脚本模式用 NodeItem 表达不了；
+                //   拆出来的节点照旧用于测速/故障转移，直通节点给需要完整 Clash 语义的用户。
+                var passthrough = BuildClashPassthroughNode(attempt);
+                if (passthrough != null) yr.Nodes.Add(passthrough);
+
                 if (yamlNodes.Count > 0)
                 {
-                    LogBus($"订阅识别：第 {step} 步（Clash YAML）解析出 {yamlNodes.Count} 个节点");
-                    var yr = SubscriptionFetchResult.Ok(attempt);
-                    yr.Nodes.AddRange(yamlNodes);
+                    LogBus($"订阅识别：第 {step} 步（Clash YAML）解析出 {yamlNodes.Count} 个节点"
+                          + (passthrough != null ? " + 1 个 Clash 直通节点" : ""));
                     return yr;
                 }
+
+                if (passthrough != null)
+                {
+                    LogBus($"订阅识别：第 {step} 步是 Clash YAML，节点解析不出但已生成 Clash 直通节点（交给 mihomo）");
+                    return yr;
+                }
+
                 lastFail = "检测到 Clash YAML 格式，但未解析出可用节点（格式可能不受支持）";
                 LogBus($"订阅识别：第 {step} 步是 Clash YAML 但 0 个可用节点，继续尝试");
                 continue;
@@ -234,6 +249,39 @@ public static class SubscriptionFetcher
         }
 
         return SubscriptionFetchResult.Fail(string.IsNullOrEmpty(lastFail) ? "未解析出任何有效节点（格式可能不支持）" : lastFail);
+    }
+
+    /// <summary>
+    /// 把整份 Clash YAML 存到 data\clash\&lt;内容哈希&gt;.yaml，并生成一个 MihomoConfig 节点。
+    /// 用内容哈希做文件名：同一份订阅重复更新不会堆文件；内容变了自然换新文件。
+    /// 只写数据目录（不写 Program Files），失败返回 null（不影响其余节点导入）。
+    /// </summary>
+    private static NodeItem? BuildClashPassthroughNode(string yaml)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(yaml)) return null;
+            var dir = Path.Combine(NeoPaths.DataDir, "clash");
+            Directory.CreateDirectory(dir);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(yaml);
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+                .ToLowerInvariant()[..12];
+            var path = Path.Combine(dir, hash + ".yaml");
+            if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
+
+            var node = new NodeItem
+            {
+                Protocol = NodeProtocol.MihomoConfig,
+                Name = "Clash 直通 · " + hash,
+                Server = "127.0.0.1",
+                Port = 1,
+                Network = "tcp",
+                Security = "none",
+            };
+            node.Extras["yaml_path"] = path;
+            return node;
+        }
+        catch { return null; }
     }
 
     private static bool LooksLikeClashYaml(string text)

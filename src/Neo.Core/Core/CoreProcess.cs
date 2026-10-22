@@ -24,7 +24,14 @@ public sealed class CoreProcess : IDisposable
         _workingDir = workingDir;
     }
 
-    public void Start(string configPath)
+    /// <summary>默认启动方式：xray / sing-box 都是 `run -c &lt;config&gt;`。</summary>
+    public void Start(string configPath) => Start(configPath, null);
+
+    /// <summary>
+    /// 指定完整参数启动（2026-10-23 为 mihomo 增加：它是 `-f &lt;config&gt; -d &lt;dir&gt;`）。
+    /// args 为 null 时走默认的 `run -c`。
+    /// </summary>
+    public void Start(string configPath, IReadOnlyList<string>? args)
     {
         if (IsRunning) throw new InvalidOperationException("内核已在运行");
         if (!File.Exists(_exePath)) throw new FileNotFoundException("内核不存在: " + _exePath);
@@ -40,9 +47,16 @@ public sealed class CoreProcess : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        psi.ArgumentList.Add("run");
-        psi.ArgumentList.Add("-c");
-        psi.ArgumentList.Add(configPath);
+        if (args == null)
+        {
+            psi.ArgumentList.Add("run");
+            psi.ArgumentList.Add("-c");
+            psi.ArgumentList.Add(configPath);
+        }
+        else
+        {
+            foreach (var a in args) psi.ArgumentList.Add(a);
+        }
 
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
         p.OutputDataReceived += (_, e) => { if (e.Data != null) LogLine?.Invoke(e.Data); };

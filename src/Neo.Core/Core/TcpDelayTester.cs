@@ -64,6 +64,7 @@ public static class TcpDelayTester
             //   测出来的「超时」不代表节点坏（UDP 类协议本来就没有 TCP 端口）。
             if (!node.IsValid
                 || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                || node.IsClashPassthrough
                 || (node.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp")
             {
                 result[node] = 0;

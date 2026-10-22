@@ -579,15 +579,20 @@ public static class AppState
     private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes)
     {
         if (nodes.Count == 0) return false;
+        // 2026-10-23：Clash 直通节点本身就是本机 mihomo 的入口（Server=127.0.0.1），
+        // 不能被当成「商家占位节点」；判断只看真实节点。
+        var physical = nodes.Where(n => !n.IsClashPassthrough).ToList();
+        if (physical.Count == 0) return false;
+
         var hints = new[] { "设备过多", "请去官网", "获取新订阅", "使用说明" };
         var local = 0;
-        foreach (var n in nodes)
+        foreach (var n in physical)
         {
             if (n.Server is "127.0.0.1" or "::1" or "localhost") local++;
             foreach (var h in hints)
                 if ((n.Name ?? "").Contains(h, StringComparison.Ordinal)) return true;
         }
-        return local == nodes.Count;
+        return local == physical.Count;
     }
 
     private const string ProviderPlaceholderMessage =
@@ -966,6 +971,7 @@ public static class AppState
         // ★ 2026-10-23 第二批：新增协议显示名（节点页/连接页均走这个方法）
         NodeProtocol.AnyTls => "AnyTLS",
         NodeProtocol.Socks => "Socks5",
+        NodeProtocol.MihomoConfig => "Clash 直通",
         _ => "Unknown",
     };
 

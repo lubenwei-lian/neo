@@ -193,10 +193,11 @@ public sealed partial class ConnectionPage : UserControl
             CoreDot.Fill = running ? green : text2;
 
             bool sing = ConnectionService.CoreKind == "sing-box";
-            CoreKindText.Text = sing ? "sing-box" : "xray";
-            CoreVersionText.Text = sing
-                ? (ConnectionService.SingBoxVersion ?? "—")
-                : (ConnectionService.XrayVersion ?? "—");
+            bool mihomo = ConnectionService.CoreKind == "mihomo";
+            CoreKindText.Text = mihomo ? "mihomo" : (sing ? "sing-box" : "xray");
+            CoreVersionText.Text = mihomo
+                ? (KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "—")
+                : (sing ? (ConnectionService.SingBoxVersion ?? "—") : (ConnectionService.XrayVersion ?? "—"));
 
             var fixedExit = running && ConnectionService.FixedExitActive ? ConnectionService.FixedExitEntries + 1 : 0;
             CoreTagText.Text = fixedExit > 0 ? "固定出口" : (running ? ConnectionService.CoreKind : "—");

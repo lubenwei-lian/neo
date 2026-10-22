@@ -15,6 +15,12 @@ public enum NodeProtocol
 
     /// <summary>socks5 出站节点（socks:// / socks5:// 分享链接）。</summary>
     Socks,
+
+    /// <summary>
+    /// Clash 直通节点：不拆节点，把订阅里**整份 Clash YAML** 交给 mihomo 内核跑。
+    /// 用于 proxy-providers / 复杂 rule-provider 这类用 NodeItem 模型表达不了的订阅。
+    /// </summary>
+    MihomoConfig,
 }
 
 public sealed class NodeItem
@@ -155,9 +161,14 @@ public sealed class NodeItem
     /// 实测出口 IP（「位置检测」写入，仅本进程会话有效）。
     public string? ExitIp { get; set; }
 
-    public string EndPoint => $"{Server}:{Port}";
+    /// <summary>是否为「Clash 直通」节点（整份 YAML 交给 mihomo，本身没有 server:port）。</summary>
+    public bool IsClashPassthrough => Protocol is NodeProtocol.MihomoConfig;
 
-    public bool IsValid => !string.IsNullOrWhiteSpace(Server) && Port > 0;
+    public string EndPoint => IsClashPassthrough ? "Clash 配置" : $"{Server}:{Port}";
+
+    public bool IsValid => IsClashPassthrough
+        ? Extras.TryGetValue("yaml_path", out var y) && !string.IsNullOrWhiteSpace(y) && File.Exists(y)
+        : !string.IsNullOrWhiteSpace(Server) && Port > 0;
 
     public override string ToString() =>
         $"[{Protocol}] {Name} @ {Server}:{Port} (net={Network}, sec={Security})";

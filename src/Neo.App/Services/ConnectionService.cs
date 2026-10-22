@@ -223,6 +223,24 @@ public static class ConnectionService
 
         bool useTun = AppState.State.UseTun;
 
+        // ★ 2026-10-23：Clash 直通节点（整份 YAML → mihomo）。
+        //   限制：暂不支持 TUN（mihomo 的 TUN 需要额外适配本项目的网卡/路由回收逻辑）；
+        //   未安装 mihomo 时明确报错并指路，而不是抛一个「内核不存在」。
+        bool useMihomo = node.Protocol == NodeProtocol.MihomoConfig;
+        string? mihomoConfigPath = null;
+        string? mihomoDataDir = null;
+        if (useMihomo)
+        {
+            if (useTun)
+            {
+                return (false, "Clash 直通节点暂不支持 TUN 模式 —— 请关闭 TUN，或改用拆分出来的普通节点");
+            }
+            if (!KernelCatalog.IsInstalled(CoreEngine.Mihomo))
+            {
+                return (false, "Clash 直通需要 mihomo 内核：请到 设置 → 内核 → mihomo，点「检查更新」按需安装后再连接");
+            }
+        }
+
         // ★ 2026-10-23 第二批：内核能力判定（NodeItem.RequiresXray / RequiresSingBox，依据见台账 F1 实测）。
         //   TUN 模式固定跑 sing-box，而 mKCP / xhttp / VLESS 后量子加密 / REALITY pqv / vcn 只有 xray 支持。
         //   这类节点在 TUN 下**必须明确拒绝**：静默改走 sing-box 会变成「连上了但所有站点超时」，
@@ -281,7 +299,36 @@ public static class ConnectionService
         string json;
         try
         {
-            if (fixedExit != null && !useSingBox)
+            if (useMihomo)
+            {
+                // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
+                var apiPort = SingBoxConfigBuilder.ClashApiPort;
+                var yaml = MihomoConfigBuilder.Build(node,
+                    XrayConfigBuilder.DefaultHttpPort, XrayConfigBuilder.DefaultSocksPort,
+                    apiPort, AppState.State.LogLevel);
+                mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
+                Directory.CreateDirectory(mihomoDataDir);
+                mihomoConfigPath = Path.Combine(mihomoDataDir, "config.yaml");
+                var ytmp = mihomoConfigPath + ".tmp";
+                File.WriteAllText(ytmp, yaml);
+                File.Move(ytmp, mihomoConfigPath, true);
+
+                // GEOIP / GEOSITE 规则需要数据文件：runtime 里有就复制到 mihomo 工作目录，
+                // 避免它启动时联网下载（本项目里 mihomo 走系统代理前还没有网络，下载必失败）。
+                try
+                {
+                    foreach (var name in new[] { "Country.mmdb", "geoip.dat", "geosite.dat" })
+                    {
+                        var src = Path.Combine(NeoPaths.RuntimeDir, name);
+                        if (File.Exists(src)) File.Copy(src, Path.Combine(mihomoDataDir, name), true);
+                    }
+                }
+                catch { }
+
+                json = "";
+                CoreKind = "mihomo";
+            }
+            else if (fixedExit != null && !useSingBox)
             {
                 json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
                     XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
@@ -297,7 +344,7 @@ public static class ConnectionService
             }
             else
             {
-                json = useSingBox
+                json = useMihomo ? "" : useSingBox
                     ? (useTun
                         ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
@@ -315,7 +362,7 @@ public static class ConnectionService
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
             }
-            CoreKind = useSingBox ? "sing-box" : "xray";
+            if (!useMihomo) CoreKind = useSingBox ? "sing-box" : "xray";
         }
         catch (Exception ex)
         {
@@ -328,7 +375,7 @@ public static class ConnectionService
                 FixedExitActive = false;
                 FixedExitEntries = 0;
                 FixedExitName = null;
-                json = useSingBox
+                json = useMihomo ? "" : useSingBox
                     ? (useTun
                         ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
@@ -355,7 +402,17 @@ public static class ConnectionService
         // ---- 启动前配置预检 + 自适应 ----
         // 写盘/启动前先用内核自己的 -test/check 验一遍：版本变化导致字段/传输被弃用时，
         // 按「版本规则 → 去性能字段 → 最简单节点配置」逐级降级，绝不把内核拒绝的配置直接交给它。
-        json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
+        if (useMihomo)
+        {
+            if (string.IsNullOrEmpty(mihomoConfigPath) || !File.Exists(mihomoConfigPath))
+                return (false, "Clash 直通配置生成失败（YAML 未写出），请检查订阅缓存是否被清理后重试");
+            var chk = await Task.Run(() => RunMihomoCheck(mihomoConfigPath!));
+            if (!chk.Ok) return (false, "Clash 配置未通过 mihomo 校验：" + chk.Message);
+        }
+        else
+        {
+            json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
+        }
 
         // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
         // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
@@ -382,15 +439,24 @@ public static class ConnectionService
         //   该文件写完后会被内核进程读取；覆盖面虽小，但「写一半被读」
         //   （或进程在写一半被终止）会留下**半截 JSON** → 内核启动失败且难归因。
         //   改为 tmp + rename 原子写（与本项目 state.json / subscription-cache.json 同款）。
-        try
+        var cfgPath = ConfigPath;
+        if (useMihomo)
         {
-            var cfgTmp = ConfigPath + ".tmp";
-            File.WriteAllText(cfgTmp, json);
-            File.Move(cfgTmp, ConfigPath, true);
+            cfgPath = mihomoConfigPath!;   // YAML 已在上面原子写出，不再写 config.json
         }
-        catch (Exception ex) { return (false, "配置写入失败：" + ex.Message); }
+        else
+        {
+            try
+            {
+                var cfgTmp = ConfigPath + ".tmp";
+                File.WriteAllText(cfgTmp, json);
+                File.Move(cfgTmp, ConfigPath, true);
+            }
+            catch (Exception ex) { return (false, "配置写入失败：" + ex.Message); }
+        }
 
-        var exe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
+        var exe = Path.Combine(NeoPaths.RuntimeDir,
+            useMihomo ? "mihomo.exe" : (useSingBox ? "sing-box.exe" : "xray.exe"));
 
         // 「内核已启动（PID …）」，然后 800ms 后才检查 IsRunning。
         // 若端口被别人占着，进程会秒退，于是日志出现自相矛盾的两行：
@@ -434,7 +500,10 @@ public static class ConnectionService
                 LogLine?.Invoke(line);
             };
             _xray.Exited += code => OnCoreExited(code);
-            _xray.Start(ConfigPath);
+            if (useMihomo)
+                _xray.Start(cfgPath, new[] { "-f", cfgPath, "-d", mihomoDataDir! });
+            else
+                _xray.Start(cfgPath);
         }
         catch (Exception ex)
         {
@@ -443,7 +512,7 @@ public static class ConnectionService
             return (false, "内核启动失败：" + ex.Message);
         }
 
-        await Task.Delay(800);
+        await Task.Delay(useMihomo ? 1400 : 800);
         if (_xray == null || !_xray.IsRunning)
         {
             Disconnect("内核启动失败");
@@ -1708,6 +1777,49 @@ public static class ConnectionService
     /// （如 Process.Exited）调用它 —— 跨线程碰 UI 会抛异常，且该异常会被
     /// 因此这里：① 必要时 marshal 到 UI 线程；② 每个订阅者单独 try/catch，互不牵连；③ 失败留痕不再静默。
     public static Microsoft.UI.Dispatching.DispatcherQueue? UiDispatcher;
+
+    /// <summary>
+    /// 启动前用 mihomo 自己的 `-t -f &lt;yaml&gt;` 做配置校验（等价 xray -test / sing-box check）。
+    /// 失败时会带出内核输出的前几行，用户能直接看出是订阅 YAML 的哪一段不合法。
+    /// 校验器本身跑不起来（缺 exe / 超时）不阻断启动——与其它内核预检一致的 fail-open 取向。
+    /// </summary>
+    private static (bool Ok, string Message) RunMihomoCheck(string yamlPath)
+    {
+        try
+        {
+            var exe = Path.Combine(NeoPaths.RuntimeDir, "mihomo.exe");
+            if (!File.Exists(exe)) return (true, "mihomo 不存在，跳过校验");
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = Path.GetDirectoryName(yamlPath) ?? NeoPaths.RuntimeDir,
+            };
+            psi.ArgumentList.Add("-t");
+            psi.ArgumentList.Add("-f");
+            psi.ArgumentList.Add(yamlPath);
+            using var proc = Process.Start(psi);
+            if (proc == null) return (true, "mihomo 校验启动失败，跳过校验");
+            var so = proc.StandardOutput.ReadToEnd();
+            var se = proc.StandardError.ReadToEnd();
+            if (!proc.WaitForExit(15000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                return (true, "mihomo 校验超时，跳过校验");
+            }
+            if (proc.ExitCode == 0) return (true, "");
+            var tail = string.Join(" | ", (se + "\n" + so).Split('\n')
+                .Select(x => x.Trim()).Where(x => x.Length > 0).TakeLast(3));
+            return (false, tail.Length > 0 ? tail : $"mihomo 校验失败（退出码 {proc.ExitCode}）");
+        }
+        catch (Exception ex)
+        {
+            return (true, "mihomo 校验无法执行：" + ex.Message);
+        }
+    }
 
     /// <summary>列出该节点用到的 xray 专有能力（用于 TUN 冲突提示与日志，口径与 NodeItem.RequiresXray 一致）。</summary>
     private static string XrayOnlyReason(NodeItem n)

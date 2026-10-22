@@ -6,7 +6,9 @@ public static class CoreStats
 
     public static Snapshot? Query()
     {
-        if (ConnectionService.CoreKind == "sing-box")
+        // mihomo 的 Clash API 与 sing-box 的 clash_api 同协议（/connections、Bearer secret），
+        // 端口/密钥也是同一组常量，因此直接复用 SingBoxStats。
+        if (ConnectionService.CoreKind is "sing-box" or "mihomo")
         {
             var s = SingBoxStats.Query();
             return s is { } v ? new Snapshot(v.Uplink, v.Downlink) : null;
@@ -18,7 +20,7 @@ public static class CoreStats
 
     public static int ActiveConnections()
     {
-        if (ConnectionService.CoreKind == "sing-box")
+        if (ConnectionService.CoreKind is "sing-box" or "mihomo")
             return SingBoxStats.Query()?.ActiveConnections ?? 0;
 
         return TcpConnCounter.CountEstablished(Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort);
