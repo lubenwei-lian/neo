@@ -349,7 +349,7 @@ public sealed partial class NodesPage : UserControl
                 FilterBtnText.Text = NodeGrouper.RegionDisplay(region); ApplyFilter();
             });
         }
-        _filterList.AddDisabled("筛选只影响显示，不影响连接与并发组队");
+        _filterList.AddDisabled("筛选只影响显示，不影响连接");
         Neo.App.Ui.PopupList.ShowBelow(_filterList, FilterBtn, 220);
     }
 

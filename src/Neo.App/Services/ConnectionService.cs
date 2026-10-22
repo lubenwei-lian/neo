@@ -69,9 +69,6 @@ public static class ConnectionService
 
     public static string CoreKind { get; private set; } = "xray";
 
-    /// 本次连接实际参与加速的节点数（1 = 未启用多节点加速）。
-    public static int MultiNodeCount { get; private set; } = 1;
-
     /// 固定出口是否生效（本次会话）。生效时出口固定为单一节点，其它节点只作入口。
     public static bool FixedExitActive { get; private set; }
 
@@ -83,9 +80,6 @@ public static class ConnectionService
 
     /// 固定出口模式下出口节点的名称。
     public static string? FixedExitName { get; private set; }
-
-    /// 参与加速的地区显示名（未启用时为 null）。
-    public static string? MultiNodeRegion { get; private set; }
 
     public static bool IsElevated
     {
@@ -198,11 +192,8 @@ public static class ConnectionService
         bool useTun = AppState.State.UseTun;
         bool useSingBox = useTun || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC;
 
-        // 多节点加速：xray 路径与 TUN（sing-box）路径都支持。
-        // 于是 TUN 模式永远单节点。现在 TUN 也能并发 —— 前提是使用**自编译的 sing-box**
-        // 内核是否支持由探测决定，不支持时自动退回单节点，不会让 TUN 直接连不上（见下方探测）。
         // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
-        // 与多节点加速互斥；TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
+        // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
         NodeItem? fixedExit = null;
         var fixedEntries = new List<NodeItem>();
         if (AppState.State.FixedExitEnabled)
@@ -238,91 +229,9 @@ public static class ConnectionService
             }
         }
 
-        var group = new List<NodeItem> { node };
-        if (fixedExit != null) group = new List<NodeItem> { fixedExit };
-        if (fixedExit == null && AppState.State.MultiNodeEnabled)
-        {
-            try
-            {
-                group = NodeGrouper.PickGroup(AppState.Nodes, node,
-                    Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
-            }
-            catch (Exception ex)
-            {
-                LogBus.App($"多节点加速：组队失败，退回单节点（{ex.Message}）", "Warning");
-                group = new List<NodeItem> { node };
-            }
-        }
-        MultiNodeCount = group.Count;
-        MultiNodeRegion = group.Count > 1 ? NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(node.Name)) : null;
-
-        // TUN 下若组到多个节点，但当前 sing-box 是官方版（无 balancer 出站），
-        // 必须退回单节点 —— 否则内核会因 unknown outbound type 直接启动失败、TUN 连不上。
-        if (useTun && group.Count > 1 && !SingBoxSupportsBalancerInternal())
-        {
-            LogBus.App($"TUN 多节点并发需要自编译的 sing-box（当前内核不支持 balancer 出站），本次按单节点运行", "Warning");
-            group = new List<NodeItem> { node };
-            MultiNodeCount = 1;
-            MultiNodeRegion = null;
-        }
-
-        // 「冷启动有延迟兜底测速，但实际只测速一个节点，其他的不测速」。
-        // 原实现是 TryAutoMeasureDelayAsync(node) —— 只测**当前那一个**节点，
-        // 而它是走「已连接的代理」测的；经 balancer 时流量落到哪个节点是随机的，
-        // 根本无法定向测某一个节点。于是池里其余节点的 RealDelay 恒为 0。
-        // 后果直接打在加权模式上：ComputeWeights 拿到的 delaysMs 全是 0，
-        // 只能全部给 1 份 ⇒ 用户选的「加权」实际退化成「均衡」。
-        //   且生成的配置里 balancer 成员恰好 = 8 份（= 8 节点 × 1 份额，一名一份）。
-        // 修法：复用 RealDelayTester.RealPingBatchAsync（v2rayN 式批量测速 ——
-        // 一个临时内核实例承载全部节点、每节点独立 socks 端口、并行测完）。
-        // 它用的是**随机空闲端口**、不占 10085 统计端口，因此与已连接会话不冲突。
-        // 只测「RealDelay == 0」的节点，已有结果的跳过 ⇒ 同一会话内第二次连接几乎是瞬时的。
-        // 位置检测跑过之后：把「实际出口国家与名称标记地区不符」的节点踢出并发组。
-        //   用户明确不接受「标着日本、实际从别处出去」；这类节点混在池里会让出口 IP 跨国跳，
-        //   登录态、风控、流媒体解锁都会出问题。没检测过的节点（ExitCountry 为空）保持原样，
-        //   避免把「没测」当成「不符」。
-        if (group.Count > 1)
-        {
-            var claimedRegion = NodeGrouper.RegionOf(node.Name);
-            if (claimedRegion != "other")
-            {
-                var bad = group.Where(n => !ReferenceEquals(n, node)
-                    && !string.IsNullOrEmpty(n.ExitCountry)
-                    && !string.Equals(n.ExitCountry, claimedRegion, StringComparison.OrdinalIgnoreCase)).ToList();
-                if (bad.Count > 0)
-                {
-                    group = group.Where(n => !bad.Contains(n)).ToList();
-                    MultiNodeCount = group.Count;
-                    LogBus.App($"多节点并发：已排除 {bad.Count} 个「标记与实际出口不符」的节点（{string.Join("、", bad.Select(b => b.Name))}）", "Warning");
-                }
-            }
-        }
-
-        if (group.Count > 1)
-            await FillGroupDelaysAsync(group);
-
-        //   只按延迟加权时，池里「延迟好看但没速度」的节点会拿到大量份额，
-        //   浏览时每条连接抽签，抽到它就卡。这里在多节点且加权模式时补一次吞吐探测。
-        List<int>? groupSpeeds = null;
-        if (group.Count > 1
-            && !string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase))
-        {
-            try { groupSpeeds = await GetGroupSpeedsAsync(group); }
-            catch (Exception ex)
-            {
-                LogBus.App($"多节点并发：吞吐探测异常，本次退回按延迟加权（[{ex.GetType().Name}] {ex.Message}）", "Warning");
-                groupSpeeds = null;
-            }
-        }
-
         string json;
         try
         {
-            // 曾经的写法是 `if (!useSingBox && group.Count > 1) { ... else if (useTun) ... }`，
-            // **TUN 分支永远进不去**：因为 useTun 为真时 useSingBox 也为真（见上面
-            // `useSingBox = useTun || hy2/tuic`），外层 `!useSingBox` 直接把它挡掉了。
-            // 只有单个 `proxy` 出站、没有 balancer —— 界面/日志说并发，实际单节点。
-            var wantMulti = fixedExit == null && group.Count > 1 && (!useSingBox || useTun);
             if (fixedExit != null && !useSingBox)
             {
                 json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
@@ -335,41 +244,7 @@ public static class ConnectionService
                 FixedExitName = fixedExit.Name;
                 LogBus.App("固定出口已启用：出口「" + fixedExit.Name + "」· 入口 " + fixedEntries.Count + " 条链路（"
                     + string.Join("、", fixedEntries.Take(6).Select(n => n.Name))
-                    + (fixedEntries.Count > 6 ? "…" : "") + "）"
-                    + (AppState.State.MultiNodeEnabled ? " · 多节点加速已被忽略（固定出口优先）" : ""));
-            }
-            else if (wantMulti)
-            {
-                // ComputeWeights 会给它中间份额；已测过（>0）的按延迟倍数分配份额。
-                // 队列顺序必须与 group 一致：BuildMulti 是按 group 的下标给 proxy{i} 建出站的。
-                var delays = group.Select(n => n.RealDelay).ToList();
-                var mode = string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)
-                    ? XrayConfigBuilder.ConcurrencyMode.Balanced
-                    : XrayConfigBuilder.ConcurrencyMode.Weighted;
-                var modeName = mode == XrayConfigBuilder.ConcurrencyMode.Weighted ? "加权" : "均衡";
-                var delayed = group.Count(n => n.RealDelay > 0);
-
-                if (!useSingBox)
-                {
-                    json = XrayConfigBuilder.BuildMulti(group,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer,
-                        AppState.State.MultiNodeStrategy, mode, delays, groupSpeeds);
-                }
-                else
-                {
-                    // TUN + 多节点：走自编译 sing-box 的 balancer 出站。
-                    json = SingBoxConfigBuilder.BuildTunMulti(group, delays,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer,
-                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList(), groupSpeeds);
-                }
-                var speeded = groupSpeeds?.Count(s => s > 0) ?? 0;
-                LogBus.App($"多节点加速已启用：{MultiNodeRegion} 共 {group.Count} 个节点参与（策略 {AppState.State.MultiNodeStrategy} · 模式 {modeName} · 权重依据 实测吞吐 {speeded}/{group.Count}（每节点至少 1 份，延迟门槛 {delayed}/{group.Count}）· 内核 {(useSingBox ? "sing-box" : "xray")}）");
+                    + (fixedEntries.Count > 6 ? "…" : "") + "）");
             }
             else
             {
@@ -395,7 +270,7 @@ public static class ConnectionService
         }
         catch (Exception ex)
         {
-            // 兜底：多节点 / 固定出口的配置生成失败（例如出口节点类型不支持串联）时，
+            // 兜底：固定出口配置生成失败（例如出口节点类型不支持串联）时，
             // 自动退回单节点再试一次，避免用户直接连不上（稳中取快）。
             try
             {
@@ -404,8 +279,6 @@ public static class ConnectionService
                 FixedExitActive = false;
                 FixedExitEntries = 0;
                 FixedExitName = null;
-                MultiNodeCount = 1;
-                MultiNodeRegion = null;
                 json = useSingBox
                     ? (useTun
                         ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
@@ -553,13 +426,12 @@ public static class ConnectionService
         IsConnected = true;
         ConnectedNode = node;
         IncidentLog.Record("connect", "已连接 " + node.Name
-            + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : MultiNodeCount > 1 ? "（多节点 " + MultiNodeCount + "）" : ""));
+            + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : ""));
         ConnectedAt = DateTime.Now;
         _lastCoreStartAt = DateTime.Now;   // 供「内核是否稳定运行过」判断使用
         _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
         var gdCount = (useSingBox && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
         LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
-                   (MultiNodeCount > 1 ? $" · 多节点加速={MultiNodeRegion}×{MultiNodeCount}" : "") +
                    (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
         NotifyStateChanged();
         return (true, null);
@@ -585,8 +457,6 @@ public static class ConnectionService
         IsConnected = false;
         ConnectedNode = null;
         ConnectedAt = null;
-        MultiNodeCount = 1;
-        MultiNodeRegion = null;
         FixedExitActive = false;
         FixedExitEntries = 0;
         FixedExitName = null;
@@ -1469,121 +1339,7 @@ public static class ConnectionService
         }
     }
 
-    /// 为什么不能用 TryAutoMeasureDelayAsync 代替：那个方法测的是「已连接代理」，
-    /// 而多节点会话里经 balancer 的流量落到哪个成员是随机的 —— 无法定向测某个节点，
-    /// 所以它天然只能测到「当前节点」这一个。要测全组必须**每节点起独立入口**，
-    /// 即 RealDelayTester.RealPingBatchAsync 那套（单实例 + 每节点独立 socks 端口）。
-    /// 安全性：
-    ///  · 用随机空闲端口，不占 10085 统计端口、不占 10808/10809 ⇒ 与已连接会话不冲突；
-    ///  · 只测 RealDelay == 0 的节点：已有结果的跳过，同会话内重复连接几乎免费；
-    ///  · 失败（-1）**不写回**节点 —— 保持 0「未测速」而不是假超时（与既有约定一致）；
-    ///  · 整体限时，避免把连接流程拖长。
-    private static async Task FillGroupDelaysAsync(IReadOnlyList<NodeItem> group)
-    {
-        var pending = group.Where(n => n.RealDelay == 0).ToList();
-        if (pending.Count == 0) return;
-
-        // 已有一定数量测速结果时，剩余未测的通常只是少数；反之冷启动全未测。
-        LogBus.App($"多节点并发：正在补测 {pending.Count} 个节点的延迟（用于加权份额计算）…", "Debug");
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-        try
-        {
-            var map = await RealDelayTester.RealPingBatchAsync(pending, NeoPaths.RuntimeDir, ct: cts.Token);
-            var got = 0;
-            foreach (var kv in map)
-            {
-                // 只接受 >0 的有效值：-1 是「测到超时」，0 是「没测到」，
-                // 两者都不该写成延迟结果（写了会让「未测速」变成假的负数/零）。
-                if (kv.Value > 0)
-                {
-                    kv.Key.RealDelay = kv.Value;
-                    DelayCache.Set(kv.Key, kv.Value);
-                    got++;
-                }
-            }
-            LogBus.App($"多节点并发：延迟补测完成 {got}/{pending.Count} 个成功"
-                       + (got < pending.Count ? "（未成功的保持「未测速」，不影响连接）" : ""));
-        }
-        catch (OperationCanceledException)
-        {
-            LogBus.App($"多节点并发：延迟补测超时（{pending.Count} 个未完成）—— 本次按已有数据计算份额，不影响连接", "Warning");
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"多节点并发：延迟补测异常，不影响连接（[{ex.GetType().Name}] {ex.Message}）", "Debug");
-        }
-    }
-
-    /// 节点吞吐缓存（Kbps）。键 = AppState.NodeKey（稳定标识）。
-    ///   连接流程会**同步等待**吞吐探测（8 节点 × 256KB × 2 次，最坏十几秒），
-    ///   而进程内缓存一重启就没了 —— 每次重启后的第一次连接都要重付一次，
-    ///   用户体感就是「连接要等 15~25 秒」。所以这里把结果按 NodeKey 落盘（TTL 6 小时），
-    ///   重启后直接复用；启动自动测速的末尾会预热「上次节点所在组」，把首次连接也变快。
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int Kbps, DateTime At)> _speedCache = new();
-    private static readonly TimeSpan SpeedCacheTtl = TimeSpan.FromHours(6);
-    private static readonly object _speedCacheDiskLock = new();
-    private static bool _speedCacheLoaded;
-
-    private sealed class SpeedEntry
-    {
-        public int Kbps { get; set; }
-        public long AtUnix { get; set; }
-    }
-
-    private static string SpeedCachePath => Path.Combine(NeoPaths.DataDir, "speed-cache.json");
-
-    private static void EnsureSpeedCacheLoaded()
-    {
-        if (_speedCacheLoaded) return;
-        lock (_speedCacheDiskLock)
-        {
-            if (_speedCacheLoaded) return;
-            _speedCacheLoaded = true;
-            try
-            {
-                if (!File.Exists(SpeedCachePath)) return;
-                var entries = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, SpeedEntry>>(
-                    File.ReadAllText(SpeedCachePath));
-                if (entries == null) return;
-                var now = DateTime.UtcNow;
-                foreach (var kv in entries)
-                {
-                    if (kv.Value == null || kv.Value.Kbps <= 0) continue;
-                    var at = DateTimeOffset.FromUnixTimeSeconds(kv.Value.AtUnix).UtcDateTime;
-                    if (now - at < SpeedCacheTtl) _speedCache[kv.Key] = (kv.Value.Kbps, at);
-                }
-            }
-            catch { }
-        }
-    }
-
-    private static void SaveSpeedCache()
-    {
-        try
-        {
-            lock (_speedCacheDiskLock)
-            {
-                var now = DateTime.UtcNow;
-                var entries = new Dictionary<string, SpeedEntry>();
-                foreach (var kv in _speedCache)
-                {
-                    if (now - kv.Value.At >= SpeedCacheTtl) continue;
-                    entries[kv.Key] = new SpeedEntry
-                    {
-                        Kbps = kv.Value.Kbps,
-                        AtUnix = new DateTimeOffset(kv.Value.At).ToUnixTimeSeconds(),
-                    };
-                }
-                var tmp = SpeedCachePath + ".tmp";
-                File.WriteAllText(tmp, System.Text.Json.JsonSerializer.Serialize(entries));
-                File.Move(tmp, SpeedCachePath, overwrite: true);
-            }
-        }
-        catch { }
-    }
-
-    /// 解析固定出口的出口节点：优先用户手动指定的键，否则自动选延迟/吞吐最好的非 REALITY 节点。
+    /// 解析固定出口的出口节点：优先用户手动指定的键，否则自动选延迟最好的非 REALITY 节点。
     private static NodeItem? ResolveFixedExitNode()
     {
         var cands = AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).ToList();
@@ -1596,11 +1352,10 @@ public static class ConnectionService
         }
         return cands
             .OrderBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
-            .ThenByDescending(n => TryGetCachedSpeed(n, out var k) ? k : 0)
             .First();
     }
 
-    /// 选入口节点：排除出口本身，按「已测速优先 → 延迟低 → 吞吐高」排序，取前 count 个（0 = 全部）。
+    /// 选入口节点：排除出口本身，按「已测速优先 → 延迟低」排序，取前 count 个（0 = 全部）。
     private static List<NodeItem> PickFixedExitEntries(NodeItem exit, int count)
     {
         var exitKey = AppState.NodeKey(exit);
@@ -1610,107 +1365,10 @@ public static class ConnectionService
             .Where(n => n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks)
             .OrderByDescending(n => n.RealDelay > 0)
             .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
-            .ThenByDescending(n => TryGetCachedSpeed(n, out var k) ? k : 0)
             .ToList();
         if (count <= 0) count = pool.Count;
         // 上限 8：入口本质是并发连接数，开太多容易被商家按「设备/并发超限」限制。
         return pool.Take(Math.Clamp(count, 1, 8)).ToList();
-    }
-
-    /// 缓存命中判定：内存/落盘共用同一个 6 小时 TTL（落盘加载时已按 TTL 过滤）。
-    private static bool TryGetCachedSpeed(NodeItem node, out int kbps)
-    {
-        kbps = 0;
-        EnsureSpeedCacheLoaded();
-        if (!_speedCache.TryGetValue(AppState.NodeKey(node), out var cached)) return false;
-        if (DateTime.UtcNow - cached.At >= SpeedCacheTtl) return false;
-        kbps = cached.Kbps;
-        return true;
-    }
-
-    /// 会拿到大量份额，浏览时每条连接抽签，抽到它就卡（Steam/推特慢的直接原因，
-    /// 做法：RealDelayTester.MeasureSpeedBatchAsync（临时内核 + 每节点独立 socks 端口，
-    /// 每节点下 256KB 折算 Kbps）。返回顺序与 group 一致；测不出 = 0（ComputeWeights 只给最低 1 份）。
-    private static async Task<List<int>> GetGroupSpeedsAsync(IReadOnlyList<NodeItem> group)
-    {
-        EnsureSpeedCacheLoaded();
-        var speeds = new int[group.Count];
-        var missing = new List<int>();
-        for (var i = 0; i < group.Count; i++)
-        {
-            if (TryGetCachedSpeed(group[i], out var cached))
-            {
-                speeds[i] = cached;
-            }
-            else
-            {
-                missing.Add(i);
-            }
-        }
-
-        if (missing.Count == 0) return speeds.ToList();
-
-        LogBus.App($"多节点并发：正在探测 {missing.Count} 个节点的真实吞吐（权重依据）…", "Debug");
-        // 预算随节点数增长（10s + 1.2s/节点，上限 30s）：8 节点约 20s、19 节点约 30s。
-        // 之前写死 15s，19 节点首次连接时探测会被取消、权重退化成「每节点 1 份」。
-        // 超预算的部分本次按延迟加权，下次启动预热会补上。
-        var probeBudget = TimeSpan.FromSeconds(Math.Min(30, 10 + missing.Count * 1.2));
-        using var cts = new CancellationTokenSource(probeBudget);
-        var map = await RealDelayTester.MeasureSpeedBatchAsync(
-            missing.Select(i => group[i]).ToList(), NeoPaths.RuntimeDir, ct: cts.Token);
-
-        var ok = 0;
-        foreach (var kv in map)
-        {
-            var idx = missing.FirstOrDefault(i => ReferenceEquals(group[i], kv.Key), -1);
-            if (idx < 0) continue;
-            speeds[idx] = kv.Value;
-            if (kv.Value > 0)
-            {
-                _speedCache[AppState.NodeKey(kv.Key)] = (kv.Value, DateTime.UtcNow);
-                ok++;
-            }
-        }
-        if (ok > 0) SaveSpeedCache();
-        LogBus.App($"多节点并发：吞吐探测完成 {ok}/{missing.Count} 个成功"
-                   + (ok < missing.Count ? "（测不出速度的节点只拿最低份额）" : ""));
-        return speeds.ToList();
-    }
-
-    /// 启动预热：为「上次使用的节点」所在的多节点组提前测吞吐并落盘，
-    /// 用户点连接时直接命中缓存，不必在连接流程里同步等探测。
-    /// 由 StartupSpeedTest 在「启动自动测速」完成后调用（开关关闭时不预热）。
-    public static async Task WarmSpeedCacheAsync()
-    {
-        try
-        {
-            if (!AppState.State.MultiNodeEnabled) return;
-            if (string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)) return;
-            if (IsConnected || IsConnecting) return;
-            var node = AppState.CurrentNode ?? AppState.Nodes.FirstOrDefault();
-            if (node == null) return;
-
-            List<NodeItem> group;
-            try
-            {
-                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
-            }
-            catch { return; }
-            if (group.Count < 2) return;
-
-            EnsureSpeedCacheLoaded();
-            var missing = group.Count(n => !TryGetCachedSpeed(n, out _));
-            if (missing == 0) return;
-
-            LogBus.App($"启动预热：正在测 {missing} 个节点的吞吐（让首次连接不必等待）…", "Debug");
-            var sw = Stopwatch.StartNew();
-            await GetGroupSpeedsAsync(group);
-            LogBus.App($"启动预热完成：吞吐缓存已更新 · 耗时 {sw.Elapsed.TotalSeconds:F1}s", "Debug");
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"启动预热失败（不影响使用）：[{ex.GetType().Name}] {ex.Message}", "Debug");
-        }
     }
 
     private static string ModeName(string mode) => mode switch
@@ -1807,17 +1465,15 @@ public static class ConnectionService
     private static bool SameNode(NodeItem a, NodeItem b) =>
         a.EndPoint == b.EndPoint && a.Name == b.Name && a.Protocol == b.Protocol;
 
-    // ---- sing-box 是否支持 balancer 出站（TUN 并发的前提）----
+    // ---- sing-box 是否支持 balancer 出站（内核能力探测）----
     private static bool? _singBoxBalancerSupport;
 
     /// 探测当前 sing-box 内核是否带 balancer 出站（即 neo 自编译版）。
-    /// 为什么必须探测而不是「假定支持」：官方版 sing-box 没有该出站类型，
-    /// 若 TUN 配置里写了 balancer，内核会以 `unknown outbound type` 直接启动失败，
-    /// 结果是**整个 TUN 连不上**，比「退回单节点」严重得多。
-    /// 因此这里用 `sing-box check` 跑一份最小 balancer 配置来判定能力，
-    /// 不支持就退回单节点，保证 TUN 始终能用。
+    /// 说明：多节点加速已移除，连接流程不再依赖该能力；但设置页仍会查询它
+    /// （自编译内核是既有安装口径的一部分），因此保留探测。
+    /// 用 `sing-box check` 跑一份最小 balancer 配置判定能力；
     /// 探测结果缓存到进程生命周期：内核 exe 不会在运行中变化（换内核会重启 neo）。
-    /// 失败（超时/异常）一律按「不支持」处理 —— 保守退回单节点是安全的一侧。
+    /// 失败（超时/异常）一律按「不支持」处理。
     private static bool SingBoxSupportsBalancerInternal()
     {
         if (_singBoxBalancerSupport.HasValue) return _singBoxBalancerSupport.Value;
@@ -1867,8 +1523,8 @@ public static class ConnectionService
             var supported = p.ExitCode == 0;
             _singBoxBalancerSupport = supported;
             LogBus.App(supported
-                ? "sing-box 内核支持 balancer 出站（TUN 多节点并发可用）"
-                : "sing-box 内核不支持 balancer 出站（TUN 将按单节点运行；如需并发请换自编译内核）",
+                ? "sing-box 内核支持 balancer 出站（自编译内核）"
+                : "sing-box 内核不支持 balancer 出站（如需该能力请换自编译内核）",
                 supported ? "Debug" : "Warning");
             return supported;
         }
@@ -1885,7 +1541,7 @@ public static class ConnectionService
         _singBoxBalancerSupport = null;
     }
 
-    /// 对外暴露的 balancer 能力查询（设置页用来提示「是否支持 TUN 并发」）。
+    /// 对外暴露的 balancer 能力查询（设置页用来提示内核能力）。
     /// 走同一个缓存探测，不自建一套判断，避免两处结论不一致。
     public static bool SingBoxSupportsBalancer
     {

@@ -134,7 +134,7 @@ public partial class App : Application
         try { Services.UsageTracker.Load(); } catch { }
 
         // 启动看门狗：上次没走到窗口显示 → 计数；连续两次失败 → 安全模式（先保证能起来）。
-        // 只关「TUN / 多节点 / 固定出口」这三项最容易把启动拖死的设置，其他设置原样保留。
+        // 只关「TUN / 固定出口」这两项最容易把启动拖死的设置，其他设置原样保留。
         try
         {
             var guard = Services.StartupGuard.Begin();
@@ -145,18 +145,16 @@ public partial class App : Application
             }
             if (guard.SafeMode)
             {
-                // 记住进入安全模式前的三项，供用户一键恢复（否则等于程序偷偷改了设置）。
+                // 记住进入安全模式前的两项，供用户一键恢复（否则等于程序偷偷改了设置）。
                 Services.AppState.State.SafeModePrevTun = Services.AppState.State.UseTun;
-                Services.AppState.State.SafeModePrevMultiNode = Services.AppState.State.MultiNodeEnabled;
                 Services.AppState.State.SafeModePrevFixedExit = Services.AppState.State.FixedExitEnabled;
                 Services.AppState.State.SafeModeAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
                 Services.AppState.State.UseTun = false;
-                Services.AppState.State.MultiNodeEnabled = false;
                 Services.AppState.State.FixedExitEnabled = false;
                 Services.AppState.Save();
                 Services.AppState.SafeModeActive = true;
-                Services.LogBus.App("已进入安全模式：TUN / 多节点加速 / 固定出口 已临时关闭（其他设置保留）。请确认启动正常后，再按需在设置里重新开启", "Error");
-                Services.IncidentLog.Record("safe-mode", "连续启动失败，已进入安全模式（关闭 TUN/多节点/固定出口）");
+                Services.LogBus.App("已进入安全模式：TUN / 固定出口 已临时关闭（其他设置保留）。请确认启动正常后，再按需在设置里重新开启", "Error");
+                Services.IncidentLog.Record("safe-mode", "连续启动失败，已进入安全模式（关闭 TUN/固定出口）");
             }
         }
         catch { }

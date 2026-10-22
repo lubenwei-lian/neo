@@ -64,15 +64,6 @@
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="预热缓存" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="启动后后台测各节点吞吐，连接更快（关闭则连接时现测）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="SwitchWarmCache" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnWarmCacheToggled" />
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="真实 IP 显示" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock Text="节点卡片显示实测出口国家与 IP（打开后自动后台检测）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                         </StackPanel>
@@ -216,7 +207,7 @@
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="sing-box 内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="SingBoxVersionHint" Text="本机内置内核 · TUN / 并发" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                            <TextBlock x:Name="SingBoxVersionHint" Text="本机内置内核 · TUN" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <Border MinWidth="96" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0">
@@ -268,77 +259,16 @@
                     <Grid x:Name="SafeModeRow" MinHeight="44" Padding="0,9" Visibility="Collapsed">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="上次以安全模式启动" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="SafeModeHint" Text="TUN / 多节点 / 固定出口 已被临时关闭，可一键恢复" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                            <TextBlock x:Name="SafeModeHint" Text="TUN / 固定出口 已被临时关闭，可一键恢复" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                         </StackPanel>
                         <Button x:Name="BtnRestoreSafeMode" Content="恢复上次设置" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource GhostSm}" Click="OnRestoreSafeModeClick" />
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
                     <StackPanel Margin="0,10,0,0">
-                        <TextBlock Text="加速方式（二选一）" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
-                        <TextBlock Text="多节点加速：多个节点一起分摊流量。固定出口：流量固定从一个节点出去，其他节点只负责帮它加速。" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        <TextBlock Text="加速方式" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                        <TextBlock Text="固定出口：流量固定从一个节点出去，其他节点只负责帮它加速。" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                     </StackPanel>
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="多节点加速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="MultiNodeHint" Text="自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="SwitchMultiNode" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnMultiNodeToggled" />
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid x:Name="MultiModeRow" MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="并发模式" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="MultiModeHint" Text="加权：快的节点多吃流量，慢的留在池里打辅助" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
-                        </StackPanel>
-                        <Border
-                            x:Name="MultiModeBox"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center"
-                            Width="120"
-                            Height="30"
-                            CornerRadius="7"
-                            Background="{ThemeResource NeoGlass2}"
-                            BorderBrush="{ThemeResource NeoHairline}"
-                            BorderThickness="1"
-                            Padding="10,0"
-                            Tapped="OnMultiModeTapped"
-                        >
-                            <Grid>
-                                <TextBlock x:Name="MultiModeText" Text="加权" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
-                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid x:Name="MultiCountRow" MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="并发节点数" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="MultiCountHint" Text="同地区同协议节点一起用；选「全部」把可用的都用上" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
-                        </StackPanel>
-                        <Border
-                            x:Name="MultiCountBox"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center"
-                            Width="120"
-                            Height="30"
-                            CornerRadius="7"
-                            Background="{ThemeResource NeoGlass2}"
-                            BorderBrush="{ThemeResource NeoHairline}"
-                            BorderThickness="1"
-                            Padding="10,0"
-                            Tapped="OnMultiCountTapped"
-                        >
-                            <Grid>
-                                <TextBlock x:Name="MultiCountText" Text="8 个" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
-                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">

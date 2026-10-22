@@ -3,17 +3,15 @@ using Neo.Core.Models;
 
 namespace Neo.Core.Core;
 
-/// 多节点加速的「组队」逻辑：决定哪些节点可以放在同一个 balancer 里一起用。
-///   1. **同协议** —— balancer 的 selector 只是把出站分组，内核按延迟挑一个用。
-///      混入不同协议（如 vless 与 hysteria2）会导致部分节点走 sing-box、部分走 xray，
-///      而本项目单次连接只用一种内核，混协议必然有一半用不了。
-///   2. **同地区** —— 用户预期是「同地区多节点提速」，跨地区混用会让出口 IP 在
-///      国家之间乱跳，登录态、风控、流媒体解锁都会出问题。
+/// 地区判定工具：把节点名归到一个地区代码（hk/jp/sg/…），供 UI 的地区筛选、
+///   「实际出口与标记是否一致」提示等展示使用。
+///   历史上这里还负责「多节点加速」的同协议 + 同地区组队；该功能已移除
+///   （内核 balancer 按连接分流，无法真正并行，实测比单节点更慢），组队逻辑随之删除。
 public static class NodeGrouper
 {
     /// 地区标签，用于判定「同地区」。与 UI 旗帜判定保持同一套关键词。
     ///   Finland→nl；而 "Hong Kong" 因带空格反而识别不出 → other）。后果是不同国家的节点
-    ///   被编进同一 balancer，出口 IP 跨国乱跳。改为：
+    ///   地区判断失效，出口 IP 跨国乱跳的提示也会错。改为：
     ///     ① 中文全名 / 含空格的多词短语按包含匹配（中文没有分隔符，这是唯一可行方式）；
     ///     ② 拉丁名（australia/russia/...）与两字母代码按**分隔符切词后整词匹配**；
     ///     ③ 长名优先于两字母代码，避免 "in"/"us" 这类代码抢走其它国家的长名。
@@ -84,39 +82,6 @@ public static class NodeGrouper
         if (sb.Length > 0) list.Add(sb.ToString());
         return list;
     }
-
-    /// 为当前节点挑选同组节点：同地区 + 同协议，且只用 xray 能承载的协议。
-    /// 返回列表第一项固定是「当前节点」本身，保证用户选的那个一定在组里。
-    /// <param name="all">全部候选节点</param>
-    /// <param name="current">用户当前选中的节点（组的锚点）</param>
-    /// <param name="maxNodes">上限，避免出站过多拖慢 observatory 探测</param>
-    public static List<NodeItem> PickGroup(IReadOnlyList<NodeItem> all, NodeItem current, int maxNodes = 8)
-    {
-        var region = RegionOf(current.Name);
-        var result = new List<NodeItem> { current };
-
-        // hy2/tuic 走 sing-box，与 xray 出站不兼容，不能混组
-        bool XrayCapable(NodeItem n) => n.Protocol is NodeProtocol.VLESS or NodeProtocol.VMess
-                                                  or NodeProtocol.Trojan or NodeProtocol.Shadowsocks;
-
-        if (!XrayCapable(current)) return result;
-
-        foreach (var n in all)
-        {
-            if (result.Count >= maxNodes) break;
-            if (!n.IsValid) continue;
-            if (SameNode(n, current)) continue;
-            if (n.Protocol != current.Protocol) continue;          // 硬约束 1：同协议
-            if (RegionOf(n.Name) != region) continue;              // 硬约束 2：同地区
-            if (result.Any(r => SameNode(r, n))) continue;
-            result.Add(n);
-        }
-
-        return result;
-    }
-
-    public static bool SameNode(NodeItem a, NodeItem b) =>
-        a.EndPoint == b.EndPoint && a.Protocol == b.Protocol && a.Name == b.Name;
 
     /// <summary>人类可读的地区名，用于日志与界面提示。</summary>
     public static string RegionDisplay(string region) => region switch

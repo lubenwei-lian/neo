@@ -5,10 +5,8 @@ using Neo.Core.Core;
 namespace Neo.App.Services;
 
 /// 启动后台任务（设置 → 通用）：
-///   · 「预热缓存」：启动后先为「上次节点所在组」测一次吞吐并落盘，
-///     连接流程不必再同步等这个探测（首次/重启后的连接因此更快）；
-///   · 「启动自动测速」：再跑一次全部节点的真连延迟，节点列表打开即实测值。
-/// 两个开关互相独立：都关则整个服务不启动；只开预热就只预热。
+///   · 「启动自动测速」：启动后跑一次全部节点的真连延迟，节点列表打开即实测值。
+/// 开关关闭则整个服务不启动。
 /// 约束：
 ///   · 进程内幂等，只跑一次；
 ///   · 测速失败（-1 / 本机失败）不写回节点，保持「未测速」；结果同时写 DelayCache；
@@ -30,7 +28,7 @@ public static class StartupSpeedTest
     {
         try
         {
-            if (!AppState.State.WarmCacheOnStartup && !AppState.State.StartupSpeedTest) return;
+            if (!AppState.State.StartupSpeedTest) return;
             if (Interlocked.Exchange(ref _started, 1) != 0) return;
             _ = Task.Run(RunAsync);
         }
@@ -56,10 +54,6 @@ public static class StartupSpeedTest
 
             await Task.Delay(SettleDelay);
             if (App.IsShuttingDown) return;
-
-            // 预热优先：连接流程会同步等吞吐探测，越早完成缓存，用户点连接时越快。
-            if (AppState.State.WarmCacheOnStartup)
-                await ConnectionService.WarmSpeedCacheAsync();
 
             if (AppState.State.StartupSpeedTest && !App.IsShuttingDown)
                 await RunLatencyTestAsync();

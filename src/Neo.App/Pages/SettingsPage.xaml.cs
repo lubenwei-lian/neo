@@ -26,8 +26,6 @@ public sealed partial class SettingsPage : UserControl
 
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
-    private Neo.App.Ui.PopupList? _multiModeList;
-    private Neo.App.Ui.PopupList? _multiCountList;
     private Neo.App.Ui.PopupList? _fixedExitNodeList;
     private Neo.App.Ui.PopupList? _fixedExitEntryList;
     private Neo.App.Ui.PopupList? _dnsList;
@@ -101,13 +99,6 @@ public sealed partial class SettingsPage : UserControl
         AppState.Save();
     }
 
-    private void OnWarmCacheToggled(object sender, RoutedEventArgs e)
-    {
-        if (_syncing) return;
-        AppState.State.WarmCacheOnStartup = SwitchWarmCache.IsOn;
-        AppState.Save();
-    }
-
     private void OnShowRealIpToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -178,11 +169,10 @@ public sealed partial class SettingsPage : UserControl
     {
         var st = AppState.State;
         st.UseTun = st.SafeModePrevTun;
-        st.MultiNodeEnabled = st.SafeModePrevMultiNode;
         st.FixedExitEnabled = st.SafeModePrevFixedExit;
         st.SafeModeAt = "";
         AppState.Save();
-        LogBus.App("已恢复安全模式前的设置（TUN / 多节点 / 固定出口）");
+        LogBus.App("已恢复安全模式前的设置（TUN / 固定出口）");
         IncidentLog.Record("startup", "用户恢复了安全模式前的设置");
         RefreshFromState();
         if (ConnectionService.IsConnected)
@@ -196,7 +186,7 @@ public sealed partial class SettingsPage : UserControl
         var at = AppState.State.SafeModeAt ?? "";
         SafeModeRow.Visibility = at.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (at.Length > 0)
-            SafeModeHint.Text = $"上次启动失败（{at}）时已临时关闭 TUN / 多节点 / 固定出口，可一键恢复";
+            SafeModeHint.Text = $"上次启动失败（{at}）时已临时关闭 TUN / 固定出口，可一键恢复";
     }
 
     private void OnAutoRepairProxyToggled(object sender, RoutedEventArgs e)
@@ -205,59 +195,6 @@ public sealed partial class SettingsPage : UserControl
         AppState.State.AutoRepairSystemProxy = SwitchAutoRepairProxy.IsOn;
         AppState.Save();
         LogBus.App(SwitchAutoRepairProxy.IsOn ? "自动修复系统代理：已开启" : "自动修复系统代理：已关闭");
-    }
-
-    private async void OnMultiNodeToggled(object sender, RoutedEventArgs e)
-    {
-        if (_syncing) return;
-        AppState.State.MultiNodeEnabled = SwitchMultiNode.IsOn;
-        bool turningOn = SwitchMultiNode.IsOn;
-        if (turningOn && AppState.State.FixedExitEnabled)
-        {
-            // 两者只能选一个：开多节点就把固定出口关掉，并把那个开关同步为关，避免两个都亮着
-            AppState.State.FixedExitEnabled = false;
-            _syncing = true;
-            try { SwitchFixedExit.IsOn = false; } finally { _syncing = false; }
-            LogBus.App("多节点加速：已开启，固定出口已自动关闭（两者只能选一个）");
-        }
-        AppState.Save();
-
-        if (!SwitchMultiNode.IsOn)
-        {
-            LogBus.App("多节点加速：已关闭");
-            // 关闭后必须重载内核，否则运行中的 xray 仍按旧的「多节点」配置继续跑，
-            if (ConnectionService.IsConnected)
-            {
-                try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
-            }
-            return;
-        }
-
-        // 说明当前会组成几个节点，避免用户开了却不知道实际效果
-        var cur = AppState.CurrentNode;
-        if (cur == null)
-        {
-            LogBus.App("多节点加速：已开启（尚未选择节点，连接时自动组队）", "Warning");
-            return;
-        }
-
-        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
-        var region = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(cur.Name));
-        if (group.Count <= 1)
-        {
-            LogBus.App($"多节点加速：已开启，但当前节点（{region}）没有同地区同协议的其它节点可组队，将按单节点运行", "Warning");
-            return;
-        }
-        LogBus.App($"多节点加速：已开启 · {region} 共 {group.Count} 个节点参与（策略 {AppState.State.MultiNodeStrategy}）");
-        if (AppState.State.FixedExitEnabled)
-            LogBus.App("提示：固定出口正在开启状态，固定出口优先，多节点加速此时不生效", "Warning");
-        UpdateFixedExitUi();
-
-        // 已连接时立即重载，让加速马上生效
-        if (ConnectionService.IsConnected)
-        {
-            try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
-        }
     }
 
     // ---- 固定出口（多入口加速）----
@@ -269,18 +206,7 @@ public sealed partial class SettingsPage : UserControl
         if (_syncing) return;
         bool on = SwitchFixedExit.IsOn;
         AppState.State.FixedExitEnabled = on;
-        if (on && AppState.State.MultiNodeEnabled)
-        {
-            // 两者只能选一个：开固定出口就把多节点关掉，并把那个开关同步为关
-            AppState.State.MultiNodeEnabled = false;
-            _syncing = true;
-            try { SwitchMultiNode.IsOn = false; } finally { _syncing = false; }
-            LogBus.App("固定出口：已开启，多节点加速已自动关闭（两者只能选一个）");
-        }
-        else
-        {
-            LogBus.App(on ? "固定出口：已开启" : "固定出口：已关闭");
-        }
+        LogBus.App(on ? "固定出口：已开启" : "固定出口：已关闭");
         AppState.Save();
         UpdateFixedExitUi();
         if (on && AppState.State.UseTun)
@@ -364,28 +290,11 @@ public sealed partial class SettingsPage : UserControl
         FixedExitEntryText.Text = c <= 0 ? "全部" : c + " 个";
 
         bool fx = AppState.State.FixedExitEnabled;
-        bool mn = AppState.State.MultiNodeEnabled;
-
-        // 两者二选一（开关会互相关闭），文案就一句话说清"现在走哪条路"，不用用户自己推理。
-        if (fx)
-        {
-            FixedExitHint.Text = "已开启：所有流量固定从「出口节点」出去，其他节点只负责帮它加速。流量按两跳计。";
-            MultiNodeHint.Text = "已关闭（和「固定出口」二选一）";
-        }
-        else if (mn)
-        {
-            FixedExitHint.Text = "已关闭（和「多节点加速」二选一）。想让出口 IP 固定就打开这个。";
-            MultiNodeHint.Text = "多个节点一起分摊流量，突破单节点限速（对下载/视频效果明显）";
-        }
-        else
-        {
-            FixedExitHint.Text = "打开后：流量固定从一个节点出去，其他节点帮它加速；出口只支持 ws/tls 节点，流量按两跳计。";
-            MultiNodeHint.Text = "多个节点一起分摊流量，突破单节点限速（对下载/视频效果明显）";
-        }
+        FixedExitHint.Text = fx
+            ? "已开启：所有流量固定从「出口节点」出去，其他节点只负责帮它加速。流量按两跳计。"
+            : "打开后：流量固定从一个节点出去，其他节点帮它加速；出口只支持 ws/tls 节点，流量按两跳计。";
 
         // 用不上的子选项直接灰掉，避免用户以为改了会生效
-        SetRowEnabled(MultiModeRow, mn);
-        SetRowEnabled(MultiCountRow, mn);
         SetRowEnabled(FixedExitNodeRow, fx);
         SetRowEnabled(FixedExitEntryRow, fx);
     }
@@ -677,99 +586,6 @@ public sealed partial class SettingsPage : UserControl
         Neo.App.Ui.PopupList.ShowBelow(list, fe, fe.ActualWidth > 0 ? fe.ActualWidth : 260);
     }
 
-    ///   balanced —— 均衡：连接均匀打到全部存活节点，不做速度区分。
-    private static readonly (string Key, string Label, string Hint)[] MultiModes =
-    {
-        ("weighted", "加权", "加权：快的节点多吃流量，慢的留在池里打辅助"),
-        ("balanced", "均衡", "均衡：所有存活节点平均分摊，不做速度区分"),
-    };
-
-    private void OnMultiModeTapped(object sender, TappedRoutedEventArgs e)
-    {
-        _multiModeList ??= new Neo.App.Ui.PopupList();
-        _multiModeList.ClearItems();
-        foreach (var (key, label, hint) in MultiModes)
-        {
-            var k = key;
-            _multiModeList.AddItem(label, null, async () =>
-            {
-                if (AppState.State.MultiNodeMode == k) return;
-                AppState.State.MultiNodeMode = k;
-                AppState.Save();
-                UpdateMultiModeUi();
-                LogBus.App($"并发模式已切换为「{label}」（切换后需重连生效）");
-                await ConnectionService.ReloadForSettingsAsync();
-            });
-            _multiModeList.AddDisabled(hint);
-        }
-        ShowListBelow(_multiModeList, sender, MultiModeBox);
-    }
-
-    private void UpdateMultiModeUi()
-    {
-        var cur = MultiModes.FirstOrDefault(m => m.Key == AppState.State.MultiNodeMode);
-        MultiModeText.Text = cur.Label ?? "加权";
-        MultiModeHint.Text = cur.Hint ?? MultiModes[0].Hint;
-    }
-
-    // ---- 并发节点数 ----
-    // 原先上限写死 16（默认 8），而订阅里同地区同协议的节点往往有十几二十个，
-    // 用户会觉得「并发 8 太少」。这里给出档位 + 「全部」，实际可组队数量由 NodeGrouper 决定。
-    private static readonly int[] MultiCountPresets = { 3, 6, 8, 10 };
-    private const int MultiCountAll = 10;
-
-    private int MultiGroupAvailable()
-    {
-        var cur = AppState.CurrentNode;
-        if (cur == null) return 0;
-        try { return NodeGrouper.PickGroup(AppState.Nodes, cur, 999).Count; }
-        catch { return 0; }
-    }
-
-    private void OnMultiCountTapped(object sender, TappedRoutedEventArgs e)
-    {
-        _multiCountList ??= new Neo.App.Ui.PopupList();
-        _multiCountList.ClearItems();
-        var avail = MultiGroupAvailable();
-
-        foreach (var n in MultiCountPresets)
-        {
-            var v = n;
-            _multiCountList.AddItem($"{v} 个", null, async () =>
-            {
-                if (AppState.State.MultiNodeMax == v) return;
-                AppState.State.MultiNodeMax = v;
-                AppState.Save();
-                UpdateMultiCountUi();
-                LogBus.App($"并发节点数已设为 {v} 个（重连后生效）");
-                await ConnectionService.ReloadForSettingsAsync();
-            });
-        }
-
-        _multiCountList.AddItem(avail > 0 ? $"全部（{avail} 个）" : "全部", null, async () =>
-        {
-            if (AppState.State.MultiNodeMax == MultiCountAll) return;
-            AppState.State.MultiNodeMax = MultiCountAll;
-            AppState.Save();
-            UpdateMultiCountUi();
-            LogBus.App($"并发节点数已设为「全部」（当前可组队 {avail} 个，重连后生效）");
-            await ConnectionService.ReloadForSettingsAsync();
-        });
-
-        _multiCountList.AddDisabled("只组合同地区、同协议的节点：跨地区会让出口 IP 乱跳；协议不同内核不兼容。并发上限 10 个（太多容易被商家限制）");
-        ShowListBelow(_multiCountList, sender, MultiCountBox);
-    }
-
-    private void UpdateMultiCountUi()
-    {
-        var avail = MultiGroupAvailable();
-        var max = Math.Clamp(AppState.State.MultiNodeMax, 2, 10);
-        MultiCountText.Text = avail > 0 && max >= avail ? $"全部（{avail} 个）" : $"{max} 个";
-        MultiCountHint.Text = avail > 1
-            ? $"当前可组队 {avail} 个（同地区同协议）；「全部」把可用的都用上"
-            : "同地区同协议节点一起用；数值越大越吃带宽与内核资源";
-    }
-
     //   旧实现一个 OnAdvancedToggled 同时写 BypassCn 与 AllowLan —— 拨「允许局域网连接」时
     //   会顺带把 SwitchBypass 的**过期显示值**写回 BypassCn，静默回滚规则页/设置页的改动。
     private void OnBypassCnToggled(object sender, RoutedEventArgs e)
@@ -973,7 +789,7 @@ public sealed partial class SettingsPage : UserControl
     }
 
     /// 检查 sing-box 内核更新。通道 = neo 自己的发布仓库（自编译版，含 balancer）。
-    /// 上游官方版**不能**用于此处：它不含 balancer 出站，装上会让 TUN 并发整个失效。
+    /// 上游官方版**不能**用于此处：它不含 balancer 出站。
     private async void OnCheckSingBoxUpdateClick(object sender, RoutedEventArgs e)
     {
         if (_checkingSingBoxUpdate) return;
@@ -1005,9 +821,9 @@ public sealed partial class SettingsPage : UserControl
             var extra = "";
             if (hasNew)
             {
-                extra = "\n\n⚠ 本内核为 neo 自编译版（含 balancer 并发出站）。\n"
+                extra = "\n\n⚠ 本内核为 neo 自编译版（含 balancer 出站）。\n"
                       + "安装后会先自校验 balancer 能力，校验不过会自动拒绝并保留现有内核。\n"
-                      + "请勿改用上游官方 sing-box —— 官方版不含 balancer，装上会让 TUN 多节点并发失效。";
+                      + "请勿改用上游官方 sing-box —— 官方版不含 balancer。";
             }
 
             var result = await ShowDialogAsync(
@@ -1210,7 +1026,7 @@ public sealed partial class SettingsPage : UserControl
                 info.AppendLine($"系统：{Environment.OSVersion}");
                 info.AppendLine($"xray：{ConnectionService.XrayVersion ?? "?"}");
                 try { info.AppendLine($"sing-box：{ConnectionService.SingBoxVersion ?? "?"}"); } catch { }
-                info.AppendLine($"代理模式：{AppState.State.ProxyMode} · TUN={AppState.State.UseTun} · 多节点={AppState.State.MultiNodeEnabled}({AppState.State.MultiNodeMax})");
+                info.AppendLine($"代理模式：{AppState.State.ProxyMode} · TUN={AppState.State.UseTun}");
                 info.AppendLine($"分流：国内直连={AppState.State.BypassCn} 广告拦截={AppState.State.BlockAds} DNS={AppState.State.DnsServer} 日志级别={AppState.State.LogLevel}");
                 info.AppendLine($"系统代理：{SystemProxy.IsEnabled}");
                 try { info.AppendLine($"最近 24 小时自动记录事件：{IncidentLog.CountRecent(TimeSpan.FromHours(24))} 条"); } catch { }
@@ -1267,7 +1083,7 @@ public sealed partial class SettingsPage : UserControl
     {
         var res = await ShowDialogAsync(
             "恢复默认设置",
-            "将把界面、代理、分流、测速、多节点等设置恢复为默认值。\n\n订阅、节点、当前所选节点和窗口位置保留。",
+            "将把界面、代理、分流、测速等设置恢复为默认值。\n\n订阅、节点、当前所选节点和窗口位置保留。",
             "取消", "恢复默认");
         if (res != ContentDialogResult.Primary) return;
 
@@ -1276,12 +1092,11 @@ public sealed partial class SettingsPage : UserControl
         st.BypassPrivate = true; st.BypassCn = true; st.BlockAds = true; st.AllowLan = false;
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
-        st.FailoverEnabled = true; st.MultiNodeEnabled = false; st.MultiNodeMax = 8;
+        st.FailoverEnabled = true;
         st.AutoRepairSystemProxy = true; st.AutoRestartCore = true;
-        st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevMultiNode = false; st.SafeModePrevFixedExit = false;
+        st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
-        st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
-        st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;
+        st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.ShowRealIp = false;
         st.AutoCheckUpdate = true; st.UpdateCheckTime = "12:00"; st.GameDirectEnabled = true;
         AppState.Save();
         AppState.NotifyUiSettingsChanged();
@@ -1299,12 +1114,10 @@ public sealed partial class SettingsPage : UserControl
         SwitchAutoStart.IsOn = IsAutoStartOn();
         SwitchAutoConnect.IsOn = AppState.State.AutoConnect;
         SwitchStartupSpeedTest.IsOn = AppState.State.StartupSpeedTest;
-        SwitchWarmCache.IsOn = AppState.State.WarmCacheOnStartup;
         SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchAutoRepairProxy.IsOn = AppState.State.AutoRepairSystemProxy;
         SwitchAutoRestartCore.IsOn = AppState.State.AutoRestartCore;
-        SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
         SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
         UpdateTimePicker.Time = TimeSpan.TryParse(AppState.State.UpdateCheckTime, out var checkTime)
@@ -1321,8 +1134,6 @@ public sealed partial class SettingsPage : UserControl
         _syncing = false;
 
         LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
-        UpdateMultiModeUi();
-        UpdateMultiCountUi();
         UpdateFixedExitUi();
         RefreshSafeModeRow();
         UpdateRuleSetCount();
@@ -1348,23 +1159,11 @@ public sealed partial class SettingsPage : UserControl
             XrayVersionHint.Text = "本机内置内核 · 就绪";
         }
 
-        // sing-box 单列一行显示，并标出它是否带 balancer（决定 TUN 并发是否可用）。
+        // sing-box 单列一行显示版本与可用性。
         var sbVer = ConnectionService.SingBoxVersion;
         SingBoxVersionText.Text = sbVer ?? "—";
-        if (sbVer == null)
-        {
-            SingBoxVersionHint.Text = "未检测到内核文件";
-        }
-        else
-        {
-            var canBalance = ConnectionService.SingBoxSupportsBalancer;
-            SingBoxVersionHint.Text = canBalance
-                ? "本机内置内核 · 支持 TUN 并发"
-                : "本机内置内核 · 不含并发能力（TUN 单节点）";
-            SingBoxVersionHint.Foreground = canBalance
-                ? ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80))
-                : ThemeUtil.Get("NeoOrange", Color.FromArgb(255, 0xC2, 0x41, 0x0C));
-        }
+        SingBoxVersionHint.Text = sbVer == null ? "未检测到内核文件" : "本机内置内核 · 就绪";
+        SingBoxVersionHint.Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
         PortSocksText.Text = XrayConfigBuilder.DefaultSocksPort.ToString();
         PortHttpText.Text = XrayConfigBuilder.DefaultHttpPort.ToString();
         LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)

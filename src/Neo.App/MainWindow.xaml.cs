@@ -1188,7 +1188,7 @@ public sealed partial class MainWindow : Window
         if (Services.AppState.SafeModeActive)
         {
             Services.AppState.SafeModeActive = false;
-            try { ShowStatusText("已用安全模式启动：TUN / 多节点 / 固定出口已关闭，可在设置里重新开启"); } catch { }
+            try { ShowStatusText("已用安全模式启动：TUN / 固定出口已关闭，可在设置里重新开启"); } catch { }
         }
             }
 

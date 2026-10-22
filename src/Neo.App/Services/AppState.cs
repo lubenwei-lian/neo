@@ -72,26 +72,8 @@ public static class AppState
 
         public bool FailoverEnabled { get; set; } = true;
 
-        /// 多节点加速：把多个节点编入一个 balancer，由内核把连接分摊到所有节点，
-        /// 从而突破单节点单连接限速。
-        /// 当时策略是 leastPing（只挑最快的一个），流量其实集中在单节点上，
-        /// 那 30 MB/s 只是「多流并发 + 恰好遇到快节点」，并非多节点叠加。
-        /// 现改为 leastLoad + expected=全部节点数，连接才真正分摊（详见 XrayConfigBuilder.BuildMulti）。
-        public bool MultiNodeEnabled { get; set; } = false;
-
-        public int MultiNodeMax { get; set; } = 8;
-
-        /// balancer 策略。**必须用 leastLoad**：
-        ///   leastLoad —— 在「全部存活节点」中按份额分摊，并排除探测判定为死的节点（真并发）。
-        ///   leastPing —— 只选延迟最低的**唯一一个**，等于单节点，属假并发（已弃用）。
-        public string MultiNodeStrategy { get; set; } = "leastLoad";
-
-        ///   "balanced" —— 均衡分摊：连接均匀打到全部存活节点，追求所有节点一起工作。
-        /// 详见 XrayConfigBuilder.ComputeWeights。
-        public string MultiNodeMode { get; set; } = "weighted";
-
         /// 固定出口（多入口加速）：出口固定为一个节点，其他节点作为入口链路给它叠加带宽。
-        /// 仅在非 TUN（xray）下生效；与「多节点加速」互斥（开启后忽略多节点组队）。
+        /// 仅在非 TUN（xray）下生效。
         public bool FixedExitEnabled { get; set; } = false;
 
         /// 固定出口的出口节点稳定键（见 <see cref="NodeKey"/>）；空 = 自动挑延迟/吞吐最好的非 REALITY 节点。
@@ -107,9 +89,8 @@ public static class AppState
         /// 内核异常退出后是否自动重启。默认开；关掉后内核崩溃只断开、等你手动重连。
         public bool AutoRestartCore { get; set; } = true;
 
-        /// 安全模式记录的「进入前」三项设置，配合 SafeModeAt 让用户一键恢复。
+        /// 安全模式记录的「进入前」两项设置，配合 SafeModeAt 让用户一键恢复。
         public bool SafeModePrevTun { get; set; }
-        public bool SafeModePrevMultiNode { get; set; }
         public bool SafeModePrevFixedExit { get; set; }
         /// 上次进入安全模式的时间；空 = 没有待恢复的安全模式记录。
         public string SafeModeAt { get; set; } = "";
@@ -119,10 +100,6 @@ public static class AppState
         /// 启动后自动测一次全部节点的真连延迟（与节点页「真连测速」同一套实现），
         /// 由 设置 → 通用 →「启动自动测速」控制。
         public bool StartupSpeedTest { get; set; } = true;
-
-        /// 启动时预热「多节点吞吐权重缓存」：连接流程会同步等这个探测，
-        /// 预热后首次/重启后的连接就不必再等（开关关闭则连接时现测）。
-        public bool WarmCacheOnStartup { get; set; } = true;
 
         /// 节点卡片显示实测出口信息（真实国家 + IP）。需要「位置检测」的结果，
         /// 打开后节点页会自动在后台检测一次。
@@ -249,11 +226,6 @@ public static class AppState
             //   MigrateConfig() 只去改 State，所以 State 必须已经指向「刚读出来的那份」。
             State = outcome.State;
 
-            // 加速方式二选一：旧配置里可能两个都开着，这里统一收敛为「固定出口优先」，
-            // 避免界面出现两个开关同时亮、用户不知道实际走哪条路。
-            if (State.FixedExitEnabled && State.MultiNodeEnabled)
-                State.MultiNodeEnabled = false;
-
             bool migrated = false;
             try
             {
@@ -327,49 +299,10 @@ public static class AppState
             changed = true;
         }
 
-        if (State.ConfigVersion < 2)
-        {
-            // v1 → v2：多节点并发策略 leastPing → leastLoad。
-            // 为什么必须迁移：state.json 里存着旧默认值 "leastPing"，光改 C# 默认值对已装用户无效
-            //（与上面 LogLevel 同一个坑）。而 leastPing 是**假并发**——内核只选延迟最低的唯一一个节点，
-            // 只要用户没手动改成别的策略，就升级到 leastLoad。
-            if (string.Equals(State.MultiNodeStrategy, "leastPing", StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(State.MultiNodeStrategy))
-            {
-                State.MultiNodeStrategy = "leastLoad";
-                LogBus.App("多节点并发策略已升级为 leastLoad（连接将分摊到全部节点；旧 leastPing 实际只走最快的一个）");
-            }
-
-            // 并发模式默认「加权」：老的 state.json 没有这个字段，反序列化后是 null，
-            // 而 null 会被 ConnectionService 判成非 balanced ⇒ 正好落到加重权分支。
-            // 这里显式补齐，避免依赖「null 恰好等于加权」这种隐式约定。
-            if (string.IsNullOrWhiteSpace(State.MultiNodeMode))
-                State.MultiNodeMode = "weighted";
-
-            State.ConfigVersion = 2;
-            changed = true;
-        }
-
         if (State.ConfigVersion < 3)
         {
-            // 背景：这些字段都写在 state.json 里，可被手工编辑/被旧版本写坏。
-            //   · MultiNodeStrategy 写成未知串 → xray 拒绝启动（exit=23 unknown balancing strategy），
-            //     用户表现就是「点连接没反应」；
-            //   · MultiNodeMax 0/负数 → PickGroup 语义不明确（代码里虽有 Clamp，但落盘值应保持干净）。
+            // 背景：DnsServer 写在 state.json 里，可被手工编辑/被旧版本写坏成空串。
             // 这里在加载时统一归一，避免任何一处漏判就把软件变成「垃圾」。
-            if (!string.Equals(State.MultiNodeStrategy, "leastLoad", StringComparison.OrdinalIgnoreCase))
-            {
-                State.MultiNodeStrategy = "leastLoad";
-                changed = true;
-            }
-            if (!string.Equals(State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(State.MultiNodeMode, "weighted", StringComparison.OrdinalIgnoreCase))
-            {
-                State.MultiNodeMode = "weighted";
-                changed = true;
-            }
-            var maxNodes = Math.Clamp(State.MultiNodeMax, 2, 10);
-            if (maxNodes != State.MultiNodeMax) { State.MultiNodeMax = maxNodes; changed = true; }
             if (string.IsNullOrWhiteSpace(State.DnsServer)) { State.DnsServer = "223.5.5.5"; changed = true; }
 
             State.ConfigVersion = 3;

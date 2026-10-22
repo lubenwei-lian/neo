@@ -74,6 +74,9 @@ public static class XrayStats
                 if (TryParse(name, "outbound>>>", out var outTag, out var outDir))
                 {
                     if (ReservedOutTags.Contains(outTag)) continue;
+                    // 固定出口：hop{i}（客户端→入口）与 chain{i}（入口→出口）承载同一份用户流量，
+                    // 两者相加会把流量翻倍，故只计 chain 段（用户实际收发）。
+                    if (outTag.StartsWith("hop", StringComparison.OrdinalIgnoreCase)) continue;
                     outMatched++;
                     var val = ReadValue(item);
                     if (outDir == "uplink") outUp += val; else outDown += val;
@@ -102,8 +105,8 @@ public static class XrayStats
                 return new Snapshot(inUp, inDown);
             }
 
-            // 两条路都没数：返回 0 会伪装成「今天没流量」，让统计静默失效
-            //（这正是多节点加速上线后流量统计恒为 0 的形态）。宁可返回 null 让界面保留上一帧。
+            // 两条路都没数：返回 0 会伪装成「今天没流量」，让统计静默失效。
+            // 宁可返回 null 让界面保留上一帧。
             if (!_warnedShapeMismatch)
             {
                 _warnedShapeMismatch = true;
@@ -129,10 +132,10 @@ public static class XrayStats
         catch { return 0; }
     }
 
-    /// 解析形如 `outbound>>>proxy0>>>traffic>>>uplink` 的统计名。
-    /// 单节点出站 tag 是 `proxy`，多节点加速下是 `proxy0`…`proxyN` ——
-    /// 旧实现写死比较 `outbound>>>proxy>>>traffic>>>uplink`，在多节点下一条都匹配不到，
-    /// 于是 up/down 恒为 0：图表全平、今日流量不再累加（用户报告的「流量统计不加载」）。
+    /// 解析形如 `outbound>>>proxy>>>traffic>>>uplink` 的统计名。
+    /// 统计口径按「排除 direct/block/api 后的全部出站」汇总，不依赖具体 tag 名：
+    /// 当前出站 tag 是单节点的 `proxy` 与固定出口的 `hop*` / `chain*`，
+    /// 都由这里按 `outbound>>>` + `>>>traffic>>>` 前缀解析。
     private static bool TryParse(string name, string prefix, out string tag, out string dir)
     {
         tag = "";

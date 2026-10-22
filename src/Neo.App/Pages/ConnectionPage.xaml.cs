@@ -179,8 +179,7 @@ public sealed partial class ConnectionPage : UserControl
         UpdateCoreCardUi();
     }
 
-    /// 内核种类/版本来自 ConnectionService，内存来自 CoreMemoryMb，策略来自 AppState.State，
-    /// 参与节点来自 MultiNodeCount 与节点总数。
+    /// 内核种类/版本来自 ConnectionService，内存来自 CoreMemoryMb；固定出口生效时显示入口数。
     private void UpdateCoreCardUi()
     {
         try
@@ -199,25 +198,15 @@ public sealed partial class ConnectionPage : UserControl
                 ? (ConnectionService.SingBoxVersion ?? "—")
                 : (ConnectionService.XrayVersion ?? "—");
 
-            var multi = running ? ConnectionService.MultiNodeCount : 0;
             var fixedExit = running && ConnectionService.FixedExitActive ? ConnectionService.FixedExitEntries + 1 : 0;
-            CoreTagText.Text = fixedExit > 0
-                ? "固定出口"
-                : multi > 1
-                ? (string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase)
-                    ? "均衡" : "加权")
-                : (running ? ConnectionService.CoreKind : "—");
+            CoreTagText.Text = fixedExit > 0 ? "固定出口" : (running ? ConnectionService.CoreKind : "—");
 
             CoreStrategyText.Text = fixedExit > 0
                 ? $"出口固定 · {ConnectionService.FixedExitName}"
-                : multi > 1
-                ? $"{StrategyDisplayName(AppState.State.MultiNodeStrategy)} · {(string.Equals(AppState.State.MultiNodeMode, "balanced", StringComparison.OrdinalIgnoreCase) ? "均衡" : "加权")}"
                 : (running ? "单节点" : "—");
 
             CoreNodesText.Text = fixedExit > 0
                 ? $"{fixedExit} / {AppState.Nodes.Count}"
-                : multi > 1
-                ? $"{multi} / {AppState.Nodes.Count}"
                 : (running ? $"1 / {AppState.Nodes.Count}" : "—");
         }
         catch { }
@@ -728,15 +717,6 @@ public sealed partial class ConnectionPage : UserControl
         try { _ringBreathSb?.Stop(); } catch { }
         _ringVisualState = -1;
     }
-
-    private static string StrategyDisplayName(string? strategy) => strategy switch
-    {
-        "leastLoad" => "最小负载",
-        "leastPing" => "最低延迟",
-        "roundRobin" => "轮询",
-        "random" => "随机",
-        _ => string.IsNullOrWhiteSpace(strategy) ? "—" : strategy,
-    };
 
     private static string HumanRate(double bps)
     {
@@ -1324,16 +1304,10 @@ public sealed partial class ConnectionPage : UserControl
             HeroEndpoint.Text = "—";
         }
 
-        // 多节点加速标记：仅在真正连接且确实组了多个节点时显示
-        var multi = on ? ConnectionService.MultiNodeCount : 0;
+        // 固定出口标记：仅在真正生效时显示入口数。
         if (fixedExit != null)
         {
             HeroMultiText.Text = $"固定出口 · 入口 {ConnectionService.FixedExitEntries} 条";
-            HeroMultiBadge.Visibility = Visibility.Visible;
-        }
-        else if (multi > 1)
-        {
-            HeroMultiText.Text = $"加速中 · {ConnectionService.MultiNodeRegion}×{multi}";
             HeroMultiBadge.Visibility = Visibility.Visible;
         }
         else

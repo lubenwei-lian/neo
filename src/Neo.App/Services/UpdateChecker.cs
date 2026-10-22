@@ -9,10 +9,11 @@ namespace Neo.App.Services;
 public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease);
 
 /// sing-box 内核发布。通道指向 **neo 自己的发布仓库**，不是上游 SagerNet。
-///   官方 sing-box 1.14.2 / 1.14.3 / 1.15.0-alpha.12 **都不含 balancer 出站**，
-///   `sing-box check` 一律报 `unknown outbound type: balancer`。
-///   而 neo 的 TUN 多节点并发配置里**必然**写 balancer —— 换成官方内核，
-///   内核会因该出站类型未知而**整个 TUN 启动失败**（不是「退回单节点」，是直接连不上）。
+///   本项目内置的是带 balancer 补丁的**自编译版**；官方 sing-box（实测 1.14.2 /
+///   1.14.3 / 1.15.0-alpha.12）都不含该出站类型，`sing-box check` 一律报
+///   `unknown outbound type: balancer`。历史上 TUN 多节点配置必写 balancer，
+///   换成官方内核会因该出站类型未知而启动失败；多节点加速功能已移除，
+///   该安装闸门属于历史遗留，行为保持不变。
 public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, bool HasBalancer, string AssetName = "");
 
 public static class UpdateChecker
@@ -278,12 +279,11 @@ public static class UpdateChecker
     }
 
     /// 下载并覆盖安装 **sing-box 内核**（neo 自编译版）。
-    /// 与 xray 的差异（两个都是必需的，缺一就会把并发能力冲掉）：
+    /// 与 xray 的差异（校验项保留：balancer 补丁是历史依赖，官方版会被闸门拦下）：
     /// ① **自校验版本**：跑 `sing-box version` 确认拿到的是期望版本；
     /// ② **自校验 balancer 能力**：用一份最小 balancer 配置跑 `sing-box check`，
-    ///    确认新内核**真的支持 balancer 出站**。官方版这一步必然失败 ——
-    ///    若装上去，TUN 配置里的 balancer 会让内核整个启动失败（TUN 直接不可用）。
-    ///    校验不过就拒绝安装、不动现有文件。
+    ///    确认新内核**真的支持 balancer 出站**。官方版这一步必然失败（历史上
+    ///    TUN 多节点配置必写 balancer，装上去会让内核启动失败）；校验不过就拒绝安装、不动现有文件。
     /// ③ 安装成功后同时重置版本缓存与 balancer 能力缓存。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
         SingBoxRelease rel, Action<string> progress, CancellationToken ct = default)
@@ -364,11 +364,12 @@ public static class UpdateChecker
             if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
                 return (false, $"新内核自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
 
-            progress("校验 balancer 并发能力…");
+            progress("校验 balancer 补丁…");
             if (!SingBoxSupportsBalancerAt(newExe, out var why))
                 return (false,
                     $"新内核不支持 balancer 出站（{why}），安装已中止。\n\n" +
-                    "安装它会使 TUN 多节点并发**完全失效**（内核会因未知出站类型启动失败）。\n" +
+                    "安装它会让内核因未知出站类型启动失败（历史上 TUN 多节点配置必写 balancer；" +
+                    "该闸门属历史遗留，多节点功能已移除，行为保持不变）。\n" +
                     "请确认下载的是 neo 自编译内核，而不是上游官方版。");
 
             if (ConnectionService.IsConnected)
@@ -399,7 +400,7 @@ public static class UpdateChecker
             try { Directory.Delete(extractDir, true); } catch { }
             try { File.Delete(zipPath); } catch { }
 
-            return (true, $"sing-box 已更新到 {rel.Version}（含 balancer 并发能力）！重新连接即使用新内核。");
+            return (true, $"sing-box 已更新到 {rel.Version}（含 balancer 补丁）！重新连接即使用新内核。");
         }
         catch (Exception ex)
         {
