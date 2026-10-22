@@ -1,5 +1,8 @@
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using Neo.Core.Core;
 using Neo.Core.Models;
 
 namespace Neo.Core.Parsing;
@@ -262,6 +265,40 @@ public static class SubscriptionFetcher
             wr.Nodes.AddRange(wgNodes);
             LogBus($"订阅识别：WireGuard .conf 解析出 {wgNodes.Count} 个节点");
             return wr;
+        }
+
+        // ⑤ 自定义整份配置（xray/sing-box JSON）：不拆节点，保存原文 + 探测内核。
+        //    顺序放在最后，避免把 SIP008 之类的"看起来也是 JSON"的订阅误判。
+        foreach (var attempt in attempts)
+        {
+            if (!CustomConfigBuilder.LooksLikeCustomConfig(attempt)) continue;
+            var engine = CustomConfigBuilder.DetectEngine(attempt);
+            if (engine == null) continue;
+            string path;
+            try
+            {
+                var dir = Path.Combine(NeoPaths.DataDir, "custom");
+                Directory.CreateDirectory(dir);
+                var sha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(attempt))).ToLowerInvariant()[..12];
+                path = Path.Combine(dir, $"custom-{sha}.json");
+                if (!File.Exists(path)) File.WriteAllText(path, attempt);
+            }
+            catch (Exception ex)
+            {
+                lastFail = "自定义配置保存失败：" + ex.Message;
+                continue;
+            }
+            var customNode = new NodeItem
+            {
+                Protocol = NodeProtocol.CustomConfig,
+                Name = $"自定义配置（{engine}）· {Path.GetFileNameWithoutExtension(path)}",
+            };
+            customNode.Extras["config_path"] = path;
+            customNode.Extras["engine"] = engine;
+            var cr = SubscriptionFetchResult.Ok(attempt);
+            cr.Nodes.Add(customNode);
+            LogBus($"订阅识别：自定义 {engine} 配置已保存（{customNode.Name}）");
+            return cr;
         }
 
         return SubscriptionFetchResult.Fail(string.IsNullOrEmpty(lastFail) ? "未解析出任何有效节点（格式可能不支持）" : lastFail);

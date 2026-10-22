@@ -85,7 +85,7 @@ public static class RealDelayTester
     {
         if (!node.IsValid) return -1;
         //   Clash 直通节点没有可单独拨号的出站（整份 YAML 交给 mihomo），不支持单点测速。
-        if (node.IsClashPassthrough) return 0;
+        if (node.IsClashPassthrough || node.IsCustomConfig) return 0;
 
         // ★ 2026-10-23 第二批：内核选择改为「协议 + 能力」双判定（NodeItem.RequiresSingBox）：
         //   anytls / ss-plugin / h2 / hy2 gecko / 明文 vless 都只能走 sing-box；
@@ -302,7 +302,7 @@ public static class RealDelayTester
         var result = new ConcurrentDictionary<NodeItem, int>();
         var valid = nodes.Where(n => n.IsValid).ToList();
         //   Clash 直通节点是「整份 YAML 交给 mihomo」，没有独立可测的出站 → 跳过（保持未测）。
-        valid.RemoveAll(n => n.IsClashPassthrough);
+        valid.RemoveAll(n => n.IsClashPassthrough || n.IsCustomConfig);
         static bool BaseUseSb(NodeItem n) => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
             || (n.RequiresSingBox && !n.RequiresXray);
         static bool UseSb(NodeItem n) => KernelRouter.Apply(n, BaseUseSb(n));

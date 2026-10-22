@@ -241,6 +241,19 @@ public static class ConnectionService
             }
         }
 
+        // ★ 2026-10-23：自定义配置直通（订阅给的是整份 xray/sing-box JSON）。
+        //   限制：暂不支持 TUN（不做 tun inbound 注入），固定出口也跳过（会破坏用户自己的路由）。
+        bool useCustom = node.IsCustomConfig;
+        bool customSingBox = useCustom && string.Equals(node.CustomEngine, "sing-box", StringComparison.OrdinalIgnoreCase);
+        string? customConfigPath = null;
+        if (useCustom)
+        {
+            if (useTun)
+                return (false, "自定义配置直通暂不支持 TUN 模式 —— 请关闭 TUN，或改用拆分出来的普通节点");
+            if (!node.Extras.TryGetValue("config_path", out var customSrc) || !File.Exists(customSrc))
+                return (false, "自定义配置文件不存在（可能已被清理），请重新拉取订阅");
+        }
+
         // ★ 2026-10-23 第二批：内核能力判定（NodeItem.RequiresXray / RequiresSingBox，依据见台账 F1 实测）。
         //   TUN 模式固定跑 sing-box，而 mKCP / xhttp / VLESS 后量子加密 / REALITY pqv / vcn 只有 xray 支持。
         //   这类节点在 TUN 下**必须明确拒绝**：静默改走 sing-box 会变成「连上了但所有站点超时」，
@@ -260,7 +273,9 @@ public static class ConnectionService
         if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray)
             LogBus.App("协议→内核映射要求 xray，但 TUN 模式固定 sing-box，本次忽略该映射", "Warning");
 
-        bool useSingBox = useTun
+        bool useSingBox = useCustom
+            ? customSingBox
+            : useTun
             || Neo.Core.Core.KernelRouter.Apply(node,
                    node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
                    || (node.RequiresSingBox && !node.RequiresXray));
@@ -269,7 +284,11 @@ public static class ConnectionService
         // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
         NodeItem? fixedExit = null;
         var fixedEntries = new List<NodeItem>();
-        if (AppState.State.FixedExitEnabled)
+        if (useCustom && AppState.State.FixedExitEnabled)
+        {
+            LogBus.App("自定义配置直通：固定出口与本节点自带的 outbounds/routing 冲突，本次不启用固定出口", "Warning");
+        }
+        else if (AppState.State.FixedExitEnabled)
         {
             if (useTun)
             {
@@ -305,7 +324,27 @@ public static class ConnectionService
         string json;
         try
         {
-            if (useMihomo)
+            if (useCustom)
+            {
+                // 自定义整份配置：原样保留 outbounds/routing，只改本地接入层与统计接口。
+                var srcJson = File.ReadAllText(node.Extras["config_path"]);
+                var customDir = Path.Combine(NeoPaths.DataDir, "custom");
+                Directory.CreateDirectory(customDir);
+                customConfigPath = Path.Combine(customDir, "runtime-config.json");
+                json = customSingBox
+                    ? CustomConfigBuilder.BuildSingBox(srcJson,
+                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        SingBoxConfigBuilder.ClashApiPort, SingBoxConfigBuilder.ClashApiSecret,
+                        AppState.State.AllowLan)
+                    : CustomConfigBuilder.BuildXray(srcJson,
+                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        XrayConfigBuilder.StatsApiPort, AppState.State.AllowLan, AppState.State.LogLevel);
+                var ctmp = customConfigPath + ".tmp";
+                File.WriteAllText(ctmp, json);
+                File.Move(ctmp, customConfigPath, true);
+                CoreKind = customSingBox ? "sing-box" : "xray";
+            }
+            else if (useMihomo)
             {
                 // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
                 var apiPort = SingBoxConfigBuilder.ClashApiPort;
@@ -368,7 +407,7 @@ public static class ConnectionService
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
             }
-            if (!useMihomo) CoreKind = useSingBox ? "sing-box" : "xray";
+            if (!useMihomo && !useCustom) CoreKind = useSingBox ? "sing-box" : "xray";
         }
         catch (Exception ex)
         {
@@ -415,6 +454,15 @@ public static class ConnectionService
             var chk = await Task.Run(() => RunMihomoCheck(mihomoConfigPath!));
             if (!chk.Ok) return (false, "Clash 配置未通过 mihomo 校验：" + chk.Message);
         }
+        else if (useCustom)
+        {
+            // 自定义配置不用自适应改写（会把用户自己的字段改掉），只做一次原样校验。
+            var customExe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
+            var customKind = useSingBox ? KernelKind.SingBox : KernelKind.Xray;
+            var chk = await Task.Run(() => KernelCompat.RunCheck(customExe, customKind, customConfigPath!, 15000));
+            if (!chk.Ok)
+                return (false, $"自定义配置未通过 {(useSingBox ? "sing-box" : "xray")} 校验：{chk.Output}");
+        }
         else
         {
             json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
@@ -449,6 +497,10 @@ public static class ConnectionService
         if (useMihomo)
         {
             cfgPath = mihomoConfigPath!;   // YAML 已在上面原子写出，不再写 config.json
+        }
+        else if (useCustom && customConfigPath != null)
+        {
+            cfgPath = customConfigPath;    // 自定义配置已原子写出（runtime-config.json）
         }
         else
         {

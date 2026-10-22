@@ -607,7 +607,7 @@ public static class AppState
         if (nodes.Count == 0) return false;
         // 2026-10-23：Clash 直通节点本身就是本机 mihomo 的入口（Server=127.0.0.1），
         // 不能被当成「商家占位节点」；判断只看真实节点。
-        var physical = nodes.Where(n => !n.IsClashPassthrough).ToList();
+        var physical = nodes.Where(n => !n.IsClashPassthrough && !n.IsCustomConfig).ToList();
         if (physical.Count == 0) return false;
 
         var hints = new[] { "设备过多", "请去官网", "获取新订阅", "使用说明" };
@@ -999,6 +999,7 @@ public static class AppState
         NodeProtocol.Socks => "Socks5",
         NodeProtocol.MihomoConfig => "Clash 直通",
         NodeProtocol.WireGuard => "WireGuard",
+        NodeProtocol.CustomConfig => "自定义配置",
         _ => "Unknown",
     };
 

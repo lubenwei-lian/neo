@@ -27,6 +27,13 @@ public enum NodeProtocol
     /// 分享链接：wireguard://&lt;私钥&gt;@host:port?publickey=...&amp;address=... 或整份 .conf。
     /// </summary>
     WireGuard,
+
+    /// <summary>
+    /// 自定义配置直通：订阅里给的是**整份 xray/sing-box JSON**（不是单个节点）。
+    /// 连接时只改写本地接入端口/统计接口，其余 inbounds 之外的 outbounds/routing 原样保留。
+    /// Extras["config_path"] = 保存的 JSON 路径；Extras["engine"] = "xray" / "sing-box"。
+    /// </summary>
+    CustomConfig,
 }
 
 public sealed class NodeItem
@@ -192,10 +199,22 @@ public sealed class NodeItem
     /// <summary>是否为「Clash 直通」节点（整份 YAML 交给 mihomo，本身没有 server:port）。</summary>
     public bool IsClashPassthrough => Protocol is NodeProtocol.MihomoConfig;
 
-    public string EndPoint => IsClashPassthrough ? "Clash 配置" : $"{Server}:{Port}";
+    /// <summary>自定义整份配置直通节点。</summary>
+    public bool IsCustomConfig => Protocol is NodeProtocol.CustomConfig;
+
+    /// <summary>自定义配置使用的内核（"xray" / "sing-box"；由导入时探测）。</summary>
+    public string CustomEngine => Extras.TryGetValue("engine", out var e) ? e : "xray";
+
+    public string EndPoint => IsClashPassthrough
+        ? "Clash 配置"
+        : IsCustomConfig
+            ? "自定义配置"
+            : $"{Server}:{Port}";
 
     public bool IsValid => IsClashPassthrough
         ? Extras.TryGetValue("yaml_path", out var y) && !string.IsNullOrWhiteSpace(y) && File.Exists(y)
+        : IsCustomConfig
+        ? Extras.TryGetValue("config_path", out var cp) && !string.IsNullOrWhiteSpace(cp) && File.Exists(cp)
         : !string.IsNullOrWhiteSpace(Server) && Port > 0;
 
     public override string ToString() =>

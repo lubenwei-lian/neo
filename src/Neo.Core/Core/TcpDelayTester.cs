@@ -66,6 +66,7 @@ public static class TcpDelayTester
                 || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
                 || node.IsClashPassthrough
                 || node.Protocol is NodeProtocol.WireGuard
+                || node.IsCustomConfig
                 || (node.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp")
             {
                 result[node] = 0;
