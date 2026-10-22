@@ -170,6 +170,15 @@ public sealed partial class SettingsPage : UserControl
     {
         if (_syncing) return;
         AppState.State.MultiNodeEnabled = SwitchMultiNode.IsOn;
+        bool turningOn = SwitchMultiNode.IsOn;
+        if (turningOn && AppState.State.FixedExitEnabled)
+        {
+            // 两者只能选一个：开多节点就把固定出口关掉，并把那个开关同步为关，避免两个都亮着
+            AppState.State.FixedExitEnabled = false;
+            _syncing = true;
+            try { SwitchFixedExit.IsOn = false; } finally { _syncing = false; }
+            LogBus.App("多节点加速：已开启，固定出口已自动关闭（两者只能选一个）");
+        }
         AppState.Save();
 
         if (!SwitchMultiNode.IsOn)
@@ -217,11 +226,23 @@ public sealed partial class SettingsPage : UserControl
     private void OnFixedExitToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
-        AppState.State.FixedExitEnabled = SwitchFixedExit.IsOn;
+        bool on = SwitchFixedExit.IsOn;
+        AppState.State.FixedExitEnabled = on;
+        if (on && AppState.State.MultiNodeEnabled)
+        {
+            // 两者只能选一个：开固定出口就把多节点关掉，并把那个开关同步为关
+            AppState.State.MultiNodeEnabled = false;
+            _syncing = true;
+            try { SwitchMultiNode.IsOn = false; } finally { _syncing = false; }
+            LogBus.App("固定出口：已开启，多节点加速已自动关闭（两者只能选一个）");
+        }
+        else
+        {
+            LogBus.App(on ? "固定出口：已开启" : "固定出口：已关闭");
+        }
         AppState.Save();
         UpdateFixedExitUi();
-        LogBus.App(SwitchFixedExit.IsOn ? "固定出口：已开启（出口固定，其他节点作入口）" : "固定出口：已关闭，恢复多节点/单节点模式");
-        if (SwitchFixedExit.IsOn && AppState.State.UseTun)
+        if (on && AppState.State.UseTun)
             LogBus.App("固定出口：当前是 TUN 模式，该功能只在非 TUN（xray）下生效", "Warning");
         _ = ReloadForFixedExitAsync();
     }
@@ -297,22 +318,43 @@ public sealed partial class SettingsPage : UserControl
         FixedExitNodeText.Text = node?.Name ?? "自动";
         FixedExitNodeHint.Text = node != null
             ? "手动指定；出口 IP 固定，不随入口变化"
-            : "自动：从 " + cands.Count + " 个非 REALITY 节点里选延迟/吞吐最好的";
+            : "自动：从 " + cands.Count + " 个非 REALITY 节点里挑最快的";
         var c = AppState.State.FixedExitEntryCount;
         FixedExitEntryText.Text = c <= 0 ? "全部" : c + " 个";
 
-        // 两个开关可以同时开着，但「固定出口」优先：这里把谁在生效写清楚，
-        // 避免用户看到「多节点加速 开 + 固定出口 开」却不知道实际走的是哪条路。
-        bool fixedOn = AppState.State.FixedExitEnabled;
-        bool multiOn = AppState.State.MultiNodeEnabled;
-        FixedExitHint.Text = fixedOn
-            ? (multiOn
-                ? "当前生效：固定出口（多节点加速已忽略）；出口固定一个 ws/tls 节点，其他节点作入口叠加带宽，流量按两跳计"
-                : "当前生效：固定出口；出口固定一个 ws/tls 节点，其他节点作入口叠加带宽，流量按两跳计")
-            : "出口固定一个节点，其他节点作入口给它叠加带宽；出口仅支持 ws/tls 节点，TUN 模式下不生效，流量按两跳计";
-        MultiNodeHint.Text = fixedOn
-            ? "已被「固定出口」覆盖：固定出口开启时此项不生效（固定出口优先）"
-            : "自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）";
+        bool fx = AppState.State.FixedExitEnabled;
+        bool mn = AppState.State.MultiNodeEnabled;
+
+        // 两者二选一（开关会互相关闭），文案就一句话说清"现在走哪条路"，不用用户自己推理。
+        if (fx)
+        {
+            FixedExitHint.Text = "已开启：所有流量固定从「出口节点」出去，其他节点只负责帮它加速。流量按两跳计。";
+            MultiNodeHint.Text = "已关闭（和「固定出口」二选一）";
+        }
+        else if (mn)
+        {
+            FixedExitHint.Text = "已关闭（和「多节点加速」二选一）。想让出口 IP 固定就打开这个。";
+            MultiNodeHint.Text = "多个节点一起分摊流量，突破单节点限速（对下载/视频效果明显）";
+        }
+        else
+        {
+            FixedExitHint.Text = "打开后：流量固定从一个节点出去，其他节点帮它加速；出口只支持 ws/tls 节点，流量按两跳计。";
+            MultiNodeHint.Text = "多个节点一起分摊流量，突破单节点限速（对下载/视频效果明显）";
+        }
+
+        // 用不上的子选项直接灰掉，避免用户以为改了会生效
+        SetRowEnabled(MultiModeRow, mn);
+        SetRowEnabled(MultiCountRow, mn);
+        SetRowEnabled(FixedExitNodeRow, fx);
+        SetRowEnabled(FixedExitEntryRow, fx);
+    }
+
+    private static void SetRowEnabled(FrameworkElement row, bool on)
+    {
+        // Grid/Panel 没有 IsEnabled（那是 Control 的成员），
+        // 用 IsHitTestVisible 挡住点击 + 透明度表达“这项现在用不上”。
+        row.IsHitTestVisible = on;
+        row.Opacity = on ? 1.0 : 0.45;
     }
 
     private bool _checkingAppUpdate;

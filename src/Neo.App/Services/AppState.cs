@@ -232,6 +232,11 @@ public static class AppState
             //   MigrateConfig() 只去改 State，所以 State 必须已经指向「刚读出来的那份」。
             State = outcome.State;
 
+            // 加速方式二选一：旧配置里可能两个都开着，这里统一收敛为「固定出口优先」，
+            // 避免界面出现两个开关同时亮、用户不知道实际走哪条路。
+            if (State.FixedExitEnabled && State.MultiNodeEnabled)
+                State.MultiNodeEnabled = false;
+
             bool migrated = false;
             try
             {

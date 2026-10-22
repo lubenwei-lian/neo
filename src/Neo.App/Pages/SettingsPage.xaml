@@ -247,6 +247,11 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
+                    <StackPanel Margin="0,10,0,0">
+                        <TextBlock Text="加速方式（二选一）" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" />
+                        <TextBlock Text="多节点加速：多个节点一起分摊流量。固定出口：流量固定从一个节点出去，其他节点只负责帮它加速。" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                    </StackPanel>
+
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="多节点加速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
@@ -256,7 +261,7 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
-                    <Grid MinHeight="44" Padding="0,9">
+                    <Grid x:Name="MultiModeRow" MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="并发模式" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="MultiModeHint" Text="加权：快的节点多吃流量，慢的留在池里打辅助" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
@@ -282,7 +287,7 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
-                    <Grid MinHeight="44" Padding="0,9">
+                    <Grid x:Name="MultiCountRow" MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="并发节点数" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="MultiCountHint" Text="同地区同协议节点一起用；选「全部」把可用的都用上" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
@@ -317,7 +322,7 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
-                    <Grid MinHeight="44" Padding="0,9">
+                    <Grid x:Name="FixedExitNodeRow" MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="出口节点" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="FixedExitNodeHint" Text="自动选最快的非 REALITY 节点" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
@@ -343,7 +348,7 @@
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 
-                    <Grid MinHeight="44" Padding="0,9">
+                    <Grid x:Name="FixedExitEntryRow" MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="入口数量" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
                             <TextBlock x:Name="FixedExitEntryHint" Text="入口越多总带宽越高；每条连接仍只走一条链路" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
