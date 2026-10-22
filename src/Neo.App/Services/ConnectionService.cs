@@ -1154,6 +1154,20 @@ public static class ConnectionService
                         LogBus.App("检测到 neo-tun 网卡，但 runtime 下仍有运行中的 sing-box —— 跳过 TUN 残留清理", "Debug");
                         return;
                     }
+                    //   2026-10-23：TUN 网卡「存在」不等于「在劫持流量」。
+                    //   残留网卡可能是上次以管理员身份运行 TUN 留下的；普通权限的 neo 根本删不掉它
+                    //   （Remove-NetAdapter 需要管理员），旧逻辑于是每次连接都打一条吓人的 WARN +
+                    //   白跑一次拆除（实测 12 次重连 = 12 条 WARN）。现在先判是否真的启用：
+                    //   网卡 Up 或带网关 → 才当残留处理；否则只提示一次（Info），不影响上网。
+                    if (!IsTunAdapterActive())
+                    {
+                        if (!_tunResidualHinted)
+                        {
+                            _tunResidualHinted = true;
+                            LogBus.App("发现未启用的 neo-tun 残留网卡（无路由，不影响上网）。若需彻底移除，请以管理员身份运行一次 neo 或重启系统。", "Info");
+                        }
+                        return;
+                    }
                     LogBus.App("检测到上次异常退出残留的 neo-tun 网卡（runtime 下无运行中的 sing-box），正在后台清理 TUN 网络状态", "Warning");
                     await RunTunTeardownAsync("启动时清理残留").ConfigureAwait(false);
                 }
@@ -1201,6 +1215,31 @@ public static class ConnectionService
         catch { return ""; }
     }
 
+    /// 只提示一次「未启用的 TUN 残留网卡」，避免每次重连都刷日志。
+    private static bool _tunResidualHinted;
+
+    /// <summary>neo-tun 网卡是否真的在用（Up 或带网关）；仅"存在"不算（可能是无权删除的残留）。</summary>
+    private static bool IsTunAdapterActive()
+    {
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (!string.Equals(ni.Name, "neo-tun", StringComparison.OrdinalIgnoreCase)
+                    && !(ni.Description ?? "").Contains("neo-tun", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up) return true;
+                try
+                {
+                    if (ni.GetIPProperties().GatewayAddresses.Count > 0) return true;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return false;
+    }
+
     /// <summary>系统里是否还有名为 neo-tun 的虚拟网卡（与 FailoverService 的判定口径保持一致）。</summary>
     private static bool HasTunAdapter()
     {
@@ -1209,10 +1248,16 @@ public static class ConnectionService
             foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (string.Equals(ni.Name, "neo-tun", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogBus.App($"TUN 残留判定：网卡 [{ni.Name}] / [{ni.Description}]", "Debug");
                     return true;
+                }
                 // 网卡描述名也认：部分系统上 Name 是「本地连接* 12」，Description 才带 neo-tun。
                 if ((ni.Description ?? "").Contains("neo-tun", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogBus.App($"TUN 残留判定：描述 [{ni.Name}] / [{ni.Description}]", "Debug");
                     return true;
+                }
             }
         }
         catch { }
