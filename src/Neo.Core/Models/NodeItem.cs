@@ -13,7 +13,7 @@ public enum NodeProtocol
     /// <summary>anytls（xray 不支持，只能走 sing-box 内核）。</summary>
     AnyTls,
 
-    /// <summary>socks5 出站节点（v2rayN 的 socks:// / socks5:// 分享链接）。</summary>
+    /// <summary>socks5 出站节点（socks:// / socks5:// 分享链接）。</summary>
     Socks,
 }
 
@@ -69,7 +69,7 @@ public sealed class NodeItem
     /// 最近一次 TCP 握手延迟测试的时间（本地时间）；默认值表示从未测过。
     public DateTime TcpDelayAt { get; set; }
 
-    // ================= 2026-10-23 第二批：向 v2rayN 对齐的协议能力字段 =================
+    // ================= 2026-10-23 第二批：协议能力字段 =================
     // 说明：以下字段全部可空/默认值，旧 state 与旧订阅缓存反序列化后保持原行为。
 
     /// <summary>socks5 用户名（仅 NodeProtocol.Socks 使用；也可用于其它需要认证的协议）。</summary>
@@ -81,17 +81,17 @@ public sealed class NodeItem
     /// </summary>
     public string? VlessEncryption { get; set; }
 
-    /// <summary>REALITY 的 ML-DSA-65 后量子校验（v2rayN 分享链接参数 pqv）。空 = 不校验。</summary>
+    /// <summary>REALITY 的 ML-DSA-65 后量子校验（分享链接参数 pqv）。空 = 不校验。</summary>
     public string? Mldsa65Verify { get; set; }
 
     /// <summary>TLS ECH 配置列表（base64，xray 的 echConfigList / sing-box 的 tls.ech.config）。空 = 不用 ECH。</summary>
     public string? EchConfigList { get; set; }
 
-    /// <summary>证书名校验（v2rayN 分享链接参数 vcn → xray tlsSettings.verifyPeerCertByName）。空 = 不启用。</summary>
+    /// <summary>证书名校验（分享链接参数 vcn → xray tlsSettings.verifyPeerCertByName）。空 = 不启用。</summary>
     public string? VerifyPeerCertByName { get; set; }
 
     /// <summary>
-    /// 证书 pin：v2rayN 的 pcs（xray pinnedPeerCertSha256）/ hy2 的 pinSHA256。
+    /// 证书 pin：pcs（xray pinnedPeerCertSha256）/ hy2 的 pinSHA256。
     /// xray 要求 64 位十六进制（sha256）；hy2 的 pin 另存 Extras["pinsha256"]。
     /// </summary>
     public string? CertSha256 { get; set; }

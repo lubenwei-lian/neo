@@ -23,6 +23,8 @@ public sealed partial class SettingsPage : UserControl
     private bool _syncing;
     private bool _checkingUpdate;
     private bool _checkingSingBoxUpdate;
+    private bool _checkingMihomoUpdate;
+    private bool _updatingGeo;
 
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
@@ -734,7 +736,8 @@ public sealed partial class SettingsPage : UserControl
         try
         {
             var xray = ConnectionService.XrayVersion ?? "—";
-            var (ok, msg, rel) = await UpdateChecker.CheckXrayAsync(ConnectionService.XrayVersion);
+            var (ok, msg, rel) = await UpdateChecker.CheckXrayAsync(
+                ConnectionService.XrayVersion, AppState.State.CheckKernelPreRelease);
             if (!ok)
             {
                 XrayVersionHint.Text = "检查失败 · " + msg;
@@ -824,6 +827,187 @@ public sealed partial class SettingsPage : UserControl
             _checkingSingBoxUpdate = false;
             SetCheckingUi(RingSingBoxUpdate, BtnCheckSingBoxUpdate, null, false);
             RefreshState();
+        }
+    }
+
+    /// 检查 mihomo 内核（第三内核：只纳入安装/更新管理，连接仍由 xray / sing-box 承载）。
+    private async void OnCheckMihomoUpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_checkingMihomoUpdate) return;
+        _checkingMihomoUpdate = true;
+        SetCheckingUi(RingMihomoUpdate, BtnCheckMihomoUpdate, null, true);
+        MihomoVersionHint.Text = "正在检查更新…";
+        try
+        {
+            var cur = KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "";
+            var (ok, msg, rel) = await UpdateChecker.CheckMihomoAsync(cur);
+            if (!ok)
+            {
+                MihomoVersionHint.Text = "检查失败 · " + msg;
+                await ShowDialogAsync("检查 mihomo 更新", msg, "知道了", "");
+                return;
+            }
+
+            var hasNew = rel is { } r2 && (cur.Length == 0 || UpdateChecker.CompareVersions(r2.Version, cur) > 0);
+            var curText = cur.Length == 0 ? "未安装" : cur;
+            MihomoVersionHint.Text = hasNew
+                ? (cur.Length == 0 ? $"未安装 · 可更新到 {rel!.Version}" : $"发现新版本 {rel!.Version}（当前 {cur}）")
+                : $"已是最新版本（{curText}）";
+
+            var primary = hasNew ? (cur.Length == 0 ? "立即下载" : "立即更新") : "";
+            var result = await ShowDialogAsync(
+                "检查 mihomo 内核",
+                $"内置内核：mihomo {curText}\n\n{msg}\n\n说明：mihomo 目前只作为可选内核纳入安装与更新管理，"
+                    + "不会自动参与拨号；TUN / 系统代理仍由 xray 与 sing-box 承载。",
+                hasNew ? "暂不" : "知道了",
+                primary);
+
+            if (hasNew && result == ContentDialogResult.Primary && rel is { } chosen)
+                await InstallMihomoUpdateAsync(chosen);
+        }
+        finally
+        {
+            _checkingMihomoUpdate = false;
+            SetCheckingUi(RingMihomoUpdate, BtnCheckMihomoUpdate, null, false);
+            RefreshState();
+        }
+    }
+
+    private async Task InstallMihomoUpdateAsync(MihomoRelease rel)
+    {
+        var tb = new Microsoft.UI.Xaml.Controls.TextBlock
+        {
+            Text = "准备中…",
+            TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+        };
+        var cts = new CancellationTokenSource();
+        var prog = new ContentDialog
+        {
+            Title = $"更新 mihomo {rel.Version}",
+            Content = tb,
+            CloseButtonText = "取消",
+            XamlRoot = XamlRoot,
+        };
+        prog.CloseButtonClick += (_, _) => cts.Cancel();
+        var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
+        bool ok;
+        string msg;
+        try
+        {
+            (ok, msg) = await Task.Run(() => UpdateChecker.DownloadAndInstallMihomoAsync(
+                rel,
+                s => DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    tb.Text = s;
+                }),
+                cts.Token));
+        }
+        catch (OperationCanceledException)
+        {
+            ok = false;
+            msg = "已取消，未做任何改动。";
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            msg = "安装过程中出现异常：" + ex.Message;
+        }
+        finally
+        {
+            try { cts.Dispose(); } catch { }
+            try { prog.Hide(); } catch { }
+        }
+
+        try { await showTask.ConfigureAwait(true); } catch { }
+        RefreshState();
+        await ShowDialogAsync(ok ? "安装完成" : "安装失败", msg, "知道了", "");
+    }
+
+    /// 更新分流数据（geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set）。
+    /// 连接中不允许更新：内核可能正打开这些文件。
+    private async void OnUpdateGeoClick(object sender, RoutedEventArgs e)
+    {
+        if (_updatingGeo) return;
+        if (ConnectionService.IsConnected)
+        {
+            await ShowDialogAsync("更新分流数据", "当前已连接。请先断开连接再更新——内核可能正在使用这些数据文件。", "知道了", "");
+            return;
+        }
+
+        var confirm = await ShowDialogAsync(
+            "更新分流数据",
+            "将更新：\n· geosite.dat / geoip.dat（国内直连判定）\n· Country.mmdb\n· sing-box rule-set（CN 分流）\n\n"
+                + "来源为上游公开数据仓库；先写临时文件再原子替换，旧文件保留为 *.bak-prev。\n新数据在下次连接时生效。",
+            "取消", "开始更新");
+        if (confirm != ContentDialogResult.Primary) return;
+
+        _updatingGeo = true;
+        SetCheckingUi(RingGeoUpdate, BtnUpdateGeo, null, true);
+        GeoDataHint.Text = "正在更新分流数据…";
+        try
+        {
+            var tb = new Microsoft.UI.Xaml.Controls.TextBlock { Text = "准备中…", TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap };
+            var cts = new CancellationTokenSource();
+            var prog = new ContentDialog
+            {
+                Title = "更新分流数据",
+                Content = tb,
+                CloseButtonText = "取消",
+                XamlRoot = XamlRoot,
+            };
+            prog.CloseButtonClick += (_, _) => cts.Cancel();
+            var showTask = Neo.App.Ui.DialogGuard.ShowAsync(prog);
+            bool ok;
+            string msg;
+            try
+            {
+                (ok, msg) = await Task.Run(() => GeoDataUpdater.UpdateAllAsync(
+                    s => DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (App.IsShuttingDown) return;
+                        tb.Text = s;
+                    }),
+                    cts.Token));
+            }
+            catch (OperationCanceledException)
+            {
+                ok = false;
+                msg = "已取消，未做任何改动。";
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                msg = "更新过程中出现异常：" + ex.Message;
+            }
+            finally
+            {
+                try { cts.Dispose(); } catch { }
+                try { prog.Hide(); } catch { }
+            }
+
+            try { await showTask.ConfigureAwait(true); } catch { }
+            await ShowDialogAsync(ok ? "更新完成" : "更新未完成", msg, "知道了", "");
+        }
+        finally
+        {
+            _updatingGeo = false;
+            SetCheckingUi(RingGeoUpdate, BtnUpdateGeo, null, false);
+            RefreshState();
+        }
+    }
+
+    private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            AppState.State.CheckKernelPreRelease = SwitchKernelPreRelease.IsOn;
+            AppState.Save();
+            LogBus.App($"检查预发布内核：{(SwitchKernelPreRelease.IsOn ? "开" : "关")}（仅对 xray 生效）", "Debug");
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"保存「检查预发布内核」失败：[{ex.GetType().Name}] {ex.Message}", "Warning");
         }
     }
 
@@ -1144,6 +1328,22 @@ public sealed partial class SettingsPage : UserControl
         SingBoxVersionText.Text = sbVer ?? "—";
         SingBoxVersionHint.Text = sbVer == null ? "未检测到内核文件" : "本机内置内核 · 就绪";
         SingBoxVersionHint.Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
+
+        // mihomo（第三内核）：只展示安装状态/版本，不参与拨号。
+        MihomoVersionHint.Text = KernelCatalog.IsInstalled(CoreEngine.Mihomo)
+            ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Mihomo)}"
+            : "可选内核 · 未安装（按需下载）";
+
+        // 分流数据：显示上次通过本程序更新的时间。
+        var geoAt = AppState.State.GeoUpdatedAt;
+        GeoDataHint.Text = string.IsNullOrWhiteSpace(geoAt)
+            ? "决定国内站点直连是否准确"
+            : $"上次更新 {geoAt}";
+
+        // 预发布开关：只在状态不一致时赋值，避免每次 RefreshState 都触发一次 Toggled/落盘。
+        if (SwitchKernelPreRelease.IsOn != AppState.State.CheckKernelPreRelease)
+            SwitchKernelPreRelease.IsOn = AppState.State.CheckKernelPreRelease;
+
         PortSocksText.Text = XrayConfigBuilder.DefaultSocksPort.ToString();
         PortHttpText.Text = XrayConfigBuilder.DefaultHttpPort.ToString();
         LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)

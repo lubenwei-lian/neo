@@ -132,27 +132,27 @@ public static class SubscriptionFetcher
         if (text.StartsWith("<") || text.Contains("<html", StringComparison.OrdinalIgnoreCase))
             return SubscriptionFetchResult.Fail("订阅返回的是网页而非节点内容（可能已失效/需要续费）");
 
-        // ★ 2026-10-23 第二批：订阅识别顺序对齐 v2rayN（ConfigHandler.cs:2064-2134）：
+        // ★ 2026-10-23 第二批：订阅识别顺序对齐主流做法：
         //   ① base64 解码 → ② 原文 → ③ 再试一次解码 → ④ SIP008。
-        //   每步内部再区分「Clash YAML」与「分享链接行」两种形态（v2rayN 对应 AddBatchServersCommon /
+        //   每步内部再区分「Clash YAML」与「分享链接行」两种形态（两种形态各自解析；对应实现见 
         //   AddBatchServers4Custom）。旧实现固定「先 Clash 原文 → 再 SIP008 → 再 base64」，
         //   遇到「base64 包 SIP008」「base64 包 WG」「二次编码」这类面板就会直接判「未解析出节点」。
         var compact = new string(text.Where(c => !char.IsWhiteSpace(c)).ToArray());
         var decoded = ShareLinkParser.TryB64Decode(compact);
         // ★ 2026-10-23 第二批补强：有些面板会做**两层** base64（base64(base64(links))）。
-        //   v2rayN 的三次尝试其实都是同一份解码结果，覆盖不到这种情况；这里把「解码结果仍是 base64」
-        //   再解一层作为额外尝试，其余顺序与 v2rayN 一致。
+        //   常见实现的三次尝试其实都是同一份解码结果，覆盖不到这种情况；这里把「解码结果仍是 base64」
+        //   再解一层作为额外尝试，其余顺序保持一致。
         var decoded2 = decoded == null
             ? null
             : ShareLinkParser.TryB64Decode(new string(decoded.Where(c => !char.IsWhiteSpace(c)).ToArray()));
         var attempts = new List<string>();
         if (decoded != null && !string.Equals(decoded, text, StringComparison.Ordinal)) attempts.Add(decoded);
         attempts.Add(text);
-        // v2rayN 的第三次仍是「解码原文」（等价于第一次），这里保留一次重复尝试：
-        // 若第一次解码结果被判定为「格式不支持」，第三次同样会失败，但顺序与行为保持与 v2rayN 一致，
-        // 便于后续对照排障；不做去重是为了日志里能对上 v2rayN 的步骤编号。
+        // 第三次尝试仍是「解码原文」（等价于第一次），这里保留一次重复尝试：
+        // 若第一次解码结果被判定为「格式不支持」，第三次同样会失败，但顺序与行为保持一致，
+        // 便于后续对照排障；不做去重是为了日志里能对上步骤编号。
         if (decoded != null && !string.Equals(decoded, text, StringComparison.Ordinal)) attempts.Add(decoded);
-        // 额外一层：base64(base64(links)) —— v2rayN 的三次尝试覆盖不到，部分面板会这么发。
+        // 额外一层：base64(base64(links)) —— 常规三次尝试覆盖不到，部分面板会这么发。
         if (decoded2 != null && !string.Equals(decoded2, text, StringComparison.Ordinal)
             && !string.Equals(decoded2, decoded, StringComparison.Ordinal))
             attempts.Add(decoded2);

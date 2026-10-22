@@ -108,10 +108,21 @@ public static class AppState
         /// 打开后节点页会自动在后台检测一次。
         public bool ShowRealIp { get; set; } = false;
 
-        /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（v2rayN 风格，快）；
+        /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（TCP 握手风格，快）；
         /// true = 走真实连接（慢但能判断是否真的能访问网站）。
         /// 关闭时节点页隐藏「真连测速」按钮、把「快速测延迟」升为主按钮；卡片主徽标显示 TCP 延迟。
         public bool RealDelayTestEnabled { get; set; } = false;
+
+        /// <summary>
+        /// 「检查预发布内核」：true 时 xray 更新会把 GitHub 上标记为 prerelease 的版本也算进候选。
+        /// 默认 false（稳定优先）。sing-box / mihomo 的上游把 alpha 单列一条发布线，
+        /// 且本项目只用它们的稳定发行版，因此该开关对这两个内核不生效。
+        /// </summary>
+        public bool CheckKernelPreRelease { get; set; } = false;
+
+        /// <summary>上次更新分流数据（geoip.dat / geosite.dat / Country.mmdb / rule-set）的时间
+        /// （本地时间字符串，空 = 从未通过本程序更新过）。仅用于设置页展示。</summary>
+        public string GeoUpdatedAt { get; set; } = "";
 
         public int AutoUpdateHours { get; set; } = 12;
 

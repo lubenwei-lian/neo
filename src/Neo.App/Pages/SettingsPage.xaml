@@ -74,7 +74,7 @@
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="真连测速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="开启后节点页测速走真实连接（慢但能判断能否真的访问网站）；关闭则用 TCP 握手测延迟，和 v2rayN 一致" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                            <TextBlock Text="开启后节点页测速走真实连接（慢，但能判断能不能真的访问网站）；关闭则只测到节点的 TCP 握手，更快" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                         </StackPanel>
                         <ToggleSwitch x:Name="SwitchRealDelayTest" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnRealDelayTestToggled" />
                     </Grid>
@@ -235,6 +235,44 @@
                             </Button>
                             <ProgressRing x:Name="RingSingBoxUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
                         </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="mihomo 内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="MihomoVersionHint" Text="可选内核 · 未安装（按需下载）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button x:Name="BtnCheckMihomoUpdate" Style="{StaticResource GhostSm}" Click="OnCheckMihomoUpdateClick">
+                                <TextBlock Text="检查更新" FontSize="11.5" />
+                            </Button>
+                            <ProgressRing x:Name="RingMihomoUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="分流数据" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="GeoDataHint" Text="决定国内站点直连是否准确" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0"
+                                       ToolTipService.ToolTip="geoip.dat / geosite.dat / Country.mmdb / sing-box rule-set。先写临时文件再原子替换，旧文件保留为 *.bak-prev；连接中不可更新。" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button x:Name="BtnUpdateGeo" Style="{StaticResource GhostSm}" Click="OnUpdateGeoClick">
+                                <TextBlock Text="更新数据" FontSize="11.5" />
+                            </Button>
+                            <ProgressRing x:Name="RingGeoUpdate" IsActive="False" Width="16" Height="16" Visibility="Collapsed" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="检查预发布内核" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="仅对 xray 生效 · 预发布可能不稳定" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchKernelPreRelease" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnKernelPreReleaseToggled" />
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 

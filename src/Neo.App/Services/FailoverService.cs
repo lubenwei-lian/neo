@@ -389,7 +389,7 @@ public static class FailoverService
     //      并把 google 系目标留在列表里做交叉印证，而不是简化成某一个"最准"的目标。
     // telegram 仍是用户真实常用目标，作为第二判据比再找一个 google 系目标更有意义。
     // 已知局限：候选节点的延迟验证走 RealDelayTester，它仍只打 google/generate_204
-    //（为与 v2rayN 口径一致，未改动）；若 google 对整条链路不可达，备选会被全部判死。
+    //（沿用既定口径，未改动）；若 google 对整条链路不可达，备选会被全部判死。
     private static readonly string[] ProbeTargets =
     {
         "https://www.google.com/generate_204",

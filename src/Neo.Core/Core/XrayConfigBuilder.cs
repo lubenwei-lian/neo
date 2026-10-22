@@ -171,7 +171,7 @@ public static class XrayConfigBuilder
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
-    /// 批量测速配置（v2rayN 式）：一个实例承载全部节点，每节点独立 socks 入站端口，路由按入站 tag 分流到对应出站。
+    /// 批量测速配置（单实例批量）：一个实例承载全部节点，每节点独立 socks 入站端口，路由按入站 tag 分流到对应出站。
     public static string BuildTestBatch(IReadOnlyList<NodeItem> nodes, IReadOnlyList<int> ports)
     {
         var inbounds = new JsonArray();
@@ -539,7 +539,7 @@ public static class XrayConfigBuilder
 
         if (bypassCn)
         {
-            // 对齐 v2rayN「绕过大陆」模板的单一职责写法：xray 规则内多字段是 AND 语义，
+            // 对齐「绕过大陆」模板的单一职责写法：xray 规则内多字段是 AND 语义，
             // domain+ip 合并在 AsIs（不解析域名）下永不命中，必须拆条。
             rules.Add(new JsonObject
             {
@@ -728,7 +728,7 @@ public static class XrayConfigBuilder
                 };
 
             case NodeProtocol.Socks:
-                // ★ 2026-10-23 第二批：socks5 出站（v2rayN socks:// 分享链接）。xray 实测接受（台账 F1）。
+                // ★ 2026-10-23 第二批：socks5 出站（socks:// 分享链接）。xray 实测接受（台账 F1）。
                 var socksServer = new JsonObject
                 {
                     ["address"] = server,
@@ -803,7 +803,7 @@ public static class XrayConfigBuilder
             case "mkcp":
                 // ★ 2026-10-23 第二批：mKCP 传输（xray 专有，sing-box 不支持）。
                 //   xray 26 实测要求 maxSendingWindow >= 1350（旧默认 0 会被拒绝启动）；
-                //   头混淆 / 种子已从 kcpSettings 移到 finalmask.udp（v2rayN 同样写法），
+                //   头混淆 / 种子已从 kcpSettings 移到 finalmask.udp（xray 新格式即此写法），
                 //   kcpSettings 里的 header 字段在 26 已被移除。
                 s["network"] = "kcp";
                 s["kcpSettings"] = new JsonObject
@@ -889,7 +889,7 @@ public static class XrayConfigBuilder
                 if (!string.IsNullOrEmpty(n.Fingerprint)) tls["fingerprint"] = n.Fingerprint;
                 if (n.AllowInsecure) tls["allowInsecure"] = true;
 
-                // ★ 2026-10-23 第二批（v2rayN 对齐，BaseFmt ResolveUriQuery / V2rayOutboundService.cs:325-364）：
+                // ★ 2026-10-23 第二批（分享链接标准参数）：
                 //   · ech → echConfigList（base64 ECHConfigList）；xray 26 还要求 echForceQuery=full 才真正查询
                 //   · vcn → verifyPeerCertByName（按证书里的名字校验，不依赖 SNI）
                 //   · pcs → pinnedPeerCertSha256（证书链 pin，xray 要求 64 位十六进制）

@@ -192,7 +192,7 @@ public static class SingBoxConfigBuilder
                 // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：sing-box 1.14 的 shadowsocks 出站支持
                 //   `plugin` / `plugin_opts` 两个字段（SIP003，如 obfs-local / v2ray-plugin / shadow-tls）。
                 //   旧实现把 ss 的 plugin 只塞在 Extras["query"]、全仓无读取方 → 插件节点被静默降级成裸 SS
-                //   （能导入、必连不上）。字段名已按 sing-box 1.14 文档核对（v2rayN 也是这两个字段）。
+                //   （能导入、必连不上）。字段名已按 sing-box 1.14 文档核对（内核文档即此二字段）。
                 //   注意：xray 不支持 SIP003 插件，xray 路径保持原样（这类节点需走 TUN/sing-box）。
                 if (!string.IsNullOrEmpty(n.Plugin))
                 {
@@ -207,7 +207,7 @@ public static class SingBoxConfigBuilder
                 ApplyTls(o, n, forceTls: true);
                 if (n.Extras.TryGetValue("obfs", out var obfs) && !string.IsNullOrEmpty(obfs))
                 {
-                    // ★ 2026-10-23 第二批：gecko 混淆（v2rayN Hysteria2Fmt.cs:196-215）。
+                    // ★ 2026-10-23 第二批：gecko 混淆。
                     //   sing-box 1.14.3 实测支持 obfs.type=gecko + min_packet_size/max_packet_size（台账 F1）；
                     //   旧实现只写 type=obfs 值，从不带分片大小 → 对端按 gecko 校验分片，必连不上。
                     var isGecko = obfs.Equals("gecko", StringComparison.OrdinalIgnoreCase)
@@ -222,7 +222,7 @@ public static class SingBoxConfigBuilder
                     }
                     o["obfs"] = ob;
                 }
-                // ★ 2026-10-23 hy2 端口跳跃（v2rayN 标准写法 host:443,5000-6000）：
+                // ★ 2026-10-23 hy2 端口跳跃（标准写法 host:443,5000-6000）：
                 //   sing-box 1.14 的 hysteria2 出站字段是 `server_ports`（字符串数组），区间写成 "start:end"。
                 //   优先用分享链接解析出的 server_ports；兼容旧的 mport=20000-30000 查询参数写法。
                 var portsRaw = "";
@@ -242,7 +242,7 @@ public static class SingBoxConfigBuilder
                 break;
 
             case NodeProtocol.Socks:
-                // ★ 2026-10-23 第二批：socks5 出站（v2rayN socks:// 分享链接；sing-box 1.14 实测接受）。
+                // ★ 2026-10-23 第二批：socks5 出站（socks:// 分享链接；sing-box 1.14 实测接受）。
                 o["type"] = "socks";
                 if (!string.IsNullOrEmpty(n.Username)) o["username"] = n.Username;
                 if (!string.IsNullOrEmpty(n.Password)) o["password"] = n.Password;
@@ -313,7 +313,7 @@ public static class SingBoxConfigBuilder
 
         // ★ 2026-10-23 第二批：ECH（分享链接 ech= / Clash ech-opts）。
         //   sing-box 1.14.3 实测接受 tls.ech = { enabled, config: [PEM 块] }（台账 F1），
-        //   PEM 包法与 v2rayN SingboxOutboundService.cs:826-850 完全一致。
+        //   PEM 包法按 sing-box 文档的 ECH 格式。
         //   带 "://" 的写法（用 DoH 查 ECH 配置）需要额外的 dns server 配置，本版不支持 → 跳过并维持原行为。
         if (!string.IsNullOrEmpty(n.EchConfigList) && !n.EchConfigList.Contains("://"))
         {

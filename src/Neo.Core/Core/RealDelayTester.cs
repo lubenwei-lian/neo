@@ -275,7 +275,7 @@ public static class RealDelayTester
         return text.Replace("\r", " ").Replace("\n", " ");
     }
 
-    /// v2rayN 式批量测速：xray 系节点编入单实例（每节点独立 socks 端口），一次进程启动全并行测完；
+    /// 单实例批量测速：xray 系节点编入单实例（每节点独立 socks 端口），一次进程启动全并行测完；
     /// hy2/tuic（sing-box）节点数量少，沿用逐节点单测本地并行。返回各节点延迟（-1=不通）。
     ///
     /// ★ 2026-10-22 可用性复核（默认关闭，仅全量真连测速的调用方开启）：
@@ -329,7 +329,7 @@ public static class RealDelayTester
                 core = new CoreProcess(Path.Combine(runtimeDir, "xray.exe"), runtimeDir);
                 core.LogLine += line => AppendTail(tail, line);
                 core.Start(cfgPath);
-                await Task.Delay(1000, batchToken); // 与 v2rayN 相同：给内核 1 秒初始化（计入总预算）
+                await Task.Delay(1000, batchToken); // 给内核 1 秒初始化（计入总预算）
 
                 //   CoreProcess.Start() 不会抛异常；原实现继续对已关闭的 socks 端口探测，
                 //   于是整批都得到 -1「超时」而不是 -2「本机失败」。这里主动检测秒退。

@@ -133,7 +133,7 @@ public sealed partial class MainWindow : Window
         });
         // ★ 2026-10-23 第二批（F9）：内核看门狗进安全模式时必须让用户看见。
         //   转成「状态条 + 托盘气泡」双通道：窗口最小化到托盘时只有气泡可见，
-        //   而 v2rayN 的痛点正是「内核死了/退化了却毫无提示」。
+        //   而 常见客户端的通病则是「内核死了/退化了却毫无提示」。
         ConnectionService.UserNotice += msg => DispatcherQueue.TryEnqueue(() =>
         {
             if (App.IsShuttingDown) return;

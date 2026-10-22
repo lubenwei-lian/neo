@@ -7,7 +7,7 @@ using Neo.Core.Models;
 namespace Neo.Core.Core;
 
 /// <summary>
-/// v2rayN 式「TCP 握手延迟」快速测速（Tcping）：**不启内核、不发 HTTP**，
+/// 「TCP 握手延迟」快速测速（Tcping）：**不启内核、不发 HTTP**，
 /// 只对节点 (地址, 端口) 做 TcpClient.ConnectAsync 并计时，几秒内可测完全部节点。
 ///
 /// 返回语义（键为本轮传入的 NodeItem）：
@@ -61,7 +61,7 @@ public static class TcpDelayTester
         {
             if (node == null) continue;
             //   ★ 2026-10-23 第二批补 mKCP：mKCP 是 UDP 传输，服务端通常不监听 TCP，
-            //   测出来的「超时」不代表节点坏（v2rayN 也只对 TCP 类协议做 tcping）。
+            //   测出来的「超时」不代表节点坏（UDP 类协议本来就没有 TCP 端口）。
             if (!node.IsValid
                 || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
                 || (node.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp")
@@ -73,7 +73,7 @@ public static class TcpDelayTester
         }
 
         // 2) DNS 预热：先把域名统一解析成 IPv4（不计入握手耗时）；解析失败 → -1。
-        //    与 v2rayN 一致：节点域名不在墙内，走系统 DNS 即可。
+        //    节点域名不在墙内，走系统 DNS 即可。
         var targets = new ConcurrentDictionary<NodeItem, IPAddress>();
         try
         {

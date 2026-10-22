@@ -15,6 +15,11 @@ public sealed record XrayRelease(string Version, string Tag, string DownloadUrl,
 ///   上游不提供 .sha256：安装做「可解压 + 内含 exe + version 版本串自校验」，sha256 仅记录追溯，不作为放行条件。
 public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "");
 
+/// mihomo（Clash.Meta）内核发布。通道 = 上游 MetaCubeX/mihomo 稳定版（releases/latest）。
+/// Windows amd64 的 v1 系列资产名形如 `mihomo-windows-amd64-v1-v1.19.33.zip`（tag 自带 v 前缀）。
+/// 上游没有 .sha256 资产：安装做「可解压 + 内含 exe + 版本串自校验」，与 sing-box 同策略。
+public sealed record MihomoRelease(string Version, string Tag, string AssetName, string DownloadUrl, long SizeBytes, bool Prerelease);
+
 public static class UpdateChecker
 {
     private const string XrayOwner = "XTLS";
@@ -30,14 +35,37 @@ public static class UpdateChecker
     /// <summary>最近一次 FetchLatestSingBoxAsync 的失败原因，供检查文案区分「网络不可达 / 无 windows 资产」。</summary>
     private static string? _lastSingBoxFetchIssue;
 
+    /// <summary>mihomo 上游仓库（第三内核；只纳入安装/版本/更新管理，连接层暂未启用）。</summary>
+    private const string MihomoOwner = "MetaCubeX";
+    private const string MihomoRepo = "mihomo";
+    private static string? _lastMihomoFetchIssue;
+
     /// 取 xray 官方最新 release（**非 API 通道**，避开匿名 60次/小时 配额）。
     /// 官方从不把新版本转正，`releases/latest` 会停在最后一个 stable，
     /// 因此这里走 atom 列表取**第一个**版本（含预发布），
     /// 再按固定资产名 `Xray-windows-64.zip` 取下载地址。
-    public static async Task<XrayRelease?> FetchLatestAsync(CancellationToken ct = default)
+    public static Task<XrayRelease?> FetchLatestAsync(CancellationToken ct = default)
+        => FetchLatestAsync(false, ct);
+
+    /// <param name="includePreRelease">
+    /// true = 把上游标记为 prerelease 的版本也作为候选（走 REST API 取标记，一次请求；
+    /// 被匿名配额限流时自动退回 atom 通道，此时拿不到预发布标记、行为退化为稳定优先）。
+    /// </param>
+    public static async Task<XrayRelease?> FetchLatestAsync(bool includePreRelease, CancellationToken ct = default)
     {
         var preferProxy = ConnectionService.IsConnected;
-        var tags = await GitHubChannel.GetTagsFromAtomAsync(XrayOwner, XrayRepo, preferProxy, ct);
+        List<string> tags;
+        if (includePreRelease)
+        {
+            var flags = await GitHubChannel.GetReleaseFlagsAsync(XrayOwner, XrayRepo, preferProxy, ct);
+            tags = flags is { Count: > 0 }
+                ? flags.Select(f => f.Tag).ToList()
+                : await GitHubChannel.GetTagsFromAtomAsync(XrayOwner, XrayRepo, preferProxy, ct);
+        }
+        else
+        {
+            tags = await GitHubChannel.GetTagsFromAtomAsync(XrayOwner, XrayRepo, preferProxy, ct);
+        }
         if (tags.Count == 0) return null;
 
         // atom 里最新在前。官方每个正式版都带 Xray-windows-64.zip，
@@ -48,7 +76,8 @@ public static class UpdateChecker
             if (tried >= 3) break;
             //   原实现取第一个 tag ⇒ 可能把预发布内核装给用户，且 UI 里 Prerelease 恒 false 不作提示。
             var ver = tag.TrimStart('v', 'V');
-            if (ver.Contains('-')) continue;
+            // 未开启「检查预发布内核」时跳过带预发布后缀的 tag；开启后不再跳过。
+            if (!includePreRelease && ver.Contains('-')) continue;
 
             tried++;
             var assets = await GitHubChannel.GetAssetsAsync(XrayOwner, XrayRepo, tag, preferProxy, ct);
@@ -60,9 +89,10 @@ public static class UpdateChecker
         return null;
     }
 
-    public static async Task<(bool Ok, string Message, XrayRelease? Release)> CheckXrayAsync(string? currentVersion)
+    public static async Task<(bool Ok, string Message, XrayRelease? Release)> CheckXrayAsync(
+        string? currentVersion, bool includePreRelease = false)
     {
-        var rel = await FetchLatestAsync();
+        var rel = await FetchLatestAsync(includePreRelease);
         if (rel == null) return (false, "检查失败：网络不可达（可先连接代理后再试）", null);
 
         var cur = (currentVersion ?? "").Trim();
@@ -75,7 +105,8 @@ public static class UpdateChecker
             verdict = "已是最新版本，无需更新。";
 
         var preTag = rel.Prerelease ? " · 预发布" : "";
-        return (true, $"当前内核：xray {cur}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}", rel);
+        var mode = includePreRelease ? "\n（已开启「检查预发布内核」：候选含上游标记为预发布的版本）" : "";
+        return (true, $"当前内核：xray {cur}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}{mode}", rel);
     }
 
     /// 从上游官方 SagerNet/sing-box 取最新**稳定版**的 Windows amd64 内核资产。
@@ -161,6 +192,187 @@ public static class UpdateChecker
             rel);
     }
 
+    // ================= 2026-10-23 第三批：mihomo 内核（安装/版本/更新） =================
+
+    /// 取 mihomo 最新**稳定版**（releases/latest 天然排除 prerelease）。
+    /// 资产固定取 Windows amd64 的 v1 系列：`mihomo-windows-amd64-v1-{tag}.zip`。
+    public static async Task<MihomoRelease?> FetchLatestMihomoAsync(CancellationToken ct = default)
+    {
+        _lastMihomoFetchIssue = null;
+        var preferProxy = ConnectionService.IsConnected;
+        var tag = await GitHubChannel.GetLatestTagAsync(MihomoOwner, MihomoRepo, preferProxy, ct);
+        if (tag == null)
+        {
+            _lastMihomoFetchIssue = "网络不可达（已尝试当前代理 / 系统代理 / 直连）";
+            return null;
+        }
+
+        var ver = tag.TrimStart('v', 'V');
+        var assets = await GitHubChannel.GetAssetsAsync(MihomoOwner, MihomoRepo, tag, preferProxy, ct);
+        var expected = $"mihomo-windows-amd64-v1-{tag}.zip";
+        var asset = assets.FirstOrDefault(a => string.Equals(a.Name, expected, StringComparison.OrdinalIgnoreCase))
+                    ?? assets.FirstOrDefault(a =>
+                        a.Name.StartsWith("mihomo-windows-amd64-v1-", StringComparison.OrdinalIgnoreCase)
+                        && a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                        && !a.Name.Contains("-go1", StringComparison.OrdinalIgnoreCase));
+        if (asset == null)
+        {
+            _lastMihomoFetchIssue = $"上游 {tag} 没有 windows-amd64 资产（找不到 {expected}）";
+            LogBus.App($"mihomo 内核更新：{_lastMihomoFetchIssue}", "Warning");
+            return null;
+        }
+        return new MihomoRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, false);
+    }
+
+    public static async Task<(bool Ok, string Message, MihomoRelease? Release)> CheckMihomoAsync(string? currentVersion)
+    {
+        var rel = await FetchLatestMihomoAsync();
+        if (rel == null)
+            return (false,
+                $"检查 mihomo 内核更新失败：{_lastMihomoFetchIssue ?? "网络不可达"}\n\n" +
+                "说明：mihomo 只从上游 MetaCubeX/mihomo 的稳定版（releases/latest）更新，" +
+                "只取 Windows amd64 的 v1 系列资产。若上游该版本没有对应资产，请稍后再试。",
+                null);
+
+        var cur = (currentVersion ?? "").Trim();
+        string verdict;
+        if (cur.Length == 0) verdict = "本机未安装 mihomo 内核，可一键下载安装。";
+        else if (CompareVersions(rel.Version, cur) > 0) verdict = "发现新版本，可一键覆盖安装。";
+        else if (CompareVersions(rel.Version, cur) == 0) verdict = "已是最新版本，无需更新。";
+        else verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
+
+        var curText = cur.Length == 0 ? "未安装" : cur;
+        return (true, $"当前内核：mihomo {curText}\n上游最新稳定：mihomo {rel.Version}（{rel.Tag}）\n\n{verdict}", rel);
+    }
+
+    /// 下载并安装 mihomo：下载 zip → 解压找 exe → 版本自校验 → 备份 → 覆盖 runtime\mihomo.exe → 复核。
+    /// mihomo 目前不参与拨号（TUN/系统代理仍由 xray / sing-box 承载），所以无需先断开连接。
+    public static async Task<(bool Ok, string Message)> DownloadAndInstallMihomoAsync(
+        MihomoRelease rel, Action<string> progress, CancellationToken ct = default)
+    {
+        var zipPath = Path.Combine(Path.GetTempPath(), "neo-mihomo-update.zip");
+        var extractDir = Path.Combine(Path.GetTempPath(), "neo-mihomo-update");
+
+        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
+        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
+        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
+        var attempts = new[] { "socks", "direct", "sys" };
+
+        byte[]? data = null;
+        foreach (var kind in attempts)
+        {
+            try
+            {
+                progress(kind == "direct" ? "直连下载源…" : "经代理连接下载源…");
+                using var handler = new HttpClientHandler();
+                switch (kind)
+                {
+                    case "socks":
+                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
+                        handler.UseProxy = true;
+                        break;
+                    case "sys":
+                        handler.UseProxy = true;
+                        break;
+                    default:
+                        handler.UseProxy = false;
+                        break;
+                }
+                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
+                client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
+                progress(rel.SizeBytes > 1024 * 1024
+                    ? $"下载 {rel.AssetName}（{rel.SizeBytes / 1024 / 1024}MB）…"
+                    : $"下载 {rel.AssetName}…");
+                data = await client.GetByteArrayAsync(rel.DownloadUrl, ct);
+                if (data.Length < 1024 * 1024) { data = null; continue; }   // 过小=错误页/被劫持
+                break;
+            }
+            catch (OperationCanceledException) { return (false, "下载已取消。"); }
+            catch { }
+        }
+
+        if (data == null) return (false, "下载失败：网络不可达（可先连接代理后再试）");
+
+        try
+        {
+            progress("解压校验…");
+            await File.WriteAllBytesAsync(zipPath, data, ct);
+            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
+            ZipFile.ExtractToDirectory(zipPath, extractDir);
+
+            var newExe = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories).FirstOrDefault();
+            if (newExe == null) return (false, "解压后未找到可执行文件，安装中止。");
+
+            var verOut = RunMihomoVersion(newExe);
+            if (!MihomoVersionMatches(rel.Version, verOut))
+                return (false, $"新内核版本自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
+
+            var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "mihomo.exe");
+            var backup = target + ".bak-prev";
+
+            progress("覆盖安装…");
+            KernelInstall.ReplaceAtomically(newExe, target, backup);
+
+            var installed = RunMihomoVersion(target);
+            if (!MihomoVersionMatches(rel.Version, installed))
+            {
+                try { File.Copy(backup, target, true); } catch { }
+                return (false, "安装后校验失败，已回滚到旧内核。");
+            }
+
+            KernelCatalog.ResetVersion(CoreEngine.Mihomo);
+
+            progress("清理临时文件…");
+            try { Directory.Delete(extractDir, true); } catch { }
+            try { File.Delete(zipPath); } catch { }
+
+            return (true, $"mihomo 已更新到 {rel.Version}。\n\n说明：mihomo 目前只作为「可选内核」纳入安装与更新管理，"
+                          + "连接仍由 xray / sing-box 承载（TUN 稳定优先）；它不会自动参与拨号。");
+        }
+        catch (Exception ex)
+        {
+            return (false, "安装失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// mihomo 的版本输出形如 "Mihomo Meta v1.19.33 windows amd64 with go1.25.4 …"，
+    /// 不是 sing-box 的 "sing-box version x" 格式，必须单独抽 semver 比较（否则安装后自校验会永远失败）。
+    /// </summary>
+    private static bool MihomoVersionMatches(string expected, string output)
+    {
+        static string Semver(string s)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(s ?? "", @"(\d+)\.(\d+)\.(\d+)");
+            return m.Success ? $"{m.Groups[1].Value}.{m.Groups[2].Value}.{m.Groups[3].Value}" : "";
+        }
+        var e = Semver(expected);
+        return e.Length > 0 && e == Semver(output);
+    }
+
+    private static string RunMihomoVersion(string exe)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = "-v",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return "";
+            var so = p.StandardOutput.ReadToEnd();
+            var se = p.StandardError.ReadToEnd();
+            p.WaitForExit(5000);
+            return (so + "\n" + se).Trim();
+        }
+        catch { return ""; }
+    }
+
     /// 版本号去掉 `-noGate` / `-neo` 这类后缀，只留数字主干。
     /// 保留原因：兼容用户机器上已装的旧自编译内核（如 `1.14.2-noGate`）与历史资产名，
     /// 否则 `CompareVersions("1.14.3", "1.14.2-noGate")` 里 `"2-noGate"` 会被 int.TryParse
@@ -178,9 +390,10 @@ public static class UpdateChecker
         var zipPath = Path.Combine(Path.GetTempPath(), "neo-xray-update.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), "neo-xray-update");
 
-        var attempts = ConnectionService.IsConnected
-            ? new[] { "socks", "sys", "direct" }
-            : new[] { "sys", "direct", "socks" };
+        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
+        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
+        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
+        var attempts = new[] { "socks", "direct", "sys" };
 
         byte[]? data = null;
         foreach (var kind in attempts)
@@ -204,7 +417,7 @@ public static class UpdateChecker
                 }
 
                 //   内核压缩包 <100 MB，10 分钟足够；真取消由调用方传进来的 ct 负责。
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
+                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
                 client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
 
                 progress($"下载 Xray-windows-64.zip（{rel.SizeBytes / 1024 / 1024}MB）…");
@@ -358,9 +571,10 @@ public static class UpdateChecker
         var zipPath = Path.Combine(Path.GetTempPath(), "neo-singbox-update.zip");
         var extractDir = Path.Combine(Path.GetTempPath(), "neo-singbox-update");
 
-        var attempts = ConnectionService.IsConnected
-            ? new[] { "socks", "sys", "direct" }
-            : new[] { "sys", "direct", "socks" };
+        //   下载顺序固定为「本地 socks → 直连 → 系统代理」：
+        //   实测 GitHub 直连在校园网/热点下会**挂住不报错**，直连优先会把大文件卡到超时才换路；
+        //   本地 socks 端口（neo 自己或第三方客户端）被拒是毫秒级失败，放第一位没有代价。
+        var attempts = new[] { "socks", "direct", "sys" };
 
         byte[]? data = null;
         foreach (var kind in attempts)
@@ -384,7 +598,7 @@ public static class UpdateChecker
                 }
 
                 //   内核压缩包 <100 MB，10 分钟足够；真取消由调用方传进来的 ct 负责。
-                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(10) };
+                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
                 client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
 
                 progress($"下载 sing-box 内核（{rel.SizeBytes / 1024 / 1024}MB）…");

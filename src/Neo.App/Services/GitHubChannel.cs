@@ -107,6 +107,46 @@ public static class GitHubChannel
             }
         }, ct);
 
+    /// <summary>
+    /// 用 GitHub REST API 取「按发布时间倒序」的发布列表及 **prerelease 标记**。
+    /// 为什么只在「检查预发布内核」时用：匿名 API 有 60 次/小时/IP 的配额，
+    /// 而 atom / releases/latest 通道不暴露 prerelease 标记，无法区分预发布。
+    /// 失败（含被限流）返回 null，调用方自动退回 atom 通道（只是拿不到预发布）。
+    /// </summary>
+    public static Task<List<(string Tag, bool Prerelease)>?> GetReleaseFlagsAsync(
+        string owner, string repo, bool preferProxy, CancellationToken ct = default)
+        => RaceAsync<List<(string Tag, bool Prerelease)>>(preferProxy, async (handler, _, token) =>
+        {
+            using (handler)
+            {
+                try
+                {
+                    using var client = new HttpClient(handler) { Timeout = Timeout };
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+                    using var resp = await client.GetAsync(
+                        $"https://api.github.com/repos/{owner}/{repo}/releases?per_page=20", token);
+                    if (!resp.IsSuccessStatusCode) return null;
+                    var json = await resp.Content.ReadAsStringAsync(token);
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+                    var list = new List<(string Tag, bool Prerelease)>();
+                    foreach (var el in doc.RootElement.EnumerateArray())
+                    {
+                        if (!el.TryGetProperty("tag_name", out var t)) continue;
+                        var tag = t.GetString();
+                        if (string.IsNullOrWhiteSpace(tag)) continue;
+                        var pre = el.TryGetProperty("prerelease", out var p)
+                                  && p.ValueKind == System.Text.Json.JsonValueKind.True;
+                        list.Add((tag, pre));
+                    }
+                    return list.Count > 0 ? list : null;
+                }
+                catch (OperationCanceledException) { return null; }
+                catch { return null; }
+            }
+        }, ct);
+
     /// <summary>从 releases.atom 取版本 tag 列表（最新在前）。取不到时返回空表（调用方无需判 null）。</summary>
     public static async Task<List<string>> GetTagsFromAtomAsync(string owner, string repo, bool preferProxy, CancellationToken ct = default)
     {

@@ -68,7 +68,9 @@ public static class KernelInstall
     ///  ② 若目标内核不存在但 .bak-prev 在（安装恰好死在替换前后），用备份恢复，避免「内核没了」。
     public static void RecoverIfNeeded()
     {
-        foreach (var name in new[] { "xray.exe", "sing-box.exe" })
+        //   mihomo 目前只纳入安装/更新管理（未参与拨号），但同样走原子替换，
+        //   所以也要享受「清理 .new / 用 .bak-prev 恢复」这套自愈。
+        foreach (var name in new[] { "xray.exe", "sing-box.exe", "mihomo.exe" })
         {
             try
             {

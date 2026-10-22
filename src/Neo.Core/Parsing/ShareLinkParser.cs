@@ -20,9 +20,9 @@ public static class ShareLinkParser
             if (link.StartsWith("hysteria2://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("hy2://", StringComparison.OrdinalIgnoreCase)) return ParseHysteria2(link);
             if (link.StartsWith("tuic://", StringComparison.OrdinalIgnoreCase)) return ParseTuic(link);
-            // ★ 2026-10-23 第二批（向 v2rayN 对齐）：anytls / socks5 分享链接。
+            // ★ 2026-10-23 第二批：anytls / socks5 分享链接。
             //   anytls 只能走 sing-box（xray 26 实测无 anytls 出站）；
-            //   socks:// 是 v2rayN 支持的分享链接（SocksFmt.cs），此前 neo 完全不认。
+            //   socks:// 是常见的分享链接写法，此前 neo 完全不认。
             if (link.StartsWith("anytls://", StringComparison.OrdinalIgnoreCase)) return ParseAnyTls(link);
             if (link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) ||
@@ -196,7 +196,7 @@ public static class ShareLinkParser
         };
         if (!string.IsNullOrEmpty(query))
         {
-            // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：v2rayN 的 ss:// 用
+            // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：ss:// 里常见写法是
             //   `plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dbing.com`（SIP003）描述插件；
             //   旧实现只把整串 query 塞进 Extras["query"]、全仓无读取方 → 插件节点被当裸 SS（必连不上）。
             //   这里保留原串（兼容旧缓存/排障），并解析出 Plugin/PluginOpts 供 sing-box 出站使用。
@@ -212,7 +212,7 @@ public static class ShareLinkParser
         var (auth, host, portExpr, query, name) = SplitAuthority(body);
         if (host.Length == 0) return null;
 
-        // ★ 2026-10-23 hy2 端口跳跃（v2rayN 标准写法）：
+        // ★ 2026-10-23 hy2 端口跳跃（常见标准写法）：
         //   hysteria2://auth@host:443,5000-6000/?...
         //   旧实现用 int.TryParse 解析端口 → "443,5000-6000" → 0 → 整条节点被丢；
         //   省略端口（默认 443）也会被丢。这里归一化成 sing-box 的 server_ports 写法
@@ -244,7 +244,7 @@ public static class ShareLinkParser
         Copy(node, q, "up");
         Copy(node, q, "down");
 
-        // ★ 2026-10-23 第二批：gecko 混淆（v2rayN Hysteria2Fmt.cs:196-215）。
+        // ★ 2026-10-23 第二批：gecko 混淆。
         //   链接写法 obfs=gecko&obfs-password=...&minPacketSize=512&maxPacketSize=1200；
         //   sing-box 1.14.3 实测支持 obfs.type=gecko + min/max_packet_size（见台账 F1），
         //   旧实现只把 obfs 值原样写入 → 没带分片参数，对端按 salamander 处理，直接连不上。
@@ -257,7 +257,7 @@ public static class ShareLinkParser
     }
 
     /// <summary>
-    /// anytls 分享链接（v2rayN AnytlsFmt.cs）：anytls://password@host:port?sni=..&amp;insecure=1#name。
+    /// anytls 分享链接：anytls://password@host:port?sni=..&amp;insecure=1#name。
     /// 密码就是 URI 的 userinfo；xray 26 没有 anytls 出站，只能走 sing-box。
     /// </summary>
     private static NodeItem? ParseAnyTls(string link)
@@ -278,10 +278,10 @@ public static class ShareLinkParser
     }
 
     /// <summary>
-    /// socks5 分享链接（v2rayN SocksFmt.cs）。v2rayN 支持两种写法：
-    ///   socks://base64(user:pass)@host:port   （v2rayN 自己 ToUri 的写法）
+    /// socks5 分享链接。支持两种写法：
+    ///   socks://base64(user:pass)@host:port   （部分面板生成的写法）
     ///   socks://user:pass@host:port / socks5://user:pass@host:port（标准 URI）
-    /// 也兼容整段 base64（socks://<base64 of "user:pass@host:port">，v2rayN ResolveSocks 老写法）。
+    /// 也兼容整段 base64（socks://<base64 of "user:pass@host:port">，早期老写法）。
     /// </summary>
     private static NodeItem? ParseSocks(string link)
     {
@@ -307,7 +307,7 @@ public static class ShareLinkParser
             var userInfo = Uri.UnescapeDataString(userInfoRaw);
             if (!userInfo.Contains(':'))
             {
-                // v2rayN ToUri 用 base64("user:pass") 放 userinfo
+                // 部分面板用 base64("user:pass") 放 userinfo
                 var dec = TryB64Decode(userInfo);
                 if (dec != null && dec.Contains(':')) userInfo = dec;
             }
@@ -446,9 +446,9 @@ public static class ShareLinkParser
         node.ServiceName = OrNull(G("serviceName"));
         node.HeaderType = OrNull(G("headerType"));
 
-        // ★ 2026-10-23 第二批：v2rayN 分享链接里这些参数此前全被丢进 Extras（全仓无读取方）→
+        // ★ 2026-10-23 第二批：分享链接里这些参数此前全被丢进 Extras（全仓无读取方）→
         //   节点能导入但连不上/连上走错传输。现在逐个落到 NodeItem 的强类型字段，
-        //   由 xray / sing-box 生成器消费。字段名与 v2rayN BaseFmt.cs:197-316 完全一致。
+        //   由 xray / sing-box 生成器消费。字段名与分享链接标准参数名一致。
         //   · encryption：VLESS 后量子加密串（空或 none = 不加密；xray 26 对公网明文 vless 直接拒绝启动）
         //   · pqv：REALITY 的 ML-DSA-65 校验；· ech：TLS ECH 配置；· vcn：证书名校验；· pcs：证书 pin
         var enc = OrNull(G("encryption"));
@@ -475,7 +475,7 @@ public static class ShareLinkParser
                 break;
         }
 
-        // ★ 2026-10-23 insecure 别名：v2rayN 分享链接同时存在 insecure=1 与 allowInsecure=1 两种写法，
+        // ★ 2026-10-23 insecure 别名：分享链接同时存在 insecure=1 与 allowInsecure=1 两种写法，
         //   旧实现只认后者 → insecure=1 被静默忽略（证书校验没跳过，节点连不上）。两者任一为真即视为跳过校验。
         node.AllowInsecure = ParseBool(G("allowInsecure")) || ParseBool(G("insecure"));
 
@@ -553,7 +553,7 @@ public static class ShareLinkParser
         host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
 
     /// <summary>
-    /// 解析 Shadowsocks SIP003 插件：v2rayN/分享链接常见写法是
+    /// 解析 Shadowsocks SIP003 插件：分享链接常见写法是
     /// `plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dbing.com`（分号分隔）；
     /// 也兼容 `plugin=...&plugin-opts=k%3Dv%3B...` 的分离写法。
     /// 存入 NodeItem.Plugin / PluginOpts，由 SingBoxConfigBuilder 写进 sing-box 出站。

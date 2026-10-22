@@ -103,7 +103,7 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         string text, fgKey;
         Color fgFallback;
-        // 关闭「真连测速」时主徽标显示 TCP 握手延迟（v2rayN 风格）；开启后按现有 RealDelay 语义显示。
+        // 关闭「真连测速」时主徽标显示 TCP 握手延迟（TCP 握手风格）；开启后按现有 RealDelay 语义显示。
         var useReal = AppState.State.RealDelayTestEnabled;
         var ms = useReal ? Node.RealDelay : Node.TcpDelay;
 

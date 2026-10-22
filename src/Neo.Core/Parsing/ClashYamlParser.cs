@@ -308,7 +308,7 @@ public static class ClashYamlParser
 
             case "socks5":
             case "socks":
-                // ★ 2026-10-23 第二批：Clash 的 socks5 条目（v2rayN 由 mihomo 直吃 YAML，我们坚持拆成节点）。
+                // ★ 2026-10-23 第二批：Clash 的 socks5 条目（整份 YAML 交给内核的原生做法不用，坚持拆成节点）。
                 node.Protocol = NodeProtocol.Socks;
                 node.Username = StrOrNull(item, "username");
                 node.Password = StrOrNull(item, "password") ?? "";

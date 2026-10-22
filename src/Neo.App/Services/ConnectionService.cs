@@ -1303,7 +1303,7 @@ public static class ConnectionService
 
     /// 启动时清理「孤儿系统代理」：上次 neo 被强杀/崩溃时 Disable() 没执行，
     /// 注册表残留指向本机端口的代理设置但已无人监听 → 所有程序断网。
-    /// 只在「确实是 neo 端口」且「端口无人监听」时才清，避免误伤第三方代理（如 v2rayN 同端口）。
+    /// 只在「确实是 neo 端口」且「端口无人监听」时才清，避免误伤第三方代理（如其它客户端占用同端口）。
     public static void CleanupOrphanedSystemProxy()
     {
         try
@@ -1771,7 +1771,7 @@ public static class ConnectionService
     private static CancellationTokenSource? _coreRestartCts;
 
     // ---- 内核看门狗（兜底）----
-    // 针对 v2rayN「内核死掉不重启」的痛点：连接成功后每 20s 主动检查
+    // 针对「内核死掉不重启」的痛点：连接成功后每 20s 主动检查
     //   ① 10808/10809 是否仍监听、② 内核进程 IsRunning、③ TUN 网卡是否还在、
     //   ④ xray stats API（10085）是否连续 60s 无响应（卡死）。
     // 连续失败 2 次 → 复用 TryAutoRestartCoreAsync；重启失败或连续触发 3 次 → 进入安全模式。
@@ -2001,7 +2001,7 @@ public static class ConnectionService
         IncidentLog.Record("watchdog", "看门狗进入安全模式", reason);
 
         // ★ 2026-10-23 第二批（F9）：内核兜底必须让用户看见。
-        //   旧实现只写日志 + 状态字段：窗口在托盘里时用户完全无感（v2rayN 的死穴正是「内核死了没人知道」）。
+        //   旧实现只写日志 + 状态字段：窗口在托盘里时用户完全无感（常见客户端的死穴正是「内核死了没人知道」）。
         try { NotifyStateChanged(); } catch { }
         try { UserNotice?.Invoke($"内核连续异常，已进入安全模式（TUN/固定出口已关闭）：{reason}"); } catch { }
     }

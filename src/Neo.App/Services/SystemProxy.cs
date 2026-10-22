@@ -244,7 +244,7 @@ public static class SystemProxy
     /// 清理「孤儿系统代理」：neo 被强杀或崩溃时 Disable() 不会执行，
     /// 注册表残留 ProxyEnable=1 指向本机端口，但已无进程监听 → 所有走系统代理的程序全部断网，
     /// 且报错五花八门，极易被误判成网络故障。
-    /// 判据必须包含「该端口无人监听」这一条：若 v2rayN 等第三方代理正占用同端口，
+    /// 判据必须包含「该端口无人监听」这一条：若其它代理客户端正占用同端口，
     /// 那是它自己的合法设置，绝不能动。
     public static bool CleanupOrphaned(params int[] neoPorts)
     {

@@ -423,7 +423,7 @@ public sealed partial class NodesPage : UserControl
     }
 
     /// <summary>
-    /// 快速测延迟（TCP 握手，照 v2rayN 的「测试延迟」）：只测到节点服务器的 TCP 握手，
+    /// 快速测延迟（TCP 握手，对应常见客户端的「测试延迟」）：只测到节点服务器的 TCP 握手，
     /// 不走代理、不写 RealDelay —— 与「真连测速」的结果各存各的、互不覆盖。
     /// </summary>
     private async void OnTcpTestClick(object sender, RoutedEventArgs e)
