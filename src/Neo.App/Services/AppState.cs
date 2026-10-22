@@ -100,6 +100,10 @@ public static class AppState
         /// 入口链路数量：0 = 全部可用入口。
         public int FixedExitEntryCount { get; set; } = 6;
 
+        /// 自动修复系统代理：已连接时系统代理被关掉（且原设置指向本机）则自动恢复。
+        /// 默认开；如果你会同时用别的代理软件，可以关掉它，避免互相覆盖。
+        public bool AutoRepairSystemProxy { get; set; } = true;
+
         public bool AutoSpeedTest { get; set; } = true;
 
         /// 启动后自动测一次全部节点的真连延迟（与节点页「真连测速」同一套实现），

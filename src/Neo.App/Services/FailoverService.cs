@@ -14,6 +14,8 @@ public static class FailoverService
     private static Task? _loop;
     private static volatile bool _failoverInProgress;
     private static int _failStreak;
+    /// 本次会话是否已经提示过「系统代理被其他程序接管」（避免每 30 秒刷一条）。
+    private static bool _reportedForeignProxy;
     private static DateTime _lastSwitchAt = DateTime.MinValue;
     private static DateTime _lastGiveUpAt = DateTime.MinValue;
 
@@ -167,9 +169,19 @@ public static class FailoverService
         if (_loop is { IsCompleted: false }) return;
         _cts = new CancellationTokenSource();
         _failStreak = 0;
+        _reportedForeignProxy = false;
         _loop = Task.Run(() => LoopAsync(_cts.Token));
         // 一旦接线断了，日志里同样是一片安静——沉默无法区分「正常」和「根本没跑」。
         LogBus.App($"自动故障转移已启动（每 30 秒探活一次，目标 {ProbeTargets.Length} 个）");
+    }
+
+    /// 用户主动断开 / 退出程序时调用：清掉「放弃后重连」的待办与计数。
+    /// 目的：自愈不能覆盖用户意图 —— 用户刚点断开，不能被 5 分钟后的自动重连连回去。
+    public static void CancelPendingReconnect()
+    {
+        _lastGiveUpAt = DateTime.MinValue;
+        _lastSwitchAt = DateTime.MinValue;
+        _failStreak = 0;
     }
 
     /// 停止探活循环（不阻塞等待）。用于无法 await 的同步调用点，如窗口关闭回调。
@@ -267,15 +279,30 @@ public static class FailoverService
         if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 120) return;
         if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < 300) return;
 
-        // 自动修复：已连接但系统代理被别的程序关掉时，网页会突然全断，用户只会觉得「网坏了」。
-        // TUN 会话不需要系统代理，跳过。每 30 秒巡航时顺手检查一次。
+        // 自动修复系统代理：
+        //   · 只在「已连接 + 非 TUN + 设置里开关打开」时检查；
+        //   · 只在代理设置本来指向 neo 自己的端口、或被清空时才恢复；
+        //     如果用户或别的代理软件把它改成了别的地址，绝不覆盖（自愈不能抢用户的选择）；
+        //   · 用户主动断开/退出时循环已先 Stop()，这里不会跑。
         try
         {
-            if (!ConnectionService.IsTunSession && !SystemProxy.IsEnabled)
+            if (!ConnectionService.IsTunSession && !SystemProxy.IsEnabled && AppState.State.AutoRepairSystemProxy)
             {
-                SystemProxy.Enable("127.0.0.1:" + Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort);
-                LogBus.App("自动修复：系统代理被关闭，已重新开启", "Warning");
-                IncidentLog.Record("auto-repair", "系统代理被关闭，已自动恢复");
+                var own = "127.0.0.1:" + Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort;
+                var cur = SystemProxy.CurrentServer;
+                bool isOurs = string.IsNullOrWhiteSpace(cur) || string.Equals(cur, own, StringComparison.OrdinalIgnoreCase);
+                if (isOurs)
+                {
+                    SystemProxy.Enable(own);
+                    LogBus.App("自动修复：系统代理被关闭（原设置指向本机 " + own + "），已重新开启；如是你手动关的，可在设置里关掉「自动修复系统代理」", "Warning");
+                    IncidentLog.Record("auto-repair", "系统代理被关闭（原设置指向本机），已自动恢复");
+                }
+                else if (!_reportedForeignProxy)
+                {
+                    _reportedForeignProxy = true;
+                    LogBus.App("检测到系统代理指向其他程序（" + cur + "），自动修复不会覆盖它", "Warning");
+                    IncidentLog.Record("auto-repair", "系统代理已被其他程序接管，未覆盖（" + cur + "）");
+                }
             }
         }
         catch { }

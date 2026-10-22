@@ -166,6 +166,14 @@ public sealed partial class SettingsPage : UserControl
         LogBus.App(SwitchFailover.IsOn ? "自动故障转移：已开启" : "自动故障转移：已关闭");
     }
 
+    private void OnAutoRepairProxyToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.AutoRepairSystemProxy = SwitchAutoRepairProxy.IsOn;
+        AppState.Save();
+        LogBus.App(SwitchAutoRepairProxy.IsOn ? "自动修复系统代理：已开启" : "自动修复系统代理：已关闭");
+    }
+
     private async void OnMultiNodeToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -1236,6 +1244,7 @@ public sealed partial class SettingsPage : UserControl
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
         st.FailoverEnabled = true; st.MultiNodeEnabled = false; st.MultiNodeMax = 8;
+        st.AutoRepairSystemProxy = true;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
         st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;
@@ -1259,6 +1268,7 @@ public sealed partial class SettingsPage : UserControl
         SwitchWarmCache.IsOn = AppState.State.WarmCacheOnStartup;
         SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
+        SwitchAutoRepairProxy.IsOn = AppState.State.AutoRepairSystemProxy;
         SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
         SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;

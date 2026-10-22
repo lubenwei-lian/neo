@@ -575,6 +575,11 @@ public static class ConnectionService
 
     public static void Disconnect(string? reason = null)
     {
+        // 用户主动断开 / 退出程序：清掉「故障转移放弃后重连」的待办，
+        // 避免用户刚点断开，5 分钟后又被自动连回去。
+        if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
+            FailoverService.CancelPendingReconnect();
+
         bool was = IsConnected;
         var startedAt = ConnectedAt;
         IsConnected = false;
