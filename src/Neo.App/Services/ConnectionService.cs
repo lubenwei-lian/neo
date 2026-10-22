@@ -332,7 +332,8 @@ public static class ConnectionService
                 FixedExitName = fixedExit.Name;
                 LogBus.App("固定出口已启用：出口「" + fixedExit.Name + "」· 入口 " + fixedEntries.Count + " 条链路（"
                     + string.Join("、", fixedEntries.Take(6).Select(n => n.Name))
-                    + (fixedEntries.Count > 6 ? "…" : "") + "）");
+                    + (fixedEntries.Count > 6 ? "…" : "") + "）"
+                    + (AppState.State.MultiNodeEnabled ? " · 多节点加速已被忽略（固定出口优先）" : ""));
             }
             else if (wantMulti)
             {

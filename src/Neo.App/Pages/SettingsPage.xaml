@@ -250,7 +250,7 @@
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="多节点加速" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                            <TextBlock x:Name="MultiNodeHint" Text="自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                         </StackPanel>
                         <ToggleSwitch x:Name="SwitchMultiNode" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnMultiNodeToggled" />
                     </Grid>

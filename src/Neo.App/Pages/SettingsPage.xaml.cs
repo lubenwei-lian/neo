@@ -199,6 +199,9 @@ public sealed partial class SettingsPage : UserControl
             return;
         }
         LogBus.App($"多节点加速：已开启 · {region} 共 {group.Count} 个节点参与（策略 {AppState.State.MultiNodeStrategy}）");
+        if (AppState.State.FixedExitEnabled)
+            LogBus.App("提示：固定出口正在开启状态，固定出口优先，多节点加速此时不生效", "Warning");
+        UpdateFixedExitUi();
 
         // 已连接时立即重载，让加速马上生效
         if (ConnectionService.IsConnected)
@@ -216,7 +219,8 @@ public sealed partial class SettingsPage : UserControl
         if (_syncing) return;
         AppState.State.FixedExitEnabled = SwitchFixedExit.IsOn;
         AppState.Save();
-        LogBus.App(SwitchFixedExit.IsOn ? "固定出口：已开启（出口固定，其他节点作入口）" : "固定出口：已关闭");
+        UpdateFixedExitUi();
+        LogBus.App(SwitchFixedExit.IsOn ? "固定出口：已开启（出口固定，其他节点作入口）" : "固定出口：已关闭，恢复多节点/单节点模式");
         if (SwitchFixedExit.IsOn && AppState.State.UseTun)
             LogBus.App("固定出口：当前是 TUN 模式，该功能只在非 TUN（xray）下生效", "Warning");
         _ = ReloadForFixedExitAsync();
@@ -296,6 +300,19 @@ public sealed partial class SettingsPage : UserControl
             : "自动：从 " + cands.Count + " 个非 REALITY 节点里选延迟/吞吐最好的";
         var c = AppState.State.FixedExitEntryCount;
         FixedExitEntryText.Text = c <= 0 ? "全部" : c + " 个";
+
+        // 两个开关可以同时开着，但「固定出口」优先：这里把谁在生效写清楚，
+        // 避免用户看到「多节点加速 开 + 固定出口 开」却不知道实际走的是哪条路。
+        bool fixedOn = AppState.State.FixedExitEnabled;
+        bool multiOn = AppState.State.MultiNodeEnabled;
+        FixedExitHint.Text = fixedOn
+            ? (multiOn
+                ? "当前生效：固定出口（多节点加速已忽略）；出口固定一个 ws/tls 节点，其他节点作入口叠加带宽，流量按两跳计"
+                : "当前生效：固定出口；出口固定一个 ws/tls 节点，其他节点作入口叠加带宽，流量按两跳计")
+            : "出口固定一个节点，其他节点作入口给它叠加带宽；出口仅支持 ws/tls 节点，TUN 模式下不生效，流量按两跳计";
+        MultiNodeHint.Text = fixedOn
+            ? "已被「固定出口」覆盖：固定出口开启时此项不生效（固定出口优先）"
+            : "自动把同地区、同协议的多个节点一起用，突破单节点限速（对下载/视频效果明显）";
     }
 
     private bool _checkingAppUpdate;
