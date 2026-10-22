@@ -560,11 +560,14 @@ public sealed partial class NodesPage : UserControl
         {
             var tileMap = all.GroupBy(t => t.Node).ToDictionary(g => g.Key, g => g.First());
             var done = 0;
+            var preselected = false;
+            // 测速过程中已测到可用的节点（用于「预热式优选」，不必等全部测完）。
+            var usableDuringTest = new List<(NodeItem Node, int Ms)>();
             var map = await RealDelayTester.RealPingBatchAsync(
                 all.Select(t => t.Node).ToList(), NeoPaths.RuntimeDir,
-                // 优化：超时从 10s 收到 7s —— 真连超过 7s 的节点实际体验已不可用，
-                // 继续等 10s 只会拖慢整批（批量是并行的，最后一名决定总耗时）。
-                timeoutMs: 7000,
+                // 批量超时 4.5s：Core 侧已改为单请求计时，4.5s 足够；再长只会拖慢整批
+                //（批量是并行的，最后一名决定总耗时）。
+                timeoutMs: 4500,
                 onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                 {
                     if (App.IsShuttingDown) return;
@@ -572,9 +575,28 @@ public sealed partial class NodesPage : UserControl
                     {
                         tile.SetResult(ms);
                         done++;
-                        // 只每 10 个刷新一次页脚；按钮文字保持「停止」不变，避免工具栏宽度来回变。
-                        if (done % 10 == 0) FootTime.Text = $"真连测速中 {done}/{all.Count}…";
+                        // 每个节点都刷新页脚进度（原先每 10 个刷一次，用户以为卡住）。
+                        FootTime.Text = $"真连测速中 {done}/{all.Count}…";
                         FootAvg.Text = "";
+
+                        if (ms > 0) usableDuringTest.Add((node, ms));
+                        // 预热式优选：已完成 ≥6 个且其中已有 ≥2 个可用 → 先把最低延迟的设为当前节点，
+                        // 让用户更早拿到可用节点（仍只取已完成里延迟最低的可用节点）。
+                        // 只在全量真连测速（autoSelect）且用户没手动点过时做；结束后仍走最终优选。
+                        if (autoSelect && !preselected && !userPickedDuringTest
+                            && done >= 6 && usableDuringTest.Count >= 2)
+                        {
+                            var best = usableDuringTest.OrderBy(x => x.Ms).First();
+                            preselected = true;
+                            var cur = AppState.CurrentNode;
+                            if (cur == null || !string.Equals(AppState.NodeKey(cur), AppState.NodeKey(best.Node), StringComparison.Ordinal))
+                            {
+                                AppState.SetCurrentNode(best.Node);
+                                ApplyTileSelection(best.Node);
+                                // 注意别调 UpdateFooter()：它会把页脚改成「上次真连测速…」，冲掉进行中的进度文本。
+                                LogBus.App($"真连测速中已预选：{best.Node.Name}（{best.Ms} ms）");
+                            }
+                        }
                     }
                 }),
                 ct: _realCts.Token,
@@ -582,27 +604,35 @@ public sealed partial class NodesPage : UserControl
                 availabilityRecheck: autoSelect,
                 onUsableChecked: usable => { usableChecked = usable; });
 
-            // 批量里超时（-1）/没测到的节点用更长超时单独重试一次：
-            //   订阅里确实有死节点，但「其实能用、只是很慢」的节点会被 7s 批量超时误判。
-            var retry = all.Where(t => t.RealValue <= 0).ToList();
+            // 批量里超时（-1）/没测到的节点做一次**有限**的单独重试：
+            //   只重试前 6 个、总预算 6s、单次 5s —— 避免几个死节点把整批拖到最后。
+            var retry = all.Where(t => t.RealValue <= 0).Take(6).ToList();
             if (retry.Count > 0 && _realCts is { IsCancellationRequested: false })
             {
-                LogBus.App($"真连测速：批量超时 {retry.Count} 个，正在单独重试（12s 超时）…");
+                LogBus.App($"真连测速：重试 {retry.Count} 个（上限 6，预算 6s，单次 5s 超时）…");
+                using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(_realCts.Token);
+                retryCts.CancelAfter(TimeSpan.FromSeconds(6));
+                var retried = 0;
                 try
                 {
                     await Parallel.ForEachAsync(retry,
-                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = _realCts.Token },
+                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = retryCts.Token },
                         async (tile, ict) =>
                         {
                             var ms = await RealDelayTester.RealPingAsync(
-                                tile.Node, NeoPaths.RuntimeDir, timeoutMs: 12000, ct: ict);
+                                tile.Node, NeoPaths.RuntimeDir, timeoutMs: 5000, ct: ict);
+                            Interlocked.Increment(ref retried);
                             _ = DispatcherQueue.TryEnqueue(() =>
                             {
                                 if (!App.IsShuttingDown) tile.SetResult(ms);
                             });
                         });
                 }
-                catch (OperationCanceledException) { }
+                catch (OperationCanceledException)
+                {
+                    if (_realCts is { IsCancellationRequested: true }) throw;   // 用户点了停止：交给外层标记 canceled
+                    LogBus.App($"真连测速：重试预算 6s 用尽，已重试 {retried}/{retry.Count} 个（其余保持未测）", "Warning");
+                }
             }
         }
         catch (OperationCanceledException)
@@ -692,8 +722,19 @@ public sealed partial class NodesPage : UserControl
         }
 
         AppState.SetCurrentNode(best);
-        // 高亮只切到 best 对应的那张卡片：遍历全部 _tiles（而不只是当前筛选结果），
-        // 避免被筛掉的卡片残留旧高亮。
+        ApplyTileSelection(best);
+        LogBus.App(viaRecheck
+            ? $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 可用性复核通过）"
+            : $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 仅按延迟）");
+        UpdateFooter();
+    }
+
+    /// <summary>
+    /// 把当前节点高亮同步到 _tiles：只亮 best 对应那张卡片（遍历全部卡片，避免筛选掉的残留旧高亮）。
+    /// 若 best 不在 _tiles（订阅刷新后对象被重建等），_selected 置 null 也比留着旧引用正确。
+    /// </summary>
+    private NodeTile? ApplyTileSelection(NodeItem best)
+    {
         var bestKey = AppState.NodeKey(best);
         NodeTile? bestTile = null;
         foreach (var t in _tiles)
@@ -702,13 +743,8 @@ public sealed partial class NodesPage : UserControl
             t.SetSelected(on);
             if (on) bestTile = t;
         }
-        // 同步内部选中态：若 best 恰好不在 _tiles（订阅刷新后对象被重建等），置 null 也比留着旧引用正确，
-        // 否则用户再点旧卡片时会因「已是 _selected」而直接 return、看起来点不动。
         _selected = bestTile;
-        LogBus.App(viaRecheck
-            ? $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 可用性复核通过）"
-            : $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 仅按延迟）");
-        UpdateFooter();
+        return bestTile;
     }
 
     private void UpdateFooter()

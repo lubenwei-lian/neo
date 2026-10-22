@@ -469,6 +469,7 @@ public static class ConnectionService
         ConnectedAt = DateTime.Now;
         _lastCoreStartAt = DateTime.Now;   // 供「内核是否稳定运行过」判断使用
         _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
+        _ = WarmupDnsAsync();                 // 连接成功后预热 DNS（x.com / cloudflare），减轻首访冷启动
         var gdCount = (useSingBox && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
         LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
                    (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
@@ -1857,9 +1858,9 @@ public static class ConnectionService
     // 因此 RealDelayTester 用的是独立随机端口，与当前会话不冲突。
     private static int _autoMeasureInFlight;
 
-    /// 自动补测的重试次数。
-    /// 保留 2 轮最小值取优，兼顾抖动与耗时。
-    private const int AutoMeasureAttempts = 2;
+    /// 自动补测的轮数（在冷启动热身之后执行）。
+    /// 3 轮取最优：兼顾抖动；冷启动的 DNS/TCP/TLS 成本由前面 1 次丢弃探测吃掉，不计入显示值。
+    private const int AutoMeasureAttempts = 3;
 
     private static async Task TryAutoMeasureDelayAsync(NodeItem node)
     {
@@ -1875,10 +1876,25 @@ public static class ConnectionService
                 if (!IsConnected) return;
                 if (node.RealDelay != 0) return;
 
-                // 走「已连接的代理」测，而不是另起临时内核。
-                // 代理方案 6/6 成功（3.81/0.67/0.54/3.61/3.58/3.74s）。
-                // 另起内核那套要新建进程、等它监听随机端口、再打链路，任一步慢就误判 -1，
-                // 会把「这次没测到」变成界面上的假「超时」。
+                // 冷启动虚高的根因：连上后的第一次探测包含 DNS（223.5.5.5 冷查询，实测 401ms）、
+                // TCP、TLS 冷启动成本，一次往返被算进「节点延迟」。因此先做 1 次**丢弃的预热探测**，
+                // 把这部分一次性成本吃掉；显示值只取热身之后 3 轮里的最优。
+                var cold = await RealDelayTester.PingViaSocksAsync(
+                    XrayConfigBuilder.DefaultSocksPort,
+                    target: "https://x.com/",
+                    timeoutMs: 12000,   // 冷启动放宽超时，避免把「第一次慢」误判成失败
+                    rounds: 1,
+                    ct: CancellationToken.None);
+                if (!IsConnected) return;
+                if (cold < 0)
+                {
+                    // 热身全超时：**不写 -1**（沿用「不写假超时」原则），保持 0 未测速，下次连接再试。
+                    LogBus.App($"冷启动探测失败（全超时，保持未测速）：{node.Name}", "Warning");
+                    return;
+                }
+                LogBus.App($"冷启动探测：{cold} ms（仅用于热身）");
+
+                // 走「已连接的代理」测，而不是另起临时内核（另起进程任一步慢就误判 -1）。
                 var best = await RealDelayTester.PingViaSocksAsync(
                     XrayConfigBuilder.DefaultSocksPort,
                     rounds: AutoMeasureAttempts,
@@ -1890,7 +1906,7 @@ public static class ConnectionService
                 {
                     node.RealDelay = best;
                     DelayCache.Set(node, best);
-                    LogBus.App($"已自动补测节点延迟：{node.Name} → {best} ms", "Debug");
+                    LogBus.App($"节点延迟（热）：{best} ms · {node.Name}");
                 }
                 else
                 {
@@ -1916,6 +1932,36 @@ public static class ConnectionService
         catch (Exception ex)
         {
             LogBus.App($"自动补测延迟失败（不影响连接）：[{ex.GetType().Name}] {ex.Message}", "Debug");
+        }
+    }
+
+    /// <summary>
+    /// 连接成功后 fire-and-forget：经现有本地 socks 链路各请求一次 x.com 与 cp.cloudflare.com，
+    /// 预热 DNS 缓存与 TCP/TLS 握手（不新开进程、不写任何测速结果，失败静默）。
+    /// </summary>
+    private static async Task WarmupDnsAsync()
+    {
+        try
+        {
+            foreach (var url in new[] { "https://x.com/", "http://cp.cloudflare.com/generate_204" })
+            {
+                if (!IsConnected) return;
+                try
+                {
+                    await RealDelayTester.PingViaSocksAsync(
+                        XrayConfigBuilder.DefaultSocksPort,
+                        target: url,
+                        timeoutMs: 12000,
+                        rounds: 1,
+                        ct: CancellationToken.None);
+                }
+                catch { }
+            }
+            LogBus.App("DNS/TLS 预热完成（x.com / cp.cloudflare.com）", "Debug");
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"DNS/TLS 预热失败（不影响连接）：[{ex.GetType().Name}] {ex.Message}", "Debug");
         }
     }
 

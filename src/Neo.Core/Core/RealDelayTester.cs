@@ -24,40 +24,40 @@ public static class RealDelayTester
     public const int DefaultTimeoutMs = 10000;
 
     // ★ 2026-10-22 保守模式（用户反馈批量测速会被商家限流）：
-    //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去，且每节点还有
-    //   「预热 + 计时」两次请求 → 短时间内同一出口发出大量 TLS 连接，容易被机场判定为
-    //   异常流量。改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰
-    //   BatchStaggerBaseMs ± BatchStaggerJitterMs。三个参数集中在这里，以后单点调整即可。
-    /// <summary>批量真连测速时，同时在跑的节点探测数上限（保守值，避免触发商家限流）。</summary>
-    private const int BatchMaxConcurrency = 4;
+    //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去 → 容易被判异常流量。
+    //   改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰 BatchStaggerBaseMs ± 抖动。
+    //
+    // ★ 2026-10-23 提速（用户抱怨 68 节点一次要 1.5–2 分钟）：并发 4→8→10、错峰 200±50→100±30，
+    //   批量路径再去掉「预热请求」（只发一次计时请求，延迟口径按首字节时间）。
+    //   连接数仍受控，预期总耗时降到原来的 1/3–1/4。
+    /// <summary>批量真连测速时，同时在跑的节点探测数上限（10，保守但比 4 快）。</summary>
+    private const int BatchMaxConcurrency = 10;
 
-    /// <summary>相邻两个节点开始探测的基准间隔（毫秒）；实际为 200±50ms，即 150–250ms。</summary>
-    private const int BatchStaggerBaseMs = 200;
+    /// <summary>相邻两个节点开始探测的基准间隔（毫秒）；实际为 100±30ms，即 70–130ms。</summary>
+    private const int BatchStaggerBaseMs = 100;
 
     /// <summary>错峰间隔的随机抖动（±毫秒）：避免整齐的机器节奏被识别成扫描。</summary>
-    private const int BatchStaggerJitterMs = 50;
+    private const int BatchStaggerJitterMs = 30;
 
     // ★ 2026-10-22 可用性复核：延迟最低 ≠ 能用。
     //   实测 AWS日本02 延迟 115ms（全场最低）但 x.com 12s 超时，而延迟更高的 AWS日本06 正常。
     //   所以批量延迟测完后，对延迟最低的前 3 名节点，用**同一个临时内核实例**的 socks 端口
-    //   各请求一次 x.com：拿到 2xx/3xx 才算可用。串行 + 间隔 300ms，避免又被当成扫描。
+    //   **并发**各请求一次 x.com（每个候选独立 socks 端口与连接）：拿到 2xx/3xx 才算可用。
+    //   任一成功立即返回，全部失败则等全部结束；4s 单次超时、6s 总预算兜底。
     /// <summary>可用性复核目标：能刷推才算「可用」（2xx/3xx 即可，不要求正文）。</summary>
     private const string AvailabilityProbeUrl = "https://x.com/";
 
     /// <summary>可用性复核取延迟最低的前 N 名。</summary>
     private const int AvailabilityRecheckTop = 3;
 
-    /// <summary>单次可用性复核请求的超时（毫秒）。</summary>
-    private const int AvailabilityRecheckTimeoutMs = 8000;
-
-    /// <summary>两次可用性复核请求之间的间隔（毫秒）；串行执行，避免触发商家风控/限流。</summary>
-    private const int AvailabilityRecheckGapMs = 300;
+    /// <summary>单次可用性复核请求的超时（毫秒）；并发探测，3 个同时跑。</summary>
+    private const int AvailabilityRecheckTimeoutMs = 4000;
 
     /// <summary>
-    /// 复核阶段的总预算（秒）。单次 8s × 3 个串行最坏要 24.6s，太长；
+    /// 复核阶段的总预算（秒），仅作兜底：3 个并发、单次 4s，正常最多等约 4s；
     /// 超预算就停掉剩余候选（已完成的结论照用，已测延迟不受影响）。
     /// </summary>
-    private const int AvailabilityRecheckBudgetSeconds = 10;
+    private const int AvailabilityRecheckBudgetSeconds = 6;
 
     /// <summary>复核请求的 UA：x.com 对空 UA 可能直接 4xx，会把所有节点误判成不可用。</summary>
     private const string AvailabilityProbeUserAgent =
@@ -73,8 +73,11 @@ public static class RealDelayTester
     /// cloudflare 204 是明文 HTTP、开销比 TLS 小，且 xray observatory 已在用（同口径）。
     private static readonly string[] ProbeUrls =
     {
-        Target,
+        // ★ 2026-10-23 提速：cloudflare 204 放第一位 —— 明文 HTTP、无 TLS 握手，
+        //   单次开销比 google 的 https/generate_204 小一大截（实测节点上 0.2–0.5s vs 0.6–2s），
+        //   68 节点批量测速时这一段直接决定总耗时。google 退到第二位做交叉印证。
         "http://cp.cloudflare.com/generate_204",
+        Target,
     };
 
     public static async Task<int> RealPingAsync(NodeItem node, string runtimeDir,
@@ -273,21 +276,37 @@ public static class RealDelayTester
     ///
     /// ★ 2026-10-22 可用性复核（默认关闭，仅全量真连测速的调用方开启）：
     ///   批量延迟测完后，按延迟从低到高取前 3 名，用**同一个临时内核实例**的 socks 端口
-    ///   串行请求一次 https://x.com/（间隔 300ms、单次超时 8s），2xx/3xx 才算「可用」。
-    ///   整个复核阶段有 10s 总预算：超预算就停止剩余候选，已完成的结论照用。
+    ///   **并发**请求一次 https://x.com/（每个候选独立 socks 端口/连接，单次超时 4s；
+    ///   任一成功立即返回，全部失败则等全部结束），2xx/3xx 才算「可用」。
+    ///   整个复核阶段有 6s 总预算兜底：超预算就停止剩余候选，已完成的结论照用。
     ///   可用节点集合通过 onUsableChecked 回传（异步方法不能声明 out 参数；回调等价于 out）。
     ///   onUsableChecked 在复核执行结束时调用一次（无论通过几个）；未开启复核或批量失败时不调用。
+    ///
+    /// ★ 2026-10-23 总预算（budgetSeconds，默认 45s）：覆盖节点探测阶段（xray 批量 + sb 单测）。
+    ///   超预算立即停止剩余探测，并对还没出结果的节点补一次 onResult(node, -1)，
+    ///   避免弱网/大量死节点时拖到 1 分半、UI 停在半路。可用性复核有自己独立的 6s 预算，不共用。
     public static async Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir,
         int timeoutMs = DefaultTimeoutMs, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
         bool availabilityRecheck = false,
-        Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null)
+        Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null,
+        int budgetSeconds = 45)
     {
         var result = new ConcurrentDictionary<NodeItem, int>();
         var valid = nodes.Where(n => n.IsValid).ToList();
         var xrayNodes = valid.Where(n => n.Protocol is not NodeProtocol.Hysteria2 and not NodeProtocol.TUIC).ToList();
         var sbNodes = valid.Where(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC).ToList();
         var done = 0;
+
+        // ★ 2026-10-23 真连测速总预算：弱网/大量死节点时避免拖到 1 分半。
+        //   本 token 只覆盖「节点探测阶段」（xray 批量 + sb 单测）；可用性复核另有自己的 6s 预算，
+        //   单独用 ct 派生，不混用本 token（避免复核被总预算提前掐掉）。budgetSeconds <= 0 视为不设预算。
+        using var batchBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (budgetSeconds > 0) batchBudget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
+        var batchToken = batchBudget.Token;
+        var budgetExpired = false;
+        // 已回调过的节点（xray + sb）：预算耗尽补 -1 时用于去重，保证每个节点只回调一次。
+        var reported = new ConcurrentDictionary<NodeItem, byte>();
 
         if (xrayNodes.Count > 0)
         {
@@ -298,15 +317,13 @@ public static class RealDelayTester
             var batchResult = new int[xrayNodes.Count];
             Array.Fill(batchResult, -1);
             var tail = new ConcurrentQueue<string>();
-            // 已通过 onResult 上报过的节点（异常分支下避免对同一节点重复回调）。
-            var reported = new ConcurrentDictionary<NodeItem, byte>();
             try
             {
                 await File.WriteAllTextAsync(cfgPath, XrayConfigBuilder.BuildTestBatch(xrayNodes, ports), ct);
                 core = new CoreProcess(Path.Combine(runtimeDir, "xray.exe"), runtimeDir);
                 core.LogLine += line => AppendTail(tail, line);
                 core.Start(cfgPath);
-                await Task.Delay(1000, ct); // 与 v2rayN 相同：给内核 1 秒初始化
+                await Task.Delay(1000, batchToken); // 与 v2rayN 相同：给内核 1 秒初始化（计入总预算）
 
                 //   CoreProcess.Start() 不会抛异常；原实现继续对已关闭的 socks 端口探测，
                 //   于是整批都得到 -1「超时」而不是 -2「本机失败」。这里主动检测秒退。
@@ -318,18 +335,17 @@ public static class RealDelayTester
 
                 if (!batchFailed)
                 {
-                    // 整批开始的 INFO 日志：让人一眼看出这次是保守模式；
-                    // 每节点「预热 + 计时」两次请求是延迟口径的一部分（预热不计时），保留。
-                    Log($"真连测速：并发 {BatchMaxConcurrency}、错峰 {BatchStaggerBaseMs}ms（保守模式，避免触发商家限流）；" +
-                        "每个节点先预热再计时（成功通常共 2 次请求，延迟口径需要；目标抖动时会换目标重试）");
+                    // 整批开始的 INFO 日志：让人一眼看出这次是「保守但更快」的模式。
+                    // 批量路径已去掉预热请求：每节点只发一次计时请求（延迟口径含建连+TLS，见 PingViaSocksAsync 注释）。
+                    Log($"真连测速：并发 {BatchMaxConcurrency}、错峰 {BatchStaggerBaseMs}ms、单请求计时（保守但更快，避免触发商家限流）");
 
-                    // 节拍器负责「启动有间隔」，MaxDegreeOfParallelism 负责「同时最多 4 条在跑」。
+                    // 节拍器负责「启动有间隔」，MaxDegreeOfParallelism 负责「同时最多 BatchMaxConcurrency（10）条在跑」。
                     // 两者都接收 ict：取消时 Task.Delay/WaitAsync 立即抛出，不会卡住整批。
                     var startGate = new BatchStartGate();
                     await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
                         new ParallelOptions
                         {
-                            CancellationToken = ct,
+                            CancellationToken = batchToken,
                             MaxDegreeOfParallelism = BatchMaxConcurrency,
                         },
                         async (i, ict) =>
@@ -338,6 +354,7 @@ public static class RealDelayTester
                             batchResult[i] = await PingViaSocksAsync(ports[i], timeoutMs, ict);
                             result[xrayNodes[i]] = batchResult[i];
                             reported[xrayNodes[i]] = 0;
+                            // 每个节点测完立即回调（上层按节点更新进度；「每 10 个」只是上层刷页脚文本的节流）。
                             onResult?.Invoke(xrayNodes[i], batchResult[i]);
                             Interlocked.Increment(ref done);
                         });
@@ -352,7 +369,9 @@ public static class RealDelayTester
                     var checkedCount = 0;
                     // 提到 try 外：预算耗尽分支要打「已复核 N/候选数」的日志。
                     var candidates = new List<int>();
-                    // ★ 2026-10-22 总预算 10s：否则 3 个都打满 8s 超时最坏要 24.6s。
+                    // ★ 2026-10-23 复核改为**并发**：前 3 名同时各打一次 x.com（各自独立 socks 端口），
+                    //   任一成功立即返回、不再等其余；全部失败则等全部结束。
+                    //   总预算 6s 只作兜底（单次 4s，正常最多等约 4s）。
                     //   用 linked CTS：外部取消（用户点停止）仍原样抛出；预算耗尽只停掉剩余候选，
                     //   已完成的「可用/不可用」结论照用（不把未复核节点误判成不可用）。
                     using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -366,18 +385,48 @@ public static class RealDelayTester
                             .OrderBy(i => batchResult[i])
                             .Take(AvailabilityRecheckTop)
                             .ToList();
-                        Log($"可用性复核 {candidates.Count} 个，避免选到延迟低但用不了的节点" +
-                            $"（串行、间隔 {AvailabilityRecheckGapMs}ms、单次超时 {AvailabilityRecheckTimeoutMs}ms、总预算 {AvailabilityRecheckBudgetSeconds}s）");
-                        for (var k = 0; k < candidates.Count; k++)
+                        Log($"可用性复核 {candidates.Count} 个（并发），避免选到延迟低但用不了的节点" +
+                            $"（单次超时 {AvailabilityRecheckTimeoutMs}ms、总预算 {AvailabilityRecheckBudgetSeconds}s）");
+                        if (candidates.Count > 0)
                         {
-                            // 用户取消优先按原语义抛给上层；预算耗尽走下面的 catch。
-                            ct.ThrowIfCancellationRequested();
-                            var i = candidates[k];
-                            var ok = await IsUsableViaSocksAsync(ports[i], budgetToken);
-                            checkedCount++;
-                            if (ok) usable.Add(xrayNodes[i]);
-                            Log($"可用性复核：「{xrayNodes[i].Name}」（{batchResult[i]} ms）→ {(ok ? "可用" : "不可用")}");
-                            if (k < candidates.Count - 1) await Task.Delay(AvailabilityRecheckGapMs, budgetToken);
+                            // 每个候选用自己的 socks 端口并发发请求（本来就是独立连接）；
+                            // recheckCts 用于「任一成功即取消其余」。
+                            using var recheckCts = CancellationTokenSource.CreateLinkedTokenSource(budgetToken);
+                            var pending = new List<Task<(int Index, bool Ok)>>();
+                            async Task<(int Index, bool Ok)> ProbeOneAsync(int index, CancellationToken token)
+                            {
+                                var ok = await IsUsableViaSocksAsync(ports[index], token).ConfigureAwait(false);
+                                return (index, ok);
+                            }
+                            try
+                            {
+                                foreach (var i in candidates) pending.Add(ProbeOneAsync(i, recheckCts.Token));
+                                while (pending.Count > 0)
+                                {
+                                    await Task.WhenAny(pending);
+                                    var finished = pending.First(t => t.IsCompleted);
+                                    pending.Remove(finished);
+                                    var (i, ok) = await finished;
+                                    checkedCount++;
+                                    if (ok) usable.Add(xrayNodes[i]);
+                                    Log($"可用性复核：「{xrayNodes[i].Name}」（{batchResult[i]} ms）→ {(ok ? "可用" : "不可用")}");
+                                    if (ok)
+                                    {
+                                        // 任一成功就够判定「有可用节点」：不等其余候选，取消在飞请求后返回。
+                                        recheckCts.Cancel();
+                                        break;
+                                    }
+                                }
+                            }
+                            finally
+                            {
+                                // 成功提前退出/预算耗尽/用户取消时，把仍在飞的请求取消并收尾，避免未观察异常。
+                                if (pending.Count > 0)
+                                {
+                                    recheckCts.Cancel();
+                                    try { await Task.WhenAll(pending); } catch { }
+                                }
+                            }
                         }
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -398,7 +447,13 @@ public static class RealDelayTester
                     onUsableChecked?.Invoke(usable);
                 }
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException)
+            {
+                // ★ 2026-10-23 总预算耗尽：不向上抛，剩余节点按「超时(-1)」处理。
+                //   日志与 onResult(-1) 在方法末尾统一补（那里能覆盖 sb 节点，也能准确统计剩余数）。
+                budgetExpired = true;
+            }
             //   被静默吞掉，随后 batchResult 的 -1 初值被当成「确定超时」写进结果，
             //   界面于是把「本机故障」显示成满屏节点「超时」，且日志里零痕迹。
             //   现在：留 Error 痕 + 标记本批为「本机失败」，不再冒充测速结果。
@@ -425,17 +480,41 @@ public static class RealDelayTester
             }
         }
 
-        if (sbNodes.Count > 0)
+        if (sbNodes.Count > 0 && !budgetExpired)
         {
-            await Parallel.ForEachAsync(sbNodes,
-                new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = 4 },
-                async (n, ict) =>
-                {
-                    var ms = await RealPingAsync(n, runtimeDir, timeoutMs, ict);
-                    result[n] = ms;
-                    onResult?.Invoke(n, ms);
-                    Interlocked.Increment(ref done);
-                });
+            try
+            {
+                await Parallel.ForEachAsync(sbNodes,
+                    new ParallelOptions { CancellationToken = batchToken, MaxDegreeOfParallelism = 4 },
+                    async (n, ict) =>
+                    {
+                        var ms = await RealPingAsync(n, runtimeDir, timeoutMs, ict);
+                        result[n] = ms;
+                        reported[n] = 0;
+                        onResult?.Invoke(n, ms);
+                        Interlocked.Increment(ref done);
+                    });
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException)
+            {
+                // 总预算在 sb 阶段耗尽：同样停止剩余节点，交给末尾统一补 -1 + 日志。
+                budgetExpired = true;
+            }
+        }
+
+        if (budgetExpired)
+        {
+            // ★ 2026-10-23 总预算耗尽：停止剩余探测后，对所有还没出结果的节点补一次 onResult(-1)，
+            //   保证 UI 不会停在半路（-1 = 超时，上层会据此显示超时并允许下次重测）。
+            var remaining = valid.Where(n => !reported.ContainsKey(n)).ToList();
+            Log($"真连测速超出 {budgetSeconds}s 预算，剩余 {remaining.Count} 个未测（按超时处理）");
+            foreach (var n in remaining)
+            {
+                result[n] = -1;
+                reported[n] = 0;
+                onResult?.Invoke(n, -1);
+            }
         }
 
         return result;
@@ -454,17 +533,13 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
+            // ★ 2026-10-23 批量路径去掉「预热请求」：预热原是为了扣除建连耗时，但代价是双倍连接数；
+            //   68 节点批量测速时那会直接把商家侧连接数翻倍（容易被判扫描/限流）。
+            //   这里只发**一次计时请求**，延迟口径按「首字节时间」（包含建连 + TLS + 首包），
+            //   比预热后的纯 HTTP 往返略高，但用于「挑节点排序」足够，换来速度与更低连接数。
+            //   注意：RealPingAsync（单节点临时内核）与公开 PingViaSocksAsync 的预热逻辑保持不变。
             foreach (var url in ProbeUrls)
             {
-                // 预热：节点 TCP+TLS 握手发生在这条请求（不计入延迟口径，对齐 v2rayN——
-                // 它的计时只覆盖已建连后的 HTTP 往返，节点握手在内核后台完成）
-                try
-                {
-                    using var warm = new HttpRequestMessage(HttpMethod.Get, url);
-                    using var wr = await http.SendAsync(warm, HttpCompletionOption.ResponseHeadersRead, ct);
-                }
-                catch { /* 预热失败不影响正式计时，也不换目标：正式请求会再试 */ }
-
                 try
                 {
                     var sw = Stopwatch.StartNew();
@@ -527,9 +602,9 @@ public static class RealDelayTester
     /// 「真连测速」保守模式的启动节拍器（2026-10-22）。
     ///
     /// 与 Parallel.ForEachAsync 的 MaxDegreeOfParallelism = BatchMaxConcurrency 配合，
-    /// 保证「同时最多 4 条在跑」；本类只负责「启动有间隔」：用信号量串行分配下一次
-    /// 允许启动的时刻，相邻节点启动间隔 = BatchStaggerBaseMs ± BatchStaggerJitterMs
-    /// （150–250ms），避免整齐的机器节奏被识别成扫描。
+    /// 保证「同时最多 BatchMaxConcurrency（10）条在跑」；本类只负责「启动有间隔」：用信号量
+    /// 串行分配下一次允许启动的时刻，相邻节点启动间隔 = BatchStaggerBaseMs ± BatchStaggerJitterMs
+    /// （70–130ms），避免整齐的机器节奏被识别成扫描。
     /// 所有等待都走 CancellationToken：取消时立即抛出，不会卡住整批。
     /// </summary>
     private sealed class BatchStartGate
