@@ -45,6 +45,15 @@ public sealed class NodeItem
 
     public int RealDelay { get; set; }
 
+    /// TCP 握手延迟（毫秒）：0 = 未测，-1 = 超时，>0 = 握手毫秒。
+    /// 与 <see cref="RealDelay"/> 的区别：RealDelay 是「经代理真实请求一次」的端到端延迟
+    /// （含 DNS/TLS/代理链路），TcpDelay 只测到节点服务器的 TCP 握手，速度快、不经过代理；
+    /// 两者互不覆盖，可同时显示供参考。
+    public int TcpDelay { get; set; }
+
+    /// 最近一次 TCP 握手延迟测试的时间（本地时间）；默认值表示从未测过。
+    public DateTime TcpDelayAt { get; set; }
+
     /// 实测出口国家代码（小写 ISO，如 "jp"）。空 = 未检测/检测失败。
     /// 由「位置检测」写入，仅本进程会话有效（不落盘）。
     public string? ExitCountry { get; set; }

@@ -60,14 +60,25 @@
                 </Grid>
             </Border>
 
-            <Button x:Name="RealTestBtn" Grid.Column="1" Style="{StaticResource ToolBtnPrimary}" Click="OnRealTestClick"
-                    AutomationProperties.AutomationId="RealTestBtn"
-                    ToolTipService.ToolTip="真连接延迟：透过节点真实请求一次，反映实际使用体验（每节点约 1-8 秒；再点一次可停止）">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock x:Name="RealTestBtnText" Text="真连测速" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                <Button x:Name="RealTestBtn" Style="{StaticResource ToolBtnPrimary}" Click="OnRealTestClick"
+                        AutomationProperties.AutomationId="RealTestBtn"
+                        ToolTipService.ToolTip="真连接延迟：透过节点真实请求一次，反映实际使用体验（每节点约 1-8 秒；再点一次可停止）">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock x:Name="RealTestBtnText" Text="真连测速" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="TcpTestBtn" Style="{StaticResource ToolBtn}" Click="OnTcpTestClick"
+                        AutomationProperties.AutomationId="TcpTestBtn"
+                        ToolTipService.ToolTip="TCP 握手延迟：只测到节点服务器的 TCP 握手，不经代理、速度快（UDP 节点跳过）">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Text="快速测延迟" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
 
             <Button Grid.Column="2" Style="{StaticResource ToolBtn}" Click="OnSortClick">
                 <StackPanel Orientation="Horizontal" Spacing="7">

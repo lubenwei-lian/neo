@@ -18,6 +18,8 @@ public sealed partial class NodesPage : UserControl
     private List<NodeTile> _tiles = new();
     private NodeTile? _selected;
     private bool _realTesting;
+    /// TCP 握手延迟测试进行中（与真连测速互不干扰：两边各自判断/落值）。
+    private bool _tcpTesting;
     /// 本轮真连测速期间用户是否手动点过节点卡片 —— 点过就跳过「自动优选」，尊重用户选择。
     private bool userPickedDuringTest;
     private CancellationTokenSource? _realCts;
@@ -397,6 +399,72 @@ public sealed partial class NodesPage : UserControl
         // 没筛选时等于测全部。
         var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
         await RunBatchAsync(list, autoSelect: true);
+    }
+
+    /// <summary>
+    /// 快速测延迟（TCP 握手，照 v2rayN 的「测试延迟」）：只测到节点服务器的 TCP 握手，
+    /// 不走代理、不写 RealDelay —— 与「真连测速」的结果各存各的、互不覆盖。
+    /// </summary>
+    private async void OnTcpTestClick(object sender, RoutedEventArgs e)
+    {
+        if (_realTesting || _tcpTesting) return;   // 真连测速进行中则忽略，避免互相拖慢/干扰
+        _tcpTesting = true;
+        try { TcpTestBtn.IsEnabled = false; } catch { }
+        var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
+        if (list.Count == 0)
+        {
+            _tcpTesting = false;
+            try { TcpTestBtn.IsEnabled = true; } catch { }
+            return;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var tileByNode = list.GroupBy(t => t.Node).ToDictionary(g => g.Key, g => g.First());
+        var done = 0;
+        try
+        {
+            FootTime.Text = $"TCP 延迟测试中 0/{list.Count}…";
+            FootAvg.Text = "";
+            var result = await TcpDelayTester.TestBatchAsync(
+                list.Select(t => t.Node).ToList(),
+                concurrency: 32,
+                timeoutMs: 3000,
+                onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (App.IsShuttingDown) return;
+                    if (tileByNode.TryGetValue(node, out var tile)) tile.SetTcpResult(ms);
+                    done++;
+                    FootTime.Text = $"TCP 延迟测试中 {done}/{list.Count}…";
+                }));
+
+            // onResult 的 UI 投递可能还没落地：用返回字典兜底（相同值不重复写）。
+            foreach (var kv in result)
+            {
+                if (tileByNode.TryGetValue(kv.Key, out var tile) && tile.Node.TcpDelay != kv.Value)
+                    tile.SetTcpResult(kv.Value);
+            }
+
+            // 按 TCP 延迟重排卡片：>0 升序，0/-1 统一放最后（999999）。
+            _tiles = _tiles.OrderBy(t => t.Node.TcpDelay > 0 ? t.Node.TcpDelay : 999999).ToList();
+            ApplyFilter();
+
+            var tested = list.Count(t => t.Node.TcpDelay != 0);
+            var okCount = list.Count(t => t.Node.TcpDelay > 0);
+            FootTime.Text = $"TCP 延迟已测 {tested}/{list.Count}（耗时 {sw.Elapsed.TotalSeconds:F1} s）";
+            FootAvg.Text = okCount > 0
+                ? $"· 平均 TCP {list.Where(t => t.Node.TcpDelay > 0).Average(t => t.Node.TcpDelay):F0} ms"
+                : "";
+            LogBus.App($"TCP 延迟测试完成：{tested}/{list.Count} 已测 · {okCount} 可连 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("TCP 延迟测试失败", ex);
+        }
+        finally
+        {
+            _tcpTesting = false;
+            try { TcpTestBtn.IsEnabled = true; } catch { }
+        }
     }
 
     /// 把「节点对象 → (国家, IP)」的检测结果按稳定 NodeKey 回填到当前节点列表，

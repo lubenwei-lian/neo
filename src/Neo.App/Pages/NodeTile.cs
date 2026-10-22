@@ -23,6 +23,8 @@ public sealed class NodeTile : INotifyPropertyChanged
     private bool _locMismatch;
     private readonly string _fullInfo;
     private readonly string _metaBase = "";
+    /// 位置检测带来的信息行后缀（真实出口/不符标记）；由 RefreshLocation 维护。
+    private string _locMetaSuffix = "";
 
     public string Tooltip { get => _tooltip; private set { _tooltip = value; Raise(); } }
     public string LocText { get => _locText; private set { _locText = value; Raise(); } }
@@ -132,6 +134,37 @@ public sealed class NodeTile : INotifyPropertyChanged
 
         DelayText = "● " + text;
         DelayBrush = ThemeUtil.Get(fgKey, fgFallback);
+        RefreshMeta();   // 真连延迟变化时同步信息行里的「· 真连 N ms」
+    }
+
+    /// <summary>
+    /// 重新拼卡片信息行：地区·协议 + TCP 延迟 + 真连延迟 + 位置信息。
+    /// 顺序固定「TCP 在前、真连在后」；0（未测）不显示，-1 显示「超时」。
+    /// </summary>
+    private void RefreshMeta()
+    {
+        var meta = _metaBase;
+
+        var tcp = Node.TcpDelay;
+        if (tcp > 0) meta += $" · TCP {tcp}ms";
+        else if (tcp == -1) meta += " · TCP 超时";
+
+        var real = Node.RealDelay;
+        if (real > 0) meta += $" · 真连 {real}ms";
+        else if (real == -1) meta += " · 真连 超时";
+        else if (real == RealDelayTester.BatchFailed) meta += " · 真连 本机失败";
+
+        meta += _locMetaSuffix;
+        MetaText = meta;
+    }
+
+    /// <summary>回填 TCP 握手延迟测试结果（调用方保证在 UI 线程）。0=跳过（UDP/无效），不显示。</summary>
+    public void SetTcpResult(int ms)
+    {
+        Node.TcpDelay = ms;
+        Node.TcpDelayAt = DateTime.Now;
+        RefreshMeta();
+        LogBus.App($"TCP 延迟 {Node.Name} → " + (ms > 0 ? $"{ms} ms" : ms == -1 ? "超时" : "跳过"), "Debug");
     }
 
     public async Task<bool> TestAsync(CancellationToken ct = default)
@@ -182,14 +215,12 @@ public sealed class NodeTile : INotifyPropertyChanged
                   + (mismatch ? $"（标记为{NodeGrouper.RegionDisplay(claimed)}，不符）" : "（与标记一致）"));
 
         // 真实出口并进信息行（不额外占一行，卡片高度固定，绝不会被裁）。
-        var meta = _metaBase;
-        if (AppState.State.ShowRealIp)
-            meta += actual.Length > 0
+        _locMetaSuffix = AppState.State.ShowRealIp
+            ? actual.Length > 0
                 ? " · 实际" + NodeGrouper.RegionDisplay(actual) + (actualIp.Length > 0 ? " " + actualIp : "")
-                : " · 位置未检测";
-        else if (mismatch)
-            meta += " · 实际" + NodeGrouper.RegionDisplay(actual);
-        MetaText = meta;
+                : " · 位置未检测"
+            : mismatch ? " · 实际" + NodeGrouper.RegionDisplay(actual) : "";
+        RefreshMeta();
 
         LocText = "";
 
