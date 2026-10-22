@@ -997,6 +997,98 @@ public sealed partial class SettingsPage : UserControl
         RefreshState();
     }
 
+    /// <summary>导出用户配置（订阅/节点/规则/用量）；不含内核与分流数据。</summary>
+    private async void OnExportConfigClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            LogBus.App("导出配置：点击，准备打开保存对话框", "Debug");
+            var picker = new Windows.Storage.Pickers.FileSavePicker
+            {
+                SuggestedFileName = ConfigBackup.DefaultFileName(),
+            };
+            picker.FileTypeChoices.Add("neo 配置备份", new List<string> { ".zip" });
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance!));
+            var file = await picker.PickSaveFileAsync();
+            if (file == null) { LogBus.App("导出配置：用户取消了保存对话框", "Debug"); return; }
+            LogBus.App("导出配置：选择路径 " + file.Path, "Debug");
+            var r = ConfigBackup.Export(file.Path);
+            await ShowMessageAsync("导出配置", r.Message);
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"导出配置失败：{ex.GetType().Name} {ex.Message}", "Warning");
+            await ShowMessageAsync("导出配置", "导出失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>导入配置：校验 → 确认 → 落盘（自动留回滚副本）→ 提示重启。</summary>
+    private async void OnImportConfigClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FileOpenPicker();
+            picker.FileTypeFilter.Add(".zip");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance!));
+            var file = await picker.PickSingleFileAsync();
+            if (file == null) return;
+
+            var v = ConfigBackup.Validate(file.Path);
+            if (!v.Ok)
+            {
+                await ShowMessageAsync("导入配置", v.Message);
+                return;
+            }
+            var confirm = new ContentDialog
+            {
+                Title = "导入配置",
+                Content = "导入会覆盖当前的订阅 / 节点 / 规则 / 用量，并需要重启应用。导入前会自动留一份回滚副本。继续？",
+                PrimaryButtonText = "导入并重启",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = XamlRoot,
+            };
+            if (await Neo.App.Ui.DialogGuard.ShowAsync(confirm) != ContentDialogResult.Primary) return;
+
+            var r = ConfigBackup.Import(file.Path);
+            if (!r.Ok)
+            {
+                await ShowMessageAsync("导入配置", r.Message);
+                return;
+            }
+            var done = new ContentDialog
+            {
+                Title = "导入完成",
+                Content = r.Message,
+                PrimaryButtonText = "立即重启",
+                CloseButtonText = "稍后",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = XamlRoot,
+            };
+            if (await Neo.App.Ui.DialogGuard.ShowAsync(done) == ContentDialogResult.Primary) App.Restart();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("导入配置", "导入失败：" + ex.Message);
+        }
+    }
+
+    private async Task ShowMessageAsync(string title, string message)
+    {
+        try
+        {
+            var dlg = new ContentDialog
+            {
+                Title = title,
+                Content = message,
+                CloseButtonText = "知道了",
+                XamlRoot = XamlRoot,
+            };
+            await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
+        }
+        catch { }
+    }
+
     private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
     {
         try

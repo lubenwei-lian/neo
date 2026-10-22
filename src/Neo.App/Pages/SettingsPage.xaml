@@ -507,6 +507,16 @@
                                     ToolTipService.ToolTip="打包最近日志 + 版本信息（配置已脱敏），方便排查问题">
                                 <TextBlock Text="导出诊断" FontSize="11.5" />
                             </Button>
+                            <Button Style="{StaticResource GhostSm}" Click="OnExportConfigClick"
+                                    AutomationProperties.AutomationId="BtnExportConfig"
+                                    ToolTipService.ToolTip="把订阅/节点/规则/用量导出为 zip（不含内核与分流数据）">
+                                <TextBlock Text="导出配置" FontSize="11.5" />
+                            </Button>
+                            <Button Style="{StaticResource GhostSm}" Click="OnImportConfigClick"
+                                    AutomationProperties.AutomationId="BtnImportConfig"
+                                    ToolTipService.ToolTip="从备份 zip 恢复配置（导入后重启应用）">
+                                <TextBlock Text="导入配置" FontSize="11.5" />
+                            </Button>
                             <Button Style="{StaticResource GhostSm}" Click="OnResetSettingsClick"
                                     AutomationProperties.AutomationId="BtnResetSettings"
                                     ToolTipService.ToolTip="恢复默认设置（保留订阅/节点/窗口位置）">

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 
@@ -18,6 +19,44 @@ public partial class App : Application
     /// 转储里 stowed exception 出自一个已结束的后台线程，栈顶 WinUIGetDispatcherQueueForCurrentThread。
     /// 因此退出时先立此标志，让所有迟到的回调直接放弃，而不是去碰已销毁的队列。
     public static volatile bool IsShuttingDown;
+
+    /// <summary>释放单实例锁：重启应用前必须调，否则新进程会被旧进程的锁挡住。</summary>
+    public static void ReleaseSingleInstance()
+    {
+        try { _single?.ReleaseMutex(); } catch { }
+        try { _single?.Dispose(); } catch { }
+        _single = null;
+    }
+
+    /// <summary>
+    /// 重启应用（导入配置后生效）：断开代理 → 保存状态 → 释放单实例锁 → 延迟拉起新进程 → 退出当前进程。
+    /// 延迟是必要的：新进程启动时旧进程的 Mutex 可能还没真正释放。
+    /// </summary>
+    public static void Restart()
+    {
+        IsShuttingDown = true;
+        try { Services.ConnectionService.Disconnect("重启应用"); } catch { }
+        try { Services.AppState.Save(); } catch { }
+        var exe = Environment.ProcessPath;
+        ReleaseSingleInstance();
+        if (!string.IsNullOrEmpty(exe))
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(900);
+                try
+                {
+                    Process.Start(new ProcessStartInfo(exe)
+                    {
+                        UseShellExecute = true,
+                        WorkingDirectory = AppContext.BaseDirectory,
+                    });
+                }
+                catch { }
+            });
+        }
+        try { Current.Exit(); } catch { }
+    }
 
     /// 由 MainWindow 注册的「有序退出」入口。任何不在 MainWindow 里的退出路径
     /// （目前是 ConnectionService.RelaunchElevated 的提权重启）都必须走它，
