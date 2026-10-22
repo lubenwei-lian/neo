@@ -33,30 +33,41 @@ public partial class App : Application
     /// 重启应用（导入配置后生效）：断开代理 → 保存状态 → 释放单实例锁 → 延迟拉起新进程 → 退出当前进程。
     /// 延迟是必要的：新进程启动时旧进程的 Mutex 可能还没真正释放。
     /// </summary>
-    public static void Restart()
+    /// <param name="saveState">
+    /// 是否在退出前把内存态写回 state.json。导入配置后重启必须传 false —— 否则会把
+    /// 「导入前」的内存配置写回磁盘，覆盖刚导入的文件（实测踩到：导入 rule 备份后重启变回 global）。
+    /// </param>
+    public static void Restart(bool saveState = true)
     {
         IsShuttingDown = true;
-        try { Services.ConnectionService.Disconnect("重启应用"); } catch { }
-        try { Services.AppState.Save(); } catch { }
+        try { Services.LogBus.App("应用重启：断开代理", "Info"); Services.ConnectionService.Disconnect("重启应用"); } catch { }
+        if (saveState)
+        {
+            try { Services.AppState.Save(); } catch { }
+        }
         var exe = Environment.ProcessPath;
+        try { Services.LogBus.App($"应用重启：exe={exe}，释放单实例锁", "Info"); } catch { }
         ReleaseSingleInstance();
         if (!string.IsNullOrEmpty(exe))
         {
-            _ = Task.Run(async () =>
+            // 必须**同步**拉起新进程再退出：之前用 Task.Run + 900ms 延迟，
+            // 结果 Current.Exit() 直接把进程结束掉，延迟任务还没跑就被杀了 →
+            // 用户点「立即重启」后应用直接消失（实测踩到）。单实例锁已在上一步释放，同步启动安全。
+            try
             {
-                await Task.Delay(900);
-                try
+                Process.Start(new ProcessStartInfo(exe)
                 {
-                    Process.Start(new ProcessStartInfo(exe)
-                    {
-                        UseShellExecute = true,
-                        WorkingDirectory = AppContext.BaseDirectory,
-                    });
-                }
-                catch { }
-            });
+                    UseShellExecute = true,
+                    WorkingDirectory = AppContext.BaseDirectory,
+                });
+                Services.LogBus.App("应用重启：新进程已拉起", "Info");
+            }
+            catch (Exception ex)
+            {
+                try { Services.LogBus.App("应用重启：拉起新进程失败 " + ex.Message, "Error"); } catch { }
+            }
         }
-        try { Current.Exit(); } catch { }
+        try { Current.Exit(); } catch (Exception ex) { try { Services.LogBus.App("应用重启：退出失败 " + ex.Message, "Error"); } catch { } }
     }
 
     /// 由 MainWindow 注册的「有序退出」入口。任何不在 MainWindow 里的退出路径

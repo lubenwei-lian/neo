@@ -1065,7 +1065,9 @@ public sealed partial class SettingsPage : UserControl
                 DefaultButton = ContentDialogButton.Primary,
                 XamlRoot = XamlRoot,
             };
-            if (await Neo.App.Ui.DialogGuard.ShowAsync(done) == ContentDialogResult.Primary) App.Restart();
+            var choice = await Neo.App.Ui.DialogGuard.ShowAsync(done);
+            LogBus.App($"导入完成对话框选择：{choice}（将重启={choice == ContentDialogResult.Primary}）", "Info");
+            if (choice == ContentDialogResult.Primary) App.Restart(saveState: false);   // 不覆盖刚导入的配置
         }
         catch (Exception ex)
         {
@@ -1089,6 +1091,19 @@ public sealed partial class SettingsPage : UserControl
         catch { }
     }
 
+    /// <summary>端口是否被占用；空闲返回 null。</summary>
+    private static int? BusyPort(int port)
+    {
+        try
+        {
+            var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            l.Start();
+            l.Stop();
+            return null;
+        }
+        catch { return port; }
+    }
+
     private async void OnApplyPortsClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button b) return;
@@ -1098,6 +1113,13 @@ public sealed partial class SettingsPage : UserControl
             if (!int.TryParse(PortSocksBox.Text.Trim(), out var socks) || !int.TryParse(PortHttpBox.Text.Trim(), out var http))
             {
                 PortHintText.Text = "端口必须是数字（1024–65535）";
+                return;
+            }
+            // 冲突预检先做（在真正应用之前）：被占用就直接提示，且不改动运行期端口。
+            var busy = BusyPort(socks) ?? BusyPort(http);
+            if (busy is int busyPort)
+            {
+                PortHintText.Text = $"端口 {busyPort} 已被其他程序占用，请换一个（可关闭占用该端口的程序后重试）";
                 return;
             }
             var err = LocalPorts.TryApply(socks, http);
