@@ -18,6 +18,8 @@ public sealed partial class NodesPage : UserControl
     private List<NodeTile> _tiles = new();
     private NodeTile? _selected;
     private bool _realTesting;
+    /// 本轮真连测速期间用户是否手动点过节点卡片 —— 点过就跳过「自动优选」，尊重用户选择。
+    private bool userPickedDuringTest;
     private CancellationTokenSource? _realCts;
     private int _lastCols;
     private DateTime _lastLayoutWidthApply = DateTime.MinValue;
@@ -159,6 +161,8 @@ public sealed partial class NodesPage : UserControl
     private void OnTileTapped(object sender, TappedRoutedEventArgs e)
     {
         if (sender is not FrameworkElement fe || fe.DataContext is not NodeTile tile) return;
+        // 测速期间用户点过任意节点卡片 → 本轮测速结束不再自动优选（尊重手动干预）。
+        userPickedDuringTest = true;
         if (ReferenceEquals(tile, _selected)) return;
         // 全表互斥：不仅灭上次点击的，还要灭"当前连接节点"的常驻高亮，否则双亮
         if (_tiles is not null)
@@ -315,7 +319,7 @@ public sealed partial class NodesPage : UserControl
             LogBus.App("补测：当前列表没有未测/失败的节点", "Debug");
             return;
         }
-        await RunBatchAsync(failed);
+        await RunBatchAsync(failed, autoSelect: false);
     }
 
     /// 筛选菜单：全部 / 只看可用 / 只看未测 / 按地区。
@@ -392,7 +396,7 @@ public sealed partial class NodesPage : UserControl
         // 优化：只测当前列表里实际显示的节点（搜索/筛选后测得更快），
         // 没筛选时等于测全部。
         var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
-        await RunBatchAsync(list);
+        await RunBatchAsync(list, autoSelect: true);
     }
 
     /// 把「节点对象 → (国家, IP)」的检测结果按稳定 NodeKey 回填到当前节点列表，
@@ -537,11 +541,12 @@ public sealed partial class NodesPage : UserControl
         }
     }
 
-    private async Task RunBatchAsync(List<NodeTile> all)
+    private async Task RunBatchAsync(List<NodeTile> all, bool autoSelect)
     {
         if (all.Count == 0) return;
         if (_realTesting) return;
         _realTesting = true;
+        userPickedDuringTest = false;   // 本轮测速的用户干预标记从零开始
         bool canceled = false;
         _realCts = new CancellationTokenSource();
         RealTestBtnText.Text = "停止";
@@ -618,6 +623,61 @@ public sealed partial class NodesPage : UserControl
         // 结束时不重建卡片（重建会整页闪一下）：只按新延迟排序后重新绑定现有卡片对象。
         _tiles = _tiles.OrderBy(t => t.RealValue <= 0 ? int.MaxValue : t.RealValue).ToList();
         ApplyFilter();
+
+        // 自动优选：测速结束后把「延迟最低的可达节点」设为当前节点。
+        //   只改当前选中节点 —— AppState.SetCurrentNode 只改选择、不重连；连接中的静默切换由 ConnectionPage 负责。
+        //   只在「全量真连测速」（autoSelect=true）时生效：补测未测/失败按钮不走自动优选。
+        //   取消测速、或测速期间用户手动点过节点时也不做（尊重用户干预）。
+        if (!canceled)
+        {
+            if (!autoSelect)
+                LogBus.App("真连测速：本次为补测，不自动切换节点", "Debug");
+            else if (userPickedDuringTest)
+                LogBus.App("真连测速：测速期间用户手动选过节点，本次跳过自动优选", "Debug");
+            else
+                AutoSelectFastestNode(all);
+        }
+
+        UpdateFooter();
+    }
+
+    /// <summary>
+    /// 真连测速结束后自动优选：从**本轮实际测到的节点**里，把 RealDelay &gt; 0 且延迟最低的设为当前节点。
+    /// 只看本轮传入的 tiles（即 RunBatchAsync 的 all），避免选中本轮没测、只有缓存延迟的节点；
+    /// 并列时取列表靠前者（LINQ OrderBy 稳定）；-1（超时）与 0（未测）都排除。
+    /// 不重连：仅改「当前选中节点」；连接中的静默切换由 ConnectionPage 自己处理。
+    /// </summary>
+    private void AutoSelectFastestNode(List<NodeTile> measured)
+    {
+        var best = measured.Select(t => t.Node).Where(n => n.RealDelay > 0).OrderBy(n => n.RealDelay).FirstOrDefault();
+        if (best == null)
+        {
+            // 没有任何可达节点：不动作，也不打错误日志（测速本身已记录 0/N 可达）。
+            return;
+        }
+
+        var cur = AppState.CurrentNode;
+        if (cur != null && string.Equals(AppState.NodeKey(cur), AppState.NodeKey(best), StringComparison.Ordinal))
+        {
+            LogBus.App($"真连测速：延迟最低节点「{best.Name}」已是当前节点，无需切换", "Debug");
+            return;
+        }
+
+        AppState.SetCurrentNode(best);
+        // 高亮只切到 best 对应的那张卡片：遍历全部 _tiles（而不只是当前筛选结果），
+        // 避免被筛掉的卡片残留旧高亮。
+        var bestKey = AppState.NodeKey(best);
+        NodeTile? bestTile = null;
+        foreach (var t in _tiles)
+        {
+            var on = string.Equals(AppState.NodeKey(t.Node), bestKey, StringComparison.Ordinal);
+            t.SetSelected(on);
+            if (on) bestTile = t;
+        }
+        // 同步内部选中态：若 best 恰好不在 _tiles（订阅刷新后对象被重建等），置 null 也比留着旧引用正确，
+        // 否则用户再点旧卡片时会因「已是 _selected」而直接 return、看起来点不动。
+        _selected = bestTile;
+        LogBus.App($"真连测速完成：已自动选择延迟最低节点「{best.Name}」（{best.RealDelay} ms）");
         UpdateFooter();
     }
 

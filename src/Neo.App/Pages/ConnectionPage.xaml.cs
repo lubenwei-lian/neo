@@ -813,26 +813,25 @@ public sealed partial class ConnectionPage : UserControl
                 isCurrent ? "\uE73E" : null,
                 async () =>
                 {
+                    // 连点/双击保护：内核正在连接（含上次切换的无感重连）时忽略后续点击，
+                    // 避免连点触发多次重连、互相踩内核进程。
+                    if (ConnectionService.IsConnecting) return;
+
                     bool wasConnected = ConnectionService.IsConnected;
-                    if (wasConnected)
-                    {
-                        var confirm = new ContentDialog
-                        {
-                            XamlRoot = this.XamlRoot,
-                            Title = "切换节点",
-                            Content = "连接中切换节点会断开重连，游戏等现有连接会掉线。确定切换吗？",
-                            PrimaryButtonText = "切换",
-                            CloseButtonText = "取消",
-                            DefaultButton = ContentDialogButton.Close,
-                        };
-                        if (await Neo.App.Ui.DialogGuard.ShowAsync(confirm) != ContentDialogResult.Primary) return;
-                    }
                     AppState.SetCurrentNode(node);
                     RefreshConnUi();
-                    if (ConnectionService.IsConnected || wasConnected)
+
+                    // 连接中切换 = 无感重连：不再弹确认框，直接换节点重连。
+                    // 无感不等于无声：INFO 日志留一句可读记录，便于用户/排障时确认确实切换过。
+                    if (wasConnected)
                     {
+                        LogBus.App($"切换节点：{node.Name}（无感重连）");
                         var (ok, err) = await ConnectionService.ConnectAsync(node);
-                        if (!ok) ConnectionFailed?.Invoke(this, err ?? "切换节点失败");
+                        if (!ok)
+                        {
+                            LogBus.App($"切换节点失败：{node.Name} — {err ?? "未知原因"}", "Warning");
+                            ConnectionFailed?.Invoke(this, err ?? "重连失败");
+                        }
                     }
                 },
                 true);

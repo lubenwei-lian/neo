@@ -23,6 +23,20 @@ public static class RealDelayTester
     }
     public const int DefaultTimeoutMs = 10000;
 
+    // ★ 2026-10-22 保守模式（用户反馈批量测速会被商家限流）：
+    //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去，且每节点还有
+    //   「预热 + 计时」两次请求 → 短时间内同一出口发出大量 TLS 连接，容易被机场判定为
+    //   异常流量。改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰
+    //   BatchStaggerBaseMs ± BatchStaggerJitterMs。三个参数集中在这里，以后单点调整即可。
+    /// <summary>批量真连测速时，同时在跑的节点探测数上限（保守值，避免触发商家限流）。</summary>
+    private const int BatchMaxConcurrency = 4;
+
+    /// <summary>相邻两个节点开始探测的基准间隔（毫秒）；实际为 200±50ms，即 150–250ms。</summary>
+    private const int BatchStaggerBaseMs = 200;
+
+    /// <summary>错峰间隔的随机抖动（±毫秒）：避免整齐的机器节奏被识别成扫描。</summary>
+    private const int BatchStaggerJitterMs = 50;
+
     private const string Target = "https://www.google.com/generate_204";
 
     /// 延迟/可用性探测的目标序列（按顺序退让，第一个成功即采用）。
@@ -269,10 +283,23 @@ public static class RealDelayTester
 
                 if (!batchFailed)
                 {
+                    // 整批开始的 INFO 日志：让人一眼看出这次是保守模式；
+                    // 每节点「预热 + 计时」两次请求是延迟口径的一部分（预热不计时），保留。
+                    Log($"真连测速：并发 {BatchMaxConcurrency}、错峰 {BatchStaggerBaseMs}ms（保守模式，避免触发商家限流）；" +
+                        "每个节点先预热再计时（成功通常共 2 次请求，延迟口径需要；目标抖动时会换目标重试）");
+
+                    // 节拍器负责「启动有间隔」，MaxDegreeOfParallelism 负责「同时最多 4 条在跑」。
+                    // 两者都接收 ict：取消时 Task.Delay/WaitAsync 立即抛出，不会卡住整批。
+                    var startGate = new BatchStartGate();
                     await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
-                        new ParallelOptions { CancellationToken = ct },
+                        new ParallelOptions
+                        {
+                            CancellationToken = ct,
+                            MaxDegreeOfParallelism = BatchMaxConcurrency,
+                        },
                         async (i, ict) =>
                         {
+                            await startGate.WaitTurnAsync(ict);
                             batchResult[i] = await PingViaSocksAsync(ports[i], timeoutMs, ict);
                             result[xrayNodes[i]] = batchResult[i];
                             reported[xrayNodes[i]] = 0;
@@ -378,6 +405,45 @@ public static class RealDelayTester
         return set.OrderBy(p => p).ToArray();
     }
 
+    /// <summary>
+    /// 「真连测速」保守模式的启动节拍器（2026-10-22）。
+    ///
+    /// 与 Parallel.ForEachAsync 的 MaxDegreeOfParallelism = BatchMaxConcurrency 配合，
+    /// 保证「同时最多 4 条在跑」；本类只负责「启动有间隔」：用信号量串行分配下一次
+    /// 允许启动的时刻，相邻节点启动间隔 = BatchStaggerBaseMs ± BatchStaggerJitterMs
+    /// （150–250ms），避免整齐的机器节奏被识别成扫描。
+    /// 所有等待都走 CancellationToken：取消时立即抛出，不会卡住整批。
+    /// </summary>
+    private sealed class BatchStartGate
+    {
+        private readonly SemaphoreSlim _turn = new(1, 1);
+        private long _nextStartTick;
+
+        public async Task WaitTurnAsync(CancellationToken ct)
+        {
+            long target;
+            await _turn.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var now = Environment.TickCount64;
+                var jitter = Random.Shared.Next(-BatchStaggerJitterMs, BatchStaggerJitterMs + 1);
+                var interval = Math.Max(0, BatchStaggerBaseMs + jitter);
+                target = Math.Max(now, _nextStartTick + interval);
+                _nextStartTick = target;
+            }
+            finally
+            {
+                _turn.Release();
+            }
+
+            var delayMs = target - Environment.TickCount64;
+            if (delayMs > 0)
+                await Task.Delay((int)delayMs, ct).ConfigureAwait(false);
+            else
+                ct.ThrowIfCancellationRequested();
+        }
+    }
+
     /// 出口位置检测：每个节点走自己的 socks 入口请求 Cloudflare trace，读出**真实出口国家**（ISO 小写）。
     /// 与批量测速同一套做法（一个临时内核 + 每节点独立 socks 端口），避免逐个起进程。
     /// 只覆盖 xray 承载的协议；hy2/tuic（sing-box）暂不参与（返回空）。
@@ -407,8 +473,14 @@ public static class RealDelayTester
                 return result;
             }
 
+            // 出口位置检测同样是「一个临时内核 + 每节点独立 socks 端口」的批量路径，
+            // 一并限制并发上限（不做 200ms 错峰：它是静默后台任务、且有 90s 总超时预算）。
             await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
-                new ParallelOptions { CancellationToken = ct },
+                new ParallelOptions
+                {
+                    CancellationToken = ct,
+                    MaxDegreeOfParallelism = BatchMaxConcurrency,
+                },
                 async (i, ict) =>
                 {
                     var (country, ip) = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, ict);
