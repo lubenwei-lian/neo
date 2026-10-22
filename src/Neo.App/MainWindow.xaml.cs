@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using Windows.UI;
+using Neo.App.Pages;
 using Neo.App.Services;
 using Neo.Core;
 using Neo.Core.Core;
@@ -114,9 +115,9 @@ public sealed partial class MainWindow : Window
         ApplyTheme(ElementTheme.Dark);
 
         // 系统主题跟随已无意义（只留暗色），故不再订阅系统主题变化。
-        PageSettings.OpenRulesRequested += (_, _) => NavigateTo("rule");
-        PageConn.OpenNodesRequested += (_, _) => NavigateTo("nodes");
-        PageConn.ConnectionFailed += (_, msg) => ShowStatusText(msg);
+        // ★ 页面惰性创建：启动只建首屏（连接页）；设置页的 OpenRulesRequested 订阅
+        //   已移入 EnsureSettingsPage()，其余页在首次导航时才创建。
+        EnsureConnPage();
         Root.Loaded += OnRootLoaded;
         App.StartupMark("Root.Loaded 已订阅");
         AppState.NodesChanged += UpdateSidebar;
@@ -296,7 +297,7 @@ public sealed partial class MainWindow : Window
 
         if (visible == _connPageVisible) return;
         _connPageVisible = visible;
-        try { PageConn?.OnWindowVisibilityChanged(visible); } catch { }
+        try { _pageConn?.OnWindowVisibilityChanged(visible); } catch { }
     }
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -325,7 +326,7 @@ public sealed partial class MainWindow : Window
         try { sender.Hide(); } catch { }
 
         _connPageVisible = false;
-        try { PageConn?.OnWindowVisibilityChanged(false); } catch { }
+        try { _pageConn?.OnWindowVisibilityChanged(false); } catch { }
 
         // 窗口隐藏后这些 UI 谁看不见，但 _coreTimer 仍每 2 秒跑：
         // UpdateCoreCard()（内含 Process.GetProcessById + 读 WorkingSet64）、
@@ -479,7 +480,7 @@ public sealed partial class MainWindow : Window
         Activate();
 
         _connPageVisible = true;
-        try { PageConn?.OnWindowVisibilityChanged(true); } catch { }
+        try { _pageConn?.OnWindowVisibilityChanged(true); } catch { }
 
         //   隐藏分支里的 Stop 一一对应）。不放在这里的话，最小化到托盘再唤回后
         //   内核卡片内存与用量卡片就再也不会刷新了。
@@ -878,6 +879,101 @@ public sealed partial class MainWindow : Window
         UpdateNavVisuals();
     }
 
+    // ================= 页面惰性创建（省内存） =================
+    // 启动时只构建首屏（连接页）；其余页在首次导航到时才 InitializeComponent 并加入
+    // PageHost，之后缓存复用、不销毁不重建（来回切页不会闪）。
+    // 注意：任何「退出/隐藏/销毁」路径都不能通过这些页面属性访问页面（会触发创建）；
+    //       这类路径统一走 _pageXxx 字段判空。
+    private ConnectionPage? _pageConn;
+    private NodesPage? _pageNodes;
+    private SubsPage? _pageSubs;
+    private SettingsPage? _pageSettings;
+    private RulePage? _pageRule;
+    private LogPage? _pageLog;
+
+    private FrameworkElement EnsurePage(string key) => key switch
+    {
+        "nodes" => EnsureNodesPage(),
+        "subs" => EnsureSubsPage(),
+        "settings" => EnsureSettingsPage(),
+        "rule" => EnsureRulePage(),
+        "log" => EnsureLogPage(),
+        _ => EnsureConnPage(),
+    };
+
+    private FrameworkElement? CreatedPage(string key) => key switch
+    {
+        "nodes" => _pageNodes,
+        "subs" => _pageSubs,
+        "settings" => _pageSettings,
+        "rule" => _pageRule,
+        "log" => _pageLog,
+        _ => _pageConn,
+    };
+
+    private ConnectionPage EnsureConnPage()
+    {
+        if (_pageConn != null) return _pageConn;
+        var p = new ConnectionPage { Visibility = Visibility.Collapsed };
+        p.OpenNodesRequested += (_, _) => NavigateTo("nodes");
+        p.ConnectionFailed += (_, msg) => ShowStatusText(msg);
+        PageHost.Children.Add(p);
+        _pageConn = p;
+        // 首屏页在窗口可见性变化之前创建，建完同步一次（默认可见 = true）。
+        try { p.OnWindowVisibilityChanged(_connPageVisible); } catch { }
+        return p;
+    }
+
+    private NodesPage EnsureNodesPage()
+    {
+        if (_pageNodes != null) return _pageNodes;
+        var p = new NodesPage { Visibility = Visibility.Collapsed };
+        PageHost.Children.Add(p);
+        _pageNodes = p;
+        return p;
+    }
+
+    private SubsPage EnsureSubsPage()
+    {
+        if (_pageSubs != null) return _pageSubs;
+        var p = new SubsPage { Visibility = Visibility.Collapsed };
+        PageHost.Children.Add(p);
+        _pageSubs = p;
+        return p;
+    }
+
+    private SettingsPage EnsureSettingsPage()
+    {
+        if (_pageSettings != null) return _pageSettings;
+        var p = new SettingsPage { Visibility = Visibility.Collapsed };
+        // 订阅点从 MainWindow 构造里挪到创建点（页面不再于启动时创建）。
+        p.OpenRulesRequested += (_, _) => NavigateTo("rule");
+        PageHost.Children.Add(p);
+        _pageSettings = p;
+        // Loaded 里还会再刷一次（幂等）；先刷一次，保证首帧状态正确。
+        try { p.RefreshFromState(); } catch { }
+        return p;
+    }
+
+    private RulePage EnsureRulePage()
+    {
+        if (_pageRule != null) return _pageRule;
+        var p = new RulePage { Visibility = Visibility.Collapsed };
+        PageHost.Children.Add(p);
+        _pageRule = p;
+        try { p.RefreshFromState(); } catch { }
+        return p;
+    }
+
+    private LogPage EnsureLogPage()
+    {
+        if (_pageLog != null) return _pageLog;
+        var p = new LogPage { Visibility = Visibility.Collapsed };
+        PageHost.Children.Add(p);
+        _pageLog = p;
+        return p;
+    }
+
     private void OnNavClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button b && b.Tag is string key &&
@@ -898,12 +994,13 @@ public sealed partial class MainWindow : Window
 
         _currentPage = page;
 
-        PageConn.Visibility = page == "conn" ? Visibility.Visible : Visibility.Collapsed;
-        PageNodes.Visibility = page == "nodes" ? Visibility.Visible : Visibility.Collapsed;
-        PageSubs.Visibility = page == "subs" ? Visibility.Visible : Visibility.Collapsed;
-        PageSettings.Visibility = page == "settings" ? Visibility.Visible : Visibility.Collapsed;
-        PageRule.Visibility = page == "rule" ? Visibility.Visible : Visibility.Collapsed;
-        PageLog.Visibility = page == "log" ? Visibility.Visible : Visibility.Collapsed;
+        // 惰性创建：首次导航到该页时才建页；已建页只切 Visibility，不销毁不重建。
+        var target = EnsurePage(page);
+        foreach (var key in _navOrder)
+        {
+            if (CreatedPage(key) is { } created)
+                created.Visibility = key == page ? Visibility.Visible : Visibility.Collapsed;
+        }
 
         PageTitleText.Text = page switch
         {
@@ -920,18 +1017,16 @@ public sealed partial class MainWindow : Window
 
         //   两页都不卸载、只在 Loaded 时读一次 state —— 切页时不重刷就会显示旧值，
         //   此时拨任一开关会把过期值写回，静默回滚另一页刚改的设置。每次切页都重刷。
-        try { PageRule.RefreshFromState(); } catch { }
-        try { PageSettings.RefreshFromState(); } catch { }
-
-        FrameworkElement? target = page switch
+        try
         {
-            "nodes" => PageNodes,
-            "subs" => PageSubs,
-            "settings" => PageSettings,
-            "rule" => PageRule,
-            "log" => PageLog,
-            _ => PageConn,
-        };
+            switch (page)
+            {
+                case "rule": EnsureRulePage().RefreshFromState(); break;
+                case "settings": EnsureSettingsPage().RefreshFromState(); break;
+            }
+        }
+        catch { }
+
         AnimatePageIn(target, _navDir);
     }
 
@@ -1125,8 +1220,13 @@ public sealed partial class MainWindow : Window
         UpdateUsageCard();
         GlassTuner.ApplyFixed();
         UpdateConnUi();
-        PageSettings.RefreshFromState();
-        PageRule.RefreshFromState();
+        // 设置页 / 规则页改为首次导航时创建，并在 EnsurePage 内刷新；这里不再预建。
+        try
+        {
+            if (_pageSettings != null) _pageSettings.RefreshFromState();
+            if (_pageRule != null) _pageRule.RefreshFromState();
+        }
+        catch { }
 
         try
         {
@@ -1305,7 +1405,7 @@ public sealed partial class MainWindow : Window
             {
                 ShowStatusText($"发现新版本 {r.LatestTag}");
                 NavigateTo("settings");
-                await PageSettings.PromptAutoUpdateAsync(r);
+                await EnsureSettingsPage().PromptAutoUpdateAsync(r);
             }
         }
         catch { }
@@ -1419,12 +1519,13 @@ public sealed partial class MainWindow : Window
         // 每一页都有自己的计时器，且它们的 Tick 都会写 XAML。
         // 之前只停了 ConnectionPage，其余（订阅页 3 秒、日志页 150ms、节点页防抖、
         // 规则页错误提示、设置页玻璃参数落盘）在 Exit 之后仍会触发 → 同类 fail-fast 风险。
-        try { PageConn?.StopTimers(); } catch { }
-        try { PageSubs?.StopTimers(); } catch { }
-        try { PageLog?.StopTimers(); } catch { }
-        try { PageNodes?.StopTimers(); } catch { }
-        try { PageRule?.StopTimers(); } catch { }
-        try { PageSettings?.StopTimers(); } catch { }
+        // 惰性创建后只对「已创建过」的页面停表；不能走页面属性（那会在退出时把页建出来）。
+        try { _pageConn?.StopTimers(); } catch { }
+        try { _pageSubs?.StopTimers(); } catch { }
+        try { _pageLog?.StopTimers(); } catch { }
+        try { _pageNodes?.StopTimers(); } catch { }
+        try { _pageRule?.StopTimers(); } catch { }
+        try { _pageSettings?.StopTimers(); } catch { }
 
         try { ConnectionService.Disconnect("程序退出"); } catch { }
         try { UsageTracker.Flush(); } catch { }

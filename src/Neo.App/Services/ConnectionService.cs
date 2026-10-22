@@ -312,6 +312,11 @@ public static class ConnectionService
             }
         }
 
+        // ---- 启动前配置预检 + 自适应 ----
+        // 写盘/启动前先用内核自己的 -test/check 验一遍：版本变化导致字段/传输被弃用时，
+        // 按「版本规则 → 去性能字段 → 最简单节点配置」逐级降级，绝不把内核拒绝的配置直接交给它。
+        json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
+
         // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
         // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
         if (useSingBox)
@@ -406,12 +411,17 @@ public static class ConnectionService
             var busyPort = FirstBusyPort();
             bool busy = busyPort != 0;
             var bootTail = KernelTailText();
+            // 已知特征映射成中文可读原因（预检通过但内核仍退出时，多半是运行期/传输/字段问题）。
+            var bootHint = KernelCompat.DescribeStartupFailure(bootTail);
             LogBus.App(busy
                 ? $"内核启动失败：本地端口 {busyPort} 被占用（残留内核已尝试清理，请重试）"
-                : "内核启动后立即退出（配置或参数错误）" + (bootTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{bootTail}" : ""), "Error");
+                : "内核启动后立即退出（配置或参数错误）"
+                  + (bootHint.Length > 0 ? "；已知特征：" + bootHint : "")
+                  + (bootTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{bootTail}" : ""), "Error");
             var failMsg = busy
                 ? "内核启动失败：本地端口 " + busyPort + " 被占用（残留内核已尝试清理，请重试）"
-                : "内核启动后立即退出（配置或参数错误，详见内核日志）";
+                : "内核启动后立即退出（配置或参数错误，详见内核日志）"
+                  + (bootHint.Length > 0 ? "（" + bootHint + "）" : "");
             IncidentLog.Record("error", failMsg, bootTail);
             return (false, failMsg);
         }
@@ -454,6 +464,192 @@ public static class ConnectionService
             //   否则一次失败会把门永久占住，此后所有连接请求都被拒。
             try { SessionGate.Release(); } catch { }
             NotifyStateChanged();
+        }
+    }
+
+    // ---- 启动前配置预检 + 自适应 ----
+    // 背景：内核版本变化会移除旧字段/传输；此前没有预检，被拒只能表现为「内核启动后立即退出」。
+    // 流程：预检 → 版本规则适配 → 去性能字段 → 最简单节点配置，每级都留痕（LogBus + IncidentLog）。
+    // 预检本身跑不起来（缺 exe / 超时）不阻断连接。
+
+    private static async Task<string> EnsureCompatibleConfigAsync(string json, NodeItem node, bool useSingBox)
+    {
+        var kind = useSingBox ? KernelKind.SingBox : KernelKind.Xray;
+        var coreName = useSingBox ? "sing-box" : "xray";
+        var exe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
+        var tmp = Path.Combine(Path.GetTempPath(), $"neo-preflight-{Environment.ProcessId}-{DateTime.Now:HHmmssfff}.json");
+        var current = json;
+        var lastStderr = "";
+        try
+        {
+            // 版本取自既有缓存探测；失败则只跳过「版本规则」这一级，预检照跑。
+            Version? ver = null;
+            try
+            {
+                var txt = await Task.Run(() => useSingBox ? SingBoxVersion : XrayVersion);
+                if (!string.IsNullOrWhiteSpace(txt)) ver = KernelCompat.ParseVersion(txt, kind);
+            }
+            catch { }
+
+            File.WriteAllText(tmp, current);
+            var r0 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+            if (r0.Ok)
+            {
+                if (ver != null)
+                {
+                    // 通过时只记录版本注记（不改配置），例如 xray 26 仍支持但弃用 ws 的提示。
+                    KernelCompat.Adapt(current, kind, ver, out var okNotes);
+                    foreach (var n in okNotes)
+                        if (n.StartsWith("版本提示：", StringComparison.Ordinal)) LogBus.App(n, "Debug");
+                }
+                LogBus.App($"配置预检通过（{coreName}）", "Debug");
+                return current;
+            }
+            if (r0.InfraFailed)
+            {
+                LogBus.App($"配置预检无法执行（不阻断连接）：{r0.Output}", "Warning");
+                return current;
+            }
+            lastStderr = r0.Output;
+            RecordPreflightFailure("配置预检失败", r0.Output);
+
+            // 第 1 级：按内核版本规则适配（sing-box 1.16 DNS 字段 / xray 传输注记）
+            if (ver != null)
+            {
+                var adapted = KernelCompat.Adapt(current, kind, ver, out var notes);
+                LogAdaptNotes(notes);
+                if (!string.Equals(adapted, current, StringComparison.Ordinal))
+                {
+                    File.WriteAllText(tmp, adapted);
+                    var r1 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+                    if (r1.Ok)
+                    {
+                        RecordAdaptation($"按内核版本 {ver} 适配后预检通过（{coreName}）");
+                        return adapted;
+                    }
+                    if (r1.InfraFailed)
+                    {
+                        LogBus.App($"配置预检无法执行（不阻断连接）：{r1.Output}", "Warning");
+                        return adapted;
+                    }
+                    lastStderr = r1.Output;
+                    RecordPreflightFailure("版本规则适配后预检仍失败", r1.Output);
+                    current = adapted;
+                }
+            }
+
+            // 第 2 级：去掉性能向可选字段（sockopt / observatory / mux 等）
+            var stripped = KernelCompat.StripOptionalFields(current, kind, out var stripNotes);
+            if (!string.Equals(stripped, current, StringComparison.Ordinal))
+            {
+                LogAdaptNotes(stripNotes);
+                File.WriteAllText(tmp, stripped);
+                var r2 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+                if (r2.Ok)
+                {
+                    RecordAdaptation($"去掉性能向可选字段后预检通过（{coreName}）");
+                    return stripped;
+                }
+                if (r2.InfraFailed)
+                {
+                    LogBus.App($"配置预检无法执行（不阻断连接）：{r2.Output}", "Warning");
+                    return stripped;
+                }
+                lastStderr = r2.Output;
+                RecordPreflightFailure("去掉性能向可选字段后预检仍失败", r2.Output);
+                current = stripped;
+            }
+
+            // 第 3 级：退回最简单节点配置（不链式、不分流、无自定义规则）
+            var minimal = BuildMinimalConfig(node, useSingBox);
+            if (minimal != null)
+            {
+                File.WriteAllText(tmp, minimal);
+                var r3 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+                if (r3.Ok)
+                {
+                    RecordAdaptation($"已退回最简单节点配置并通过预检（{coreName}）");
+                    return minimal;
+                }
+                if (r3.InfraFailed)
+                {
+                    LogBus.App($"配置预检无法执行（不阻断连接）：{r3.Output}", "Warning");
+                    return minimal;
+                }
+                lastStderr = r3.Output;
+                RecordPreflightFailure("最简单节点配置预检仍失败", r3.Output);
+                current = minimal;
+            }
+
+            var lines = KernelCompat.FirstLines(lastStderr, 3);
+            LogBus.App($"配置预检在逐级降级后仍失败（{coreName}），将按最后一份配置尝试启动：{lines}", "Error");
+            IncidentLog.Record("compat", "配置预检逐级降级后仍失败，仍尝试启动", lines);
+            return current;
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"配置预检异常（不阻断连接）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+            return json;
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+        }
+    }
+
+    /// <summary>预检失败留痕：LogBus + IncidentLog("compat", 原因, 原始 stderr 前 3 行)。</summary>
+    private static void RecordPreflightFailure(string summary, string output)
+    {
+        var lines = KernelCompat.FirstLines(output, 3);
+        LogBus.App($"{summary}：{lines}", "Warning");
+        IncidentLog.Record("compat", summary, lines);
+    }
+
+    /// <summary>KernelCompat 注记写日志：改动类写「已自适应：…」+ IncidentLog；版本提示只记 Debug。</summary>
+    private static void LogAdaptNotes(List<string> notes)
+    {
+        foreach (var n in notes)
+        {
+            if (string.IsNullOrWhiteSpace(n)) continue;
+            if (n.StartsWith("版本提示：", StringComparison.Ordinal))
+                LogBus.App(n, "Debug");
+            else
+                RecordAdaptation(n);
+        }
+    }
+
+    private static void RecordAdaptation(string detail)
+    {
+        LogBus.App($"已自适应：{detail}", "Warning");
+        IncidentLog.Record("compat", "已自适应：" + detail);
+    }
+
+    /// <summary>最后一级降级：构造最简单的单节点配置（global 分流、无自定义规则、错误级日志）。</summary>
+    private static string? BuildMinimalConfig(NodeItem node, bool useSingBox)
+    {
+        try
+        {
+            // 最简单配置不含固定出口链路；若之前已按固定出口生成过配置，这里要把状态复位，避免日志/界面虚报。
+            FixedExitActive = false;
+            FixedExitEntries = 0;
+            FixedExitName = null;
+
+            const string dns = "223.5.5.5";
+            if (useSingBox)
+            {
+                return AppState.State.UseTun
+                    ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        "global", false, false, false, false, null, "error", dns)
+                    : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        "global", false, false, false, false, null, "error", dns);
+            }
+            return XrayConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                "global", false, false, false, false, null, "error", dns);
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"构造最简单节点配置失败：{ex.GetType().Name} {ex.Message}", "Warning");
+            return null;
         }
     }
 

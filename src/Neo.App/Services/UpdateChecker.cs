@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
+using Neo.Core.Core;
 
 namespace Neo.App.Services;
 
@@ -219,6 +220,10 @@ public static class UpdateChecker
             if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
                 return (false, $"新内核自校验不符（期望 {rel.Version}），安装中止，未改动现有文件。");
 
+            progress("用当前配置预检新内核…");
+            var preflight = await PreflightWithCurrentConfigAsync(newExe, KernelKind.Xray, ct);
+            if (!preflight.Ok) return (false, preflight.Message);
+
             if (ConnectionService.IsConnected)
             {
                 progress("断开当前连接（内核文件被占用）…");
@@ -249,6 +254,54 @@ public static class UpdateChecker
         catch (Exception ex)
         {
             return (false, "安装失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 安装内核前用「当前配置」预检新 exe：跑一次 `xray run -test` / `sing-box check`。
+    /// 当前没有 config.json、或它不是该内核的配置、或预检本身跑不起来（超时/缺 exe）→ 不阻断安装，只记 Warning。
+    /// 预检明确失败（配置被新内核拒绝）→ 中止安装并保留旧内核。
+    /// </summary>
+    private static async Task<(bool Ok, string Message)> PreflightWithCurrentConfigAsync(string newExe, KernelKind kind, CancellationToken ct)
+    {
+        var kindName = kind == KernelKind.Xray ? "xray" : "sing-box";
+        try
+        {
+            var cfgPath = Path.Combine(Neo.Core.NeoPaths.DataDir, "config.json");
+            if (!File.Exists(cfgPath))
+            {
+                LogBus.App($"新内核预检：当前没有 config.json，跳过（{kindName}）", "Debug");
+                return (true, "");
+            }
+            var cfgText = File.ReadAllText(cfgPath);
+            if (!KernelCompat.LooksLikeConfig(cfgText, kind))
+            {
+                LogBus.App($"新内核预检：当前 config.json 不是 {kindName} 的配置，跳过", "Debug");
+                return (true, "");
+            }
+
+            var r = await Task.Run(() => KernelCompat.RunCheck(newExe, kind, cfgPath, 8000), ct);
+            if (r.Ok)
+            {
+                LogBus.App($"新内核预检通过：当前配置可被新 {kindName} 接受", "Debug");
+                return (true, "");
+            }
+            if (r.InfraFailed)
+            {
+                LogBus.App($"新内核预检无法执行（不阻断安装）：{r.Output}", "Warning");
+                return (true, "");
+            }
+
+            var lines = KernelCompat.FirstLines(r.Output, 3);
+            LogBus.App($"新内核预检失败，已中止安装（保留旧内核）：{lines}", "Error");
+            IncidentLog.Record("compat", $"新 {kindName} 内核预检失败，已保留旧内核", lines);
+            return (false, $"新内核无法通过当前配置的预检，已中止安装并保留旧内核。\n\n{lines}");
+        }
+        catch (OperationCanceledException) { return (true, ""); }
+        catch (Exception ex)
+        {
+            LogBus.App($"新内核预检异常（不阻断安装）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+            return (true, "");
         }
     }
 
@@ -357,6 +410,10 @@ public static class UpdateChecker
             var verOut = RunSingBoxVersion(newExe);
             if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
                 return (false, $"新内核自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
+
+            progress("用当前配置预检新内核…");
+            var preflight2 = await PreflightWithCurrentConfigAsync(newExe, KernelKind.SingBox, ct);
+            if (!preflight2.Ok) return (false, preflight2.Message);
 
             if (ConnectionService.IsConnected)
             {

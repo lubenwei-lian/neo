@@ -239,14 +239,9 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0">
-                        <pages:ConnectionPage x:Name="PageConn" />
-                        <pages:NodesPage x:Name="PageNodes" Visibility="Collapsed" />
-                        <pages:SubsPage x:Name="PageSubs" Visibility="Collapsed" />
-                        <pages:SettingsPage x:Name="PageSettings" Visibility="Collapsed" />
-                        <pages:RulePage x:Name="PageRule" Visibility="Collapsed" />
-                        <pages:LogPage x:Name="PageLog" Visibility="Collapsed" />
-                    </Grid>
+                    <!-- ★ 页面惰性创建（省内存）：此处只留承载格；页面在首次导航时由
+                         MainWindow.EnsurePage(...) 创建并加入，之后缓存复用、不销毁不重建。 -->
+                    <Grid x:Name="PageHost" Grid.Row="0" />
 
                     <Border x:Name="StatusToast" Style="{StaticResource NeoPill}" HorizontalAlignment="Right"
                             VerticalAlignment="Top" Margin="0,0,2,0" Visibility="Collapsed"
