@@ -614,6 +614,27 @@ public static class AppState
 
     private static readonly SemaphoreSlim SubRefreshGate = new(1, 1);
 
+    /// 商家在「设备超限 / 链接被重置」时会返回占位节点：
+    ///   server=127.0.0.1:6666，名字里写「使用的设备过多 / 请去官网获取新订阅链接」。
+    /// 如果照常写进缓存，就会把用户原来能用的 68 个节点覆盖成 3 个本机假节点 —— 直接连不上。
+    /// 因此这里必须识别并拒绝覆盖，提示用户去商家处理。
+    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes)
+    {
+        if (nodes.Count == 0) return false;
+        var hints = new[] { "设备过多", "请去官网", "获取新订阅", "使用说明" };
+        var local = 0;
+        foreach (var n in nodes)
+        {
+            if (n.Server is "127.0.0.1" or "::1" or "localhost") local++;
+            foreach (var h in hints)
+                if ((n.Name ?? "").Contains(h, StringComparison.Ordinal)) return true;
+        }
+        return local == nodes.Count;
+    }
+
+    private const string ProviderPlaceholderMessage =
+        "订阅返回的是商家占位节点（常见原因：设备数量超限 / 订阅链接被重置）。已保留原有节点；请到商家官网获取新订阅链接，或释放其他设备的占用后重试。";
+
     public static async Task<(bool Ok, string? Error)> RefreshSubscriptionAsync()
     {
         //   本方法有**三个触发点**且都无互斥：
@@ -642,6 +663,13 @@ public static class AppState
             var r = await SubscriptionFetcher.FetchAsync(sub.Url);
             if (r.Success)
             {
+                if (IsProviderPlaceholder(r.Nodes))
+                {
+                    LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
+                    IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
+                    errors.Add($"{sub.Name}：{ProviderPlaceholderMessage}");
+                    continue;
+                }
                 cache[sub.Id] = r.RawText ?? "";
                 sub.NodeCount = r.Nodes.Count;
                 sub.TrafficInfo = r.TrafficInfo;
@@ -682,6 +710,12 @@ public static class AppState
 
         var r = await SubscriptionFetcher.FetchAsync(sub.Url);
         if (!r.Success) return (false, r.Error);
+        if (IsProviderPlaceholder(r.Nodes))
+        {
+            LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
+            IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
+            return (false, ProviderPlaceholderMessage);
+        }
 
         var cache = LoadSubCache();
         cache[sub.Id] = r.RawText ?? "";

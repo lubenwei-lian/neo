@@ -347,7 +347,7 @@ public sealed partial class SettingsPage : UserControl
             LogBus.App("固定出口：入口使用全部可用节点");
             await ReloadForFixedExitAsync();
         });
-        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路");
+        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路；上限 12 条（太多容易被商家限制）");
         ShowListBelow(_fixedExitEntryList, sender, FixedExitEntryBox);
     }
 
