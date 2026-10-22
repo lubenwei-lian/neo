@@ -56,6 +56,12 @@ public static class SystemProxy
     /// <summary>本进程是否真的把系统代理改成了 neo 的值（用于 Disable 的兜底判断）。</summary>
     private static bool _tookOver;
 
+    /// <summary>
+    /// 系统代理的绕过清单：本机/内网不走代理（比只依赖内核分流更早生效——拿到域名的应用
+    /// 连 DNS 都不需要出系统代理）。与上游客户端的 &lt;local&gt; + 私网段写法一致。
+    /// </summary>
+    private const string ProxyBypass = @"<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*;100.*";
+
     public static bool Enable(string server)
     {
         try
@@ -66,6 +72,11 @@ public static class SystemProxy
             if (k == null) return false;
             k.SetValue("ProxyEnable", 1, RegistryValueKind.DWord);
             k.SetValue("ProxyServer", server, RegistryValueKind.String);
+            // 补绕过清单：内网/本机直连（此前完全没写 ProxyOverride，内网请求也会打到内核）。
+            k.SetValue("ProxyOverride", ProxyBypass, RegistryValueKind.String);
+            // PAC 优先级高于 ProxyServer：用户原来设了 AutoConfigURL 时必须先摘掉，
+            // 否则看起来"开了系统代理"实际走的还是旧 PAC（断开时会由快照还原）。
+            try { k.DeleteValue("AutoConfigURL", false); } catch { }
             _tookOver = true;
             Notify();
             return true;

@@ -77,15 +77,23 @@ public sealed partial class NodesPage : UserControl
     /// </summary>
     public void ReleaseTiles()
     {
+        // 只清 ItemsSource 没用：本页 _tiles 还持有全部 NodeTile，且订阅刷新会立刻重建列表。
+        // 必须同时清 _tiles 并在释放期间忽略 NodesChanged，才能真正把卡片树交出去。
+        _tilesReleased = true;
         try { NodeList.ItemsSource = null; } catch { }
+        try { _tiles = new List<NodeTile>(); } catch { }
     }
+
+    /// 释放期间忽略「节点列表变化」导致的自动重建（否则后台刷新一跑就白释放了）。
+    private bool _tilesReleased;
 
     /// <summary>回到节点页时若卡片树已被释放则重建（幂等）。</summary>
     public void EnsureTiles()
     {
         try
         {
-            if (NodeList.ItemsSource == null) RebuildList();
+            _tilesReleased = false;
+            if (NodeList.ItemsSource == null || _tiles.Count == 0) RebuildList();
         }
         catch { }
     }
@@ -133,6 +141,9 @@ public sealed partial class NodesPage : UserControl
     private void RebuildList()
     {
         if (_realTesting) return;
+        // 空闲释放期间不重建（后台订阅刷新会频繁触发 NodesChanged），
+        // 等用户回到节点页时 EnsureTiles 再统一重建。
+        if (_tilesReleased && Visibility != Visibility.Visible) return;
 
         var nodes = AppState.Nodes
             .OrderBy(n => n.RealDelay <= 0 ? int.MaxValue : n.RealDelay)
