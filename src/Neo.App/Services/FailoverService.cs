@@ -464,9 +464,16 @@ public static class FailoverService
             }
 
             var current = AppState.CurrentNode;
+            // ★ 2026-10-23：优先切到「xray 能承载的 TCP 节点」（vless/vmess/trojan/ss）。
+            //   原因：校园网/手机热点对 **UDP 流量（hysteria2 / TUIC）限速极严** —— 同一时刻实测
+            //   hy2 台北节点下载 0.3 MB/s，而 vless TCP 节点 2.5–3.9 MB/s（相差 8–10 倍），
+            //   表现为「能开网页但速度连 1MB/s 都上不去」。故障转移原先只按延迟排序，
+            //   hy2 节点延迟好看（UDP 握手快）就容易被选中，用户于是长期跑在限速的 UDP 上。
+            //   这里把 UDP 类节点排到 TCP 类节点之后，仅在没有任何可用 TCP 节点时才会退给它。
             var candidates = AppState.Nodes
                 .Where(n => !SameNode(n, current))
-                .OrderBy(n => n.RealDelay > 0 ? n.RealDelay : (n.RealDelay == 0 ? 100_000 : 200_000))
+                .OrderBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC ? 1 : 0)
+                .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : (n.RealDelay == 0 ? 100_000 : 200_000))
                 .ToList();
 
             _failStreak = 0;
