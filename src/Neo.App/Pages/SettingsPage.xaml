@@ -594,7 +594,7 @@
                     <Grid MinHeight="44" Padding="0,9">
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock Text="自动检查更新" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="每天在设定时间之后自动检查一次（经当前代理）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                            <TextBlock Text="启动后与运行中每 6 小时检查一次（可关闭）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>
                         <ToggleSwitch
                             x:Name="SwitchAutoCheckUpdate"
@@ -605,15 +605,6 @@
                             OffContent=""
                             Toggled="OnAutoCheckUpdateToggled"
                         />
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="检查时间" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="每天到这个时间点后自动检查" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
-                        </StackPanel>
-                        <TimePicker x:Name="UpdateTimePicker" HorizontalAlignment="Right" VerticalAlignment="Center" ClockIdentifier="24HourClock" TimeChanged="OnUpdateTimeChanged" />
                     </Grid>
                 </StackPanel>
             </ui:CoolGlassCard>

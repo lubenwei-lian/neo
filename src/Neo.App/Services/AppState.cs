@@ -112,8 +112,6 @@ public static class AppState
 
         public bool AutoCheckUpdate { get; set; } = true;
 
-        public string UpdateCheckTime { get; set; } = "12:00";
-
         public long LastUpdateCheckUnix { get; set; }
         public List<RouteRule> CustomRules { get; set; } = new();
 

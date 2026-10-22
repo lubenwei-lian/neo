@@ -319,41 +319,6 @@ public sealed partial class SettingsPage : UserControl
         UpdateStatusText.Text = $"发现{(isNewBuild ? "同版本新构建" : "新版本")} {info.LatestTag}（当前 {AppUpdateService.CurrentVersion}）";
     }
 
-    // B方案：自动检查发现新版本时弹公告对话框，展示更新说明并允许直接下载更新。
-    // 这是**后台自动**触发的弹窗（30 分钟定时器），必须用 TryShowAsync 而非排队：
-    // 用户此刻可能正开着别的对话框（添加订阅 / 切换节点确认…），若排队就会在用户
-    // 处理完手头的事之后突然冒出一个更新公告，观感很突兀；直接跳过更合适 ——
-    // NotifyUpdateAvailable 已经让设置页显示出「发现新版本」和下载按钮，用户主动去点即可。
-    public async Task PromptAutoUpdateAsync(AppUpdateService.UpdateInfo info)
-    {
-        NotifyUpdateAvailable(info);
-        var notes = (info.Notes ?? "").Trim();
-        if (notes.Length > 600) notes = notes[..600] + "…";
-        var extra = string.IsNullOrEmpty(notes) ? "" : $"\n\n更新说明：\n{notes}";
-        var dlg = new ContentDialog
-        {
-            Title = (info.Notes ?? "").Contains("新构建", StringComparison.Ordinal) ? "发现新构建" : "发现新版本",
-            Content = new TextBlock
-            {
-                Text = $"neo {info.LatestTag} 已发布（当前 {AppUpdateService.CurrentVersion}）。{extra}",
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 12.5,
-            },
-            PrimaryButtonText = "下载并更新",
-            CloseButtonText = "稍后",
-            DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = XamlRoot,
-        };
-        var (shown, result) = await Neo.App.Ui.DialogGuard.TryShowAsync(dlg);
-        if (!shown)
-        {
-            // 已有对话框打开：不打断用户。设置页已显示新版本提示，用户可自行点下载。
-            LogBus.App($"发现新版本 {info.LatestTag}，但当前有对话框打开，已在设置页提示（未弹窗）");
-            return;
-        }
-        if (result == ContentDialogResult.Primary)
-            await StartUpdateDownloadAsync();
-    }
 
     private void RefreshUpdateStatusHint()
     {
@@ -408,11 +373,10 @@ public sealed partial class SettingsPage : UserControl
 
             if (!r.Ok)
             {
+                // AppUpdateService.CheckAsync 已按「网络不可达 / 无发布资产 / 解析失败」给出可执行建议。
                 UpdateStatusText.Text = "检查失败";
                 await ShowSettingsInfo("检查更新",
-                    $"无法连接 GitHub（{r.Error}）。\n\n" +
-                    "已自动尝试「当前代理 → 系统代理 → 直连」三条路径。\n" +
-                    "若三条都不通，请检查代理是否可用，或稍后重试。");
+                    string.IsNullOrWhiteSpace(r.Error) ? "检查更新失败，请稍后重试。" : r.Error);
                 return;
             }
 
@@ -482,6 +446,7 @@ public sealed partial class SettingsPage : UserControl
                         prog.Value = p;
                     }),
                     expectedSize: u.AssetSize,
+                    expectedSha256: u.Sha256,
                     ct: cts.Token));
             }
             catch (OperationCanceledException) { }
@@ -507,7 +472,9 @@ public sealed partial class SettingsPage : UserControl
 
             if (path == null)
             {
-                await ShowSettingsInfo("下载失败", "无法下载更新包。\n\n直连不通时请先开启代理，然后再重试。");
+                await ShowSettingsInfo("下载失败",
+                    "无法下载更新包（网络不可达，或内容校验未通过）。\n\n" +
+                    "直连不通时请先开启代理后重试；若反复失败，请查看日志（更新包哈希不符会记 Error）。");
                 return;
             }
 
@@ -526,7 +493,11 @@ public sealed partial class SettingsPage : UserControl
                 Title = "安装更新",
                 Content = new TextBlock
                 {
-                    Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n\n点「立即更新」后 neo 将自动关闭并开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
+                    Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n"
+                         + (string.IsNullOrEmpty(u.Sha256)
+                             ? "本次发布未提供哈希，仅校验了体积。\n"
+                             : "安装包 SHA-256 已校验通过。\n")
+                         + "\n点「立即更新」后 neo 会先断开当前连接并自动关闭，然后开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
                     TextWrapping = TextWrapping.Wrap,
                     FontSize = 12.5,
                 },
@@ -538,7 +509,16 @@ public sealed partial class SettingsPage : UserControl
             var res = await Neo.App.Ui.DialogGuard.ShowAsync(confirm);
             if (res == ContentDialogResult.Primary)
             {
-                AppUpdateService.LaunchInstallerAndExit(path);
+                var (launchOk, launchErr) = await AppUpdateService.LaunchInstallerAndExitAsync(path, u.LatestTag);
+                if (!launchOk)
+                {
+                    // 等待器没起来（例如 powershell 不可用）→ 不退出，提示并保留现状。
+                    await ShowSettingsInfo("更新未开始", "无法安排「退出后安装」，本次未退出，更新已取消。\n\n"
+                        + (launchErr ?? "未知原因")
+                        + "\n\n可手动运行已下载的安装包：\n" + path);
+                    return;
+                }
+                // 等待器已启动：立刻有序退出；它会在本进程退出（AppMutex 释放）后再启动安装器。
                 App.MainWindowInstance?.ExitForUpdate();
             }
         }
@@ -552,12 +532,6 @@ public sealed partial class SettingsPage : UserControl
         AppState.Save();
     }
 
-    private void OnUpdateTimeChanged(object sender, TimePickerValueChangedEventArgs args)
-    {
-        if (_syncing) return;
-        AppState.State.UpdateCheckTime = $"{UpdateTimePicker.Time.Hours:00}:{UpdateTimePicker.Time.Minutes:00}";
-        AppState.Save();
-    }
 
     private void OnLogLevelTapped(object sender, TappedRoutedEventArgs e)
     {
@@ -1095,7 +1069,7 @@ public sealed partial class SettingsPage : UserControl
         st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.AutoSpeedTest = true; st.StartupSpeedTest = false; st.ShowRealIp = false;
-        st.AutoCheckUpdate = true; st.UpdateCheckTime = "12:00"; st.GameDirectEnabled = true;
+        st.AutoCheckUpdate = true; st.GameDirectEnabled = true;
         AppState.Save();
         AppState.NotifyUiSettingsChanged();
         RefreshState();
@@ -1118,9 +1092,6 @@ public sealed partial class SettingsPage : UserControl
         SwitchAutoRestartCore.IsOn = AppState.State.AutoRestartCore;
         SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
-        UpdateTimePicker.Time = TimeSpan.TryParse(AppState.State.UpdateCheckTime, out var checkTime)
-            ? checkTime
-            : new TimeSpan(12, 0, 0);
         AppVersionText.Text = $"当前版本 {AppUpdateService.CurrentVersion}";
         RefreshUpdateStatusHint();
         SwitchMinTray.IsOn = AppState.State.MinimizeToTray;

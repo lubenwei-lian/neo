@@ -1390,25 +1390,35 @@ public sealed partial class MainWindow : Window
         try
         {
             if (!AppState.State.AutoCheckUpdate) return;
-            if (!TimeSpan.TryParse(AppState.State.UpdateCheckTime, out var target))
-                target = new TimeSpan(12, 0, 0);
-            if (DateTime.Now.TimeOfDay < target) return;
 
+            // 节流：距上次检查 ≥6 小时才查。旧实现按「每天某个时间点后一次」判断，
+            // 配合 30 分钟定时器行为不稳定；该「检查时间」设置已随本次改动移除。
             var last = AppState.State.LastUpdateCheckUnix;
-            if (last > 0 && DateTimeOffset.FromUnixTimeSeconds(last).LocalDateTime.Date >= DateTime.Today) return;
+            if (last > 0 && DateTimeOffset.Now.ToUnixTimeSeconds() - last < 6 * 3600) return;
 
             var r = await AppUpdateService.CheckAsync();
             AppState.State.LastUpdateCheckUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
             AppState.Save();
 
-            if (r.Ok && r.HasNew)
+            if (!r.Ok)
             {
-                ShowStatusText($"发现新版本 {r.LatestTag}");
-                NavigateTo("settings");
-                await EnsureSettingsPage().PromptAutoUpdateAsync(r);
+                LogBus.App($"自动检查更新失败（静默，不打扰用户）：{r.Error}", "Warning");
+                return;
             }
+            if (!r.HasNew) return;
+
+            // 不弹窗、不强制跳转：设置页显示「发现新版本」与下载按钮，托盘气泡提示一次。
+            // （用户在玩游戏 / 全屏 / TUN 下也不会被打断；详情等他主动点设置页。）
+            try { EnsureSettingsPage().NotifyUpdateAvailable(r); }
+            catch (Exception ex) { LogBus.App($"更新提示写入设置页失败：{ex.GetType().Name}", "Warning"); }
+            ShowStatusText($"发现新版本 {r.LatestTag}（设置 → 通用 可更新）");
+            try { TrayIcon.ShowNotification("neo 发现新版本", $"neo {r.LatestTag} 已发布，可在「设置 → 通用」更新"); } catch { }
+            LogBus.App($"自动检查更新：发现新版本 {r.LatestTag}（已提示，未弹出对话框）");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogBus.App($"自动检查更新异常（不影响使用）：{ex.GetType().Name} {ex.Message}", "Warning");
+        }
     }
 
     private void UpdateConnUi()
