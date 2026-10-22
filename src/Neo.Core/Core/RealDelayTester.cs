@@ -37,6 +37,32 @@ public static class RealDelayTester
     /// <summary>错峰间隔的随机抖动（±毫秒）：避免整齐的机器节奏被识别成扫描。</summary>
     private const int BatchStaggerJitterMs = 50;
 
+    // ★ 2026-10-22 可用性复核：延迟最低 ≠ 能用。
+    //   实测 AWS日本02 延迟 115ms（全场最低）但 x.com 12s 超时，而延迟更高的 AWS日本06 正常。
+    //   所以批量延迟测完后，对延迟最低的前 3 名节点，用**同一个临时内核实例**的 socks 端口
+    //   各请求一次 x.com：拿到 2xx/3xx 才算可用。串行 + 间隔 300ms，避免又被当成扫描。
+    /// <summary>可用性复核目标：能刷推才算「可用」（2xx/3xx 即可，不要求正文）。</summary>
+    private const string AvailabilityProbeUrl = "https://x.com/";
+
+    /// <summary>可用性复核取延迟最低的前 N 名。</summary>
+    private const int AvailabilityRecheckTop = 3;
+
+    /// <summary>单次可用性复核请求的超时（毫秒）。</summary>
+    private const int AvailabilityRecheckTimeoutMs = 8000;
+
+    /// <summary>两次可用性复核请求之间的间隔（毫秒）；串行执行，避免触发商家风控/限流。</summary>
+    private const int AvailabilityRecheckGapMs = 300;
+
+    /// <summary>
+    /// 复核阶段的总预算（秒）。单次 8s × 3 个串行最坏要 24.6s，太长；
+    /// 超预算就停掉剩余候选（已完成的结论照用，已测延迟不受影响）。
+    /// </summary>
+    private const int AvailabilityRecheckBudgetSeconds = 10;
+
+    /// <summary>复核请求的 UA：x.com 对空 UA 可能直接 4xx，会把所有节点误判成不可用。</summary>
+    private const string AvailabilityProbeUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
     private const string Target = "https://www.google.com/generate_204";
 
     /// 延迟/可用性探测的目标序列（按顺序退让，第一个成功即采用）。
@@ -244,9 +270,18 @@ public static class RealDelayTester
 
     /// v2rayN 式批量测速：xray 系节点编入单实例（每节点独立 socks 端口），一次进程启动全并行测完；
     /// hy2/tuic（sing-box）节点数量少，沿用逐节点单测本地并行。返回各节点延迟（-1=不通）。
+    ///
+    /// ★ 2026-10-22 可用性复核（默认关闭，仅全量真连测速的调用方开启）：
+    ///   批量延迟测完后，按延迟从低到高取前 3 名，用**同一个临时内核实例**的 socks 端口
+    ///   串行请求一次 https://x.com/（间隔 300ms、单次超时 8s），2xx/3xx 才算「可用」。
+    ///   整个复核阶段有 10s 总预算：超预算就停止剩余候选，已完成的结论照用。
+    ///   可用节点集合通过 onUsableChecked 回传（异步方法不能声明 out 参数；回调等价于 out）。
+    ///   onUsableChecked 在复核执行结束时调用一次（无论通过几个）；未开启复核或批量失败时不调用。
     public static async Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir,
-        int timeoutMs = DefaultTimeoutMs, Action<NodeItem, int>? onResult = null, CancellationToken ct = default)
+        int timeoutMs = DefaultTimeoutMs, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
+        bool availabilityRecheck = false,
+        Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null)
     {
         var result = new ConcurrentDictionary<NodeItem, int>();
         var valid = nodes.Where(n => n.IsValid).ToList();
@@ -306,6 +341,61 @@ public static class RealDelayTester
                             onResult?.Invoke(xrayNodes[i], batchResult[i]);
                             Interlocked.Increment(ref done);
                         });
+                }
+
+                // ★ 2026-10-22 可用性复核：延迟最低 ≠ 能用（实测 AWS日本02 延迟最低但 x.com 超时）。
+                //   必须在 core.Stop() 之前做 —— 用的就是同一个临时内核实例的 socks 端口。
+                //   只复核 xray 节点（sing-box 节点在各自临时内核里测，且内核已停，无端口可复用）。
+                if (!batchFailed && availabilityRecheck)
+                {
+                    var usable = new List<NodeItem>();
+                    var checkedCount = 0;
+                    // 提到 try 外：预算耗尽分支要打「已复核 N/候选数」的日志。
+                    var candidates = new List<int>();
+                    // ★ 2026-10-22 总预算 10s：否则 3 个都打满 8s 超时最坏要 24.6s。
+                    //   用 linked CTS：外部取消（用户点停止）仍原样抛出；预算耗尽只停掉剩余候选，
+                    //   已完成的「可用/不可用」结论照用（不把未复核节点误判成不可用）。
+                    using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    budget.CancelAfter(TimeSpan.FromSeconds(AvailabilityRecheckBudgetSeconds));
+                    var budgetToken = budget.Token;
+                    try
+                    {
+                        // 按延迟从低到高取前 3 名（并列按端口索引稳定排序）。
+                        candidates = Enumerable.Range(0, xrayNodes.Count)
+                            .Where(i => batchResult[i] > 0)
+                            .OrderBy(i => batchResult[i])
+                            .Take(AvailabilityRecheckTop)
+                            .ToList();
+                        Log($"可用性复核 {candidates.Count} 个，避免选到延迟低但用不了的节点" +
+                            $"（串行、间隔 {AvailabilityRecheckGapMs}ms、单次超时 {AvailabilityRecheckTimeoutMs}ms、总预算 {AvailabilityRecheckBudgetSeconds}s）");
+                        for (var k = 0; k < candidates.Count; k++)
+                        {
+                            // 用户取消优先按原语义抛给上层；预算耗尽走下面的 catch。
+                            ct.ThrowIfCancellationRequested();
+                            var i = candidates[k];
+                            var ok = await IsUsableViaSocksAsync(ports[i], budgetToken);
+                            checkedCount++;
+                            if (ok) usable.Add(xrayNodes[i]);
+                            Log($"可用性复核：「{xrayNodes[i].Name}」（{batchResult[i]} ms）→ {(ok ? "可用" : "不可用")}");
+                            if (k < candidates.Count - 1) await Task.Delay(AvailabilityRecheckGapMs, budgetToken);
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        // 用户取消整批测速：维持原有语义（向上抛，由调用方按「已取消」处理）。
+                        throw;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // 预算耗尽：停止剩余候选，已复核完的结论照用。
+                        Log($"可用性复核超出 {AvailabilityRecheckBudgetSeconds}s 预算，已复核 {checkedCount}/{candidates.Count}");
+                    }
+                    catch (Exception ex)
+                    {
+                        // 复核本身失败不能影响已经测到的延迟结果：按「无结果」上交，由上层退回按延迟选择。
+                        Log($"可用性复核整体失败（不影响延迟结果）：[{ex.GetType().Name}] {ex.Message}", isError: true);
+                    }
+                    onUsableChecked?.Invoke(usable);
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -396,6 +486,34 @@ public static class RealDelayTester
         {
             return -1;
         }
+    }
+
+    /// <summary>
+    /// 可用性复核：经指定 socks 端口请求一次 x.com，拿到 2xx/3xx 即算「能用」。
+    /// 只判通不通，不计延迟、不做预热；超时/连接失败/其它状态码都返回 false。
+    /// 取消（外部 ct）会原样抛出，不吞掉。
+    /// </summary>
+    private static async Task<bool> IsUsableViaSocksAsync(int socksPort, CancellationToken ct)
+    {
+        try
+        {
+            using var handler = new SocketsHttpHandler
+            {
+                Proxy = new WebProxy(new Uri($"socks5://127.0.0.1:{socksPort}")),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromMilliseconds(AvailabilityRecheckTimeoutMs),
+                AllowAutoRedirect = false, // 3xx 本身就算可用，不必跟到最终页
+                PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(AvailabilityRecheckTimeoutMs) };
+            using var req = new HttpRequestMessage(HttpMethod.Get, AvailabilityProbeUrl);
+            req.Headers.TryAddWithoutValidation("User-Agent", AvailabilityProbeUserAgent);
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            var code = (int)resp.StatusCode;
+            return code is >= 200 and < 400;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return false; }
     }
 
     private static int[] AllocPorts(int count)

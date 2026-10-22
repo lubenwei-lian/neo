@@ -553,6 +553,9 @@ public sealed partial class NodesPage : UserControl
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         LogBus.App($"真连测速开始（{all.Count} 个节点 · 单实例批量）");
+        // ★ 2026-10-22 可用性复核结果：只有全量真连测速（autoSelect=true）才会做复核；
+        //   null 表示「本次没做复核」（补测/未开启），空集合表示「做了复核但没节点通过」。
+        IReadOnlyCollection<NodeItem>? usableChecked = null;
         try
         {
             var tileMap = all.GroupBy(t => t.Node).ToDictionary(g => g.Key, g => g.First());
@@ -574,7 +577,10 @@ public sealed partial class NodesPage : UserControl
                         FootAvg.Text = "";
                     }
                 }),
-                ct: _realCts.Token);
+                ct: _realCts.Token,
+                // 复核只对全量真连测速做（autoSelect=true）；补测不复核。
+                availabilityRecheck: autoSelect,
+                onUsableChecked: usable => { usableChecked = usable; });
 
             // 批量里超时（-1）/没测到的节点用更长超时单独重试一次：
             //   订阅里确实有死节点，但「其实能用、只是很慢」的节点会被 7s 批量超时误判。
@@ -635,7 +641,7 @@ public sealed partial class NodesPage : UserControl
             else if (userPickedDuringTest)
                 LogBus.App("真连测速：测速期间用户手动选过节点，本次跳过自动优选", "Debug");
             else
-                AutoSelectFastestNode(all);
+                AutoSelectFastestNode(all, usableChecked);
         }
 
         UpdateFooter();
@@ -643,23 +649,45 @@ public sealed partial class NodesPage : UserControl
 
     /// <summary>
     /// 真连测速结束后自动优选：从**本轮实际测到的节点**里，把 RealDelay &gt; 0 且延迟最低的设为当前节点。
+    /// ★ 2026-10-22：延迟最低 ≠ 能用（实测 AWS日本02 延迟 115ms 全场最低，但 x.com 12s 超时；
+    ///   AWS日本06 延迟更高却正常）。所以优先在「可用性复核通过」的集合里取延迟最低者；
+    ///   复核无结果（整体失败/未开启/前 3 名全部不可用）才退回纯延迟，并打日志注明按延迟选择。
     /// 只看本轮传入的 tiles（即 RunBatchAsync 的 all），避免选中本轮没测、只有缓存延迟的节点；
     /// 并列时取列表靠前者（LINQ OrderBy 稳定）；-1（超时）与 0（未测）都排除。
     /// 不重连：仅改「当前选中节点」；连接中的静默切换由 ConnectionPage 自己处理。
     /// </summary>
-    private void AutoSelectFastestNode(List<NodeTile> measured)
+    private void AutoSelectFastestNode(List<NodeTile> measured, IReadOnlyCollection<NodeItem>? usable)
     {
-        var best = measured.Select(t => t.Node).Where(n => n.RealDelay > 0).OrderBy(n => n.RealDelay).FirstOrDefault();
-        if (best == null)
+        var reachable = measured.Select(t => t.Node).Where(n => n.RealDelay > 0).ToList();
+        if (reachable.Count == 0)
         {
             // 没有任何可达节点：不动作，也不打错误日志（测速本身已记录 0/N 可达）。
             return;
         }
 
+        NodeItem? best = null;
+        var viaRecheck = false;
+        if (usable is { Count: > 0 })
+        {
+            // 复核通过的节点按稳定 NodeKey 比对，避免对象身份差异导致漏选。
+            var usableKeys = new HashSet<string>(usable.Select(AppState.NodeKey), StringComparer.Ordinal);
+            best = reachable.OrderBy(n => n.RealDelay).FirstOrDefault(n => usableKeys.Contains(AppState.NodeKey(n)));
+            viaRecheck = best != null;
+        }
+        if (best == null)
+        {
+            // 复核无结果：整体失败 / 批量失败 / 前 3 名全部不可用 / 本轮没有可复核的 xray 节点。
+            // 走到这里说明 autoSelect 路径请求过复核（usable 为 null 或空），统一按延迟退回并留痕。
+            LogBus.App("真连测速：可用性复核无结果，按延迟选择", "Warning");
+            best = reachable.OrderBy(n => n.RealDelay).First();
+        }
+
         var cur = AppState.CurrentNode;
         if (cur != null && string.Equals(AppState.NodeKey(cur), AppState.NodeKey(best), StringComparison.Ordinal))
         {
-            LogBus.App($"真连测速：延迟最低节点「{best.Name}」已是当前节点，无需切换", "Debug");
+            LogBus.App(viaRecheck
+                ? $"真连测速：复核通过的延迟最低节点「{best.Name}」已是当前节点，无需切换"
+                : $"真连测速：延迟最低节点「{best.Name}」已是当前节点，无需切换", "Debug");
             return;
         }
 
@@ -677,7 +705,9 @@ public sealed partial class NodesPage : UserControl
         // 同步内部选中态：若 best 恰好不在 _tiles（订阅刷新后对象被重建等），置 null 也比留着旧引用正确，
         // 否则用户再点旧卡片时会因「已是 _selected」而直接 return、看起来点不动。
         _selected = bestTile;
-        LogBus.App($"真连测速完成：已自动选择延迟最低节点「{best.Name}」（{best.RealDelay} ms）");
+        LogBus.App(viaRecheck
+            ? $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 可用性复核通过）"
+            : $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 仅按延迟）");
         UpdateFooter();
     }
 

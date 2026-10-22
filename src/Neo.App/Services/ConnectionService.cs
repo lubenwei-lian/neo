@@ -25,6 +25,15 @@ public static class ConnectionService
     ///   导致流量仍被接管 —— 用户报的「TUN 打开就关闭不掉」。
     private static bool _tunSessionActive;
 
+    /// 连接后自检的取消源：断开 / 切换会话 / 内核退出时取消。
+    private static CancellationTokenSource? _selfCheckCts;
+
+    /// 本轮会话是否已经自动切换过（最多自动切 1 次，避免连环切）。
+    private static bool _selfCheckAutoSwitched;
+
+    /// 当前 ConnectAsync 是否由「自检自动切换」发起（该新会话不再自检，保证一轮最多切 1 次）。
+    private static bool _selfCheckSwitching;
+
     ///   会话门 —— 保证**同一时刻只有一个** ConnectAsync / Disconnect 在改内核与网络状态。
     /// 为什么需要：ConnectAsync 原先**没有入口互斥**（第 88 行只判断「同一节点已连接」）。
     ///   而它有 7 个调用点，其中两条在**非 UI 线程**：
@@ -434,6 +443,9 @@ public static class ConnectionService
         LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
                    (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
         NotifyStateChanged();
+        // 连接后自检（fire-and-forget）：链路站稳后确认「目标站」真的可访问；
+        // 不可用且条件允许时自动切同地区下一个节点（最多 1 次）。不阻塞本连接流程。
+        StartPostConnectSelfCheck(node);
         return (true, null);
         }
         finally
@@ -447,6 +459,9 @@ public static class ConnectionService
 
     public static void Disconnect(string? reason = null)
     {
+        // 断开 / 切换会话：取消尚未完成的连接后自检。
+        CancelPostConnectSelfCheck();
+
         // 用户主动断开 / 退出程序：清掉「故障转移放弃后重连」的待办，
         // 避免用户刚点断开，5 分钟后又被自动连回去。
         if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
@@ -1138,12 +1153,240 @@ public static class ConnectionService
         try { dq.TryEnqueue(Raise); } catch { Raise(); }
     }
 
+    // ---- 连接后自检（目标站真可达性）----
+    // 背景：故障转移探活只打 google/cloudflare/telegram，测不出「google 通但 x.com 死」的形态
+    //（AWS 日本 02 实测：google 204 正常、x.com 12s 超时）。因此每个会话连上后单独自检一次目标站，
+    // 不可用且条件允许时自动切同地区下一个节点（最多 1 次）。全程后台执行，不阻塞连接流程。
+
+    /// <summary>启动本会话的连接后自检（fire-and-forget）。</summary>
+    private static void StartPostConnectSelfCheck(NodeItem node)
+    {
+        // 由自检自动切换产生的新会话不再自检：配合 _selfCheckAutoSwitched 保证一轮最多切 1 次。
+        if (_selfCheckSwitching) return;
+
+        CancelPostConnectSelfCheck();
+        _selfCheckAutoSwitched = false;
+
+        var cts = new CancellationTokenSource();
+        _selfCheckCts = cts;
+        var expectKey = AppState.NodeKey(node);
+        _ = Task.Run(async () =>
+        {
+            try { await RunPostConnectSelfCheckAsync(expectKey, cts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                LogBus.App($"连接后自检异常（已忽略，不影响连接）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+            }
+            finally
+            {
+                if (ReferenceEquals(_selfCheckCts, cts)) _selfCheckCts = null;
+                try { cts.Dispose(); } catch { }
+            }
+        });
+    }
+
+    /// <summary>取消连接后自检（断开 / 切换会话 / 内核退出时调用）。</summary>
+    private static void CancelPostConnectSelfCheck()
+    {
+        var cts = _selfCheckCts;
+        _selfCheckCts = null;
+        // 只 Cancel 不 Dispose：任务自己的 finally 负责释放，避免任务还在用 token 时被释放。
+        try { cts?.Cancel(); } catch { }
+    }
+
+    /// <summary>
+    /// 等 5 秒让链路站稳，再经本地 socks 并发探测目标站；不可用且允许时自动切同地区下一个节点。
+    /// 「可用」= x.com 或 cloudflare 任一可达（并发发起、任一成功即取消另一个）；
+    /// 只有 Google 通不算可用（那正是本自检要抓的「google 通但目标站死」形态）。
+    /// </summary>
+    private static async Task RunPostConnectSelfCheckAsync(string sessionKey, CancellationToken ct)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
+        if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
+
+        // 会话已不是「这次连接」→ 本次自检作废，避免旧任务误判新会话。
+        var cur = ConnectedNode;
+        if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
+
+        // 固定出口 / TUN 模式不做：TUN 下系统代理不生效，socks 探测口径也不同。
+        if (FixedExitActive)
+        {
+            LogBus.App("连接后自检：固定出口模式，跳过目标站自检", "Debug");
+            return;
+        }
+        if (IsTunSession)
+        {
+            LogBus.App("连接后自检：TUN 模式，跳过目标站自检", "Debug");
+            return;
+        }
+
+        // 并发探测：x.com（8s）与 cloudflare（5s）同时发起，任一可达立刻判可用并取消另一个；
+        // 两个都失败后再打一次 google（5s），仅用于日志区分「链路不通」还是「链路通但目标站不可达」。
+        var (usable, xOk, cfOk, googleOk) = await RunSelfCheckProbesAsync(ct).ConfigureAwait(false);
+
+        if (ct.IsCancellationRequested || !IsConnected) return;
+        cur = ConnectedNode;
+        if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
+
+        if (usable)
+        {
+            LogBus.App($"连接后自检通过：{(xOk ? "x.com 通" : "cloudflare 通")}（并发探测，另一项已取消等待）", "Debug");
+            return;
+        }
+
+        var detail = $"x.com=不通 · cloudflare=不通 · google={(googleOk ? "通（仅链路可用）" : "不通")}";
+
+        // 不可用：先记录（Warning + IncidentLog），再按条件决定是否自动切换。
+        LogBus.App($"连接后自检：目标站不可用（{detail}）", "Warning");
+        IncidentLog.Record("selfcheck", "连接后自检目标站不可用", $"{cur.Name} · {detail}");
+
+        if (_selfCheckAutoSwitched)
+        {
+            LogBus.App("连接后自检：本会话已自动切换过，不再重试（避免连环切换）", "Debug");
+            return;
+        }
+        if (IsConnecting || IsSessionBusy)
+        {
+            LogBus.App("连接后自检：用户正在操作连接，本次不自动切换", "Warning");
+            return;
+        }
+
+        // 候选：同地区 + 协议可走 xray（Hysteria2/TUIC 只能走 sing-box）+ 已测速（RealDelay > 0），
+        // 按 RealDelay 升序取前 3 个，再排除当前节点后的第一个。
+        var region = NodeGrouper.RegionOf(cur.Name);
+        var top3 = AppState.Nodes
+            .Where(n => n.IsValid && n.RealDelay > 0)
+            .Where(n => n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC))
+            .Where(n => string.Equals(NodeGrouper.RegionOf(n.Name), region, StringComparison.Ordinal))
+            .OrderBy(n => n.RealDelay)
+            .Take(3)
+            .ToList();
+        var curKey = AppState.NodeKey(cur);
+        var cand = top3.FirstOrDefault(n => !string.Equals(AppState.NodeKey(n), curKey, StringComparison.Ordinal));
+        if (cand == null)
+        {
+            // 未测速 / 无同地区候选：只记录，不切换。
+            LogBus.App($"连接后自检：同地区（{NodeGrouper.RegionDisplay(region)}）没有可切换的已测速候选节点，保持当前节点", "Warning");
+            IncidentLog.Record("selfcheck", "自检不可用但无同地区候选，保持当前节点", $"{cur.Name} · 地区 {region}");
+            return;
+        }
+
+        // 切换前再确认一次「还是本次会话」：探测耗时期间可能已被用户/故障转移切走。
+        cur = ConnectedNode;
+        if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
+
+        // 最多自动切 1 次：先置标记再切，失败也不会再试第二次。
+        _selfCheckAutoSwitched = true;
+        LogBus.App($"连接后自检：正在自动切换到同地区节点「{cand.Name}」（{cand.RealDelay} ms）", "Warning");
+        _selfCheckSwitching = true;
+        bool ok;
+        string? err;
+        try
+        {
+            // 走 ConnectAsync 内部的连接流程：SessionGate 会拒绝与用户操作并发的情况。
+            (ok, err) = await ConnectAsync(cand).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            err = $"[{ex.GetType().Name}] {ex.Message}";
+        }
+        finally
+        {
+            _selfCheckSwitching = false;
+        }
+
+        if (ok)
+        {
+            AppState.SetCurrentNode(cand);
+            LogBus.App($"自检不可用，已自动切换到 {cand.Name}（本会话不再自动重试）", "Warning");
+            IncidentLog.Record("selfcheck", "自检不可用，已自动切换节点", $"{cur.Name} → {cand.Name}（{cand.RealDelay} ms）");
+        }
+        else
+        {
+            LogBus.App($"连接后自检：自动切换失败（{err ?? "未知原因"}）", "Error");
+            IncidentLog.Record("selfcheck", "自检不可用，自动切换失败", $"{cur.Name} → {cand.Name}：{err}");
+        }
+    }
+
+    /// <summary>
+    /// 并发探测 x.com 与 cloudflare：任一成功立刻判可用并取消另一个（最坏等 max(8s,5s)）；
+    /// 两个都失败后才打一次 google，仅用于日志区分「链路不通」还是「链路通但目标站不可达」。
+    /// </summary>
+    private static async Task<(bool Usable, bool XOk, bool CfOk, bool GoogleOk)> RunSelfCheckProbesAsync(CancellationToken ct)
+    {
+        bool xOk = false, cfOk = false;
+        using (var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            var xTask = ProbeSelfCheckTargetAsync("https://x.com/", 8, raceCts.Token);
+            var cfTask = ProbeSelfCheckTargetAsync("http://cp.cloudflare.com/generate_204", 5, raceCts.Token);
+            var pending = new List<Task<bool>> { xTask, cfTask };
+            try
+            {
+                while (pending.Count > 0)
+                {
+                    var done = await Task.WhenAny(pending).ConfigureAwait(false);
+                    pending.Remove(done);
+                    if (ReferenceEquals(done, xTask)) xOk = await done.ConfigureAwait(false);
+                    else cfOk = await done.ConfigureAwait(false);
+                    if (xOk || cfOk)
+                    {
+                        // 任一成功 → 立刻判可用，取消另一个探测，不再等它超时。
+                        try { raceCts.Cancel(); } catch { }
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                // 取消后另一个任务会以 OperationCanceledException 结束；这里统一观察掉，避免未观察异常。
+                try { await Task.WhenAll(xTask, cfTask).ConfigureAwait(false); } catch { }
+            }
+        }
+
+        if (xOk || cfOk) return (true, xOk, cfOk, false);
+
+        // 两个都失败后才打 google —— 只用于日志区分，不改变「可用」判定。
+        var googleOk = await ProbeSelfCheckTargetAsync("https://www.google.com/generate_204", 5, ct).ConfigureAwait(false);
+        return (false, false, false, googleOk);
+    }
+
+    /// <summary>通过本地 socks 探测一个目标；超时/拒绝/异常都算「不通」。</summary>
+    private static async Task<bool> ProbeSelfCheckTargetAsync(string url, int timeoutSeconds, CancellationToken ct)
+    {
+        try
+        {
+            using var handler = new SocketsHttpHandler
+            {
+                Proxy = new System.Net.WebProxy($"socks5://127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}"),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromSeconds(timeoutSeconds),
+                // 不跟随重定向：拿到有效 HTTP 响应就证明链路可用，跟随只会多一次请求。
+                AllowAutoRedirect = false,
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
+            using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            return (int)resp.StatusCode is >= 200 and < 400;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static void OnCoreExited(int code)
     {
         if (!IsConnected) return;
         var node = ConnectedNode;
         IsConnected = false;
         ConnectedNode = null;
+        // 内核退出 = 本会话结束：取消连接后自检。
+        CancelPostConnectSelfCheck();
         //   导致「会话结束」日志里的时长永远为空（这条是内核退出路径的既有小缺陷）。
         var endedAt = ConnectedAt;
         ConnectedAt = null;
@@ -1465,93 +1708,8 @@ public static class ConnectionService
     private static bool SameNode(NodeItem a, NodeItem b) =>
         a.EndPoint == b.EndPoint && a.Name == b.Name && a.Protocol == b.Protocol;
 
-    // ---- sing-box 是否支持 balancer 出站（内核能力探测）----
-    private static bool? _singBoxBalancerSupport;
-
-    /// 探测当前 sing-box 内核是否带 balancer 出站（即 neo 自编译版）。
-    /// 说明：多节点加速已移除，连接流程不再依赖该能力；但设置页仍会查询它
-    /// （自编译内核是既有安装口径的一部分），因此保留探测。
-    /// 用 `sing-box check` 跑一份最小 balancer 配置判定能力；
-    /// 探测结果缓存到进程生命周期：内核 exe 不会在运行中变化（换内核会重启 neo）。
-    /// 失败（超时/异常）一律按「不支持」处理。
-    private static bool SingBoxSupportsBalancerInternal()
-    {
-        if (_singBoxBalancerSupport.HasValue) return _singBoxBalancerSupport.Value;
-        _singBoxBalancerSupport = false;
-        try
-        {
-            var exe = Path.Combine(NeoPaths.RuntimeDir, "sing-box.exe");
-            if (!File.Exists(exe)) return false;
-
-            var probe = Path.Combine(NeoPaths.DataDir, "singbox-balancer-probe.json");
-            // 最小可校验配置：两个 socks 出站 + 一个 balancer。不需要真实可达，
-            // `check` 只做配置结构与类型注册校验，不发起连接。
-            const string probeJson = """
-            {
-              "log": {"level": "error"},
-              "inbounds": [{"type":"socks","tag":"probe-in","listen":"127.0.0.1","listen_port":19999}],
-              "outbounds": [
-                {"type":"socks","tag":"pa","server":"127.0.0.1","server_port":1080},
-                {"type":"socks","tag":"pb","server":"127.0.0.1","server_port":1081},
-                {"type":"balancer","tag":"bal","outbounds":["pa","pb"],"strategy":"roundRobin","interval":"45s","idle_timeout":"30m"}
-              ]
-            }
-            """;
-            File.WriteAllText(probe, probeJson);
-
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                ArgumentList = { "check", "-c", probe },
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (p == null) return false;
-
-            // 两个流都要读：只读一个而另一个写满 4KB 管道缓冲会死锁（同类坑本项目已踩过）。
-            var stdout = p.StandardOutput.ReadToEndAsync();
-            var stderr = p.StandardError.ReadToEndAsync();
-            if (!Task.WaitAll(new[] { stdout, stderr }, TimeSpan.FromSeconds(8)))
-            {
-                try { p.Kill(entireProcessTree: true); } catch { }
-                return false;
-            }
-            try { p.WaitForExit(2000); } catch { }
-
-            var supported = p.ExitCode == 0;
-            _singBoxBalancerSupport = supported;
-            LogBus.App(supported
-                ? "sing-box 内核支持 balancer 出站（自编译内核）"
-                : "sing-box 内核不支持 balancer 出站（如需该能力请换自编译内核）",
-                supported ? "Debug" : "Warning");
-            return supported;
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"sing-box balancer 能力探测失败（按不支持处理）：{ex.Message}", "Debug");
-            return false;
-        }
-    }
-
-    /// <summary>换过内核 exe 后调用，让下次连接重新探测 balancer 能力。</summary>
-    public static void ResetSingBoxCapability()
-    {
-        _singBoxBalancerSupport = null;
-    }
-
-    /// 对外暴露的 balancer 能力查询（设置页用来提示内核能力）。
-    /// 走同一个缓存探测，不自建一套判断，避免两处结论不一致。
-    public static bool SingBoxSupportsBalancer
-    {
-        get
-        {
-            try { return SingBoxSupportsBalancerInternal(); }
-            catch { return false; }
-        }
-    }
-
+    // 历史：多节点并发已移除，sing-box balancer 能力探测随之删除 ——
+    // 内核固定为官方 1.14.3，不再需要自编译 balancer 补丁，也不再写 singbox-balancer-probe.json。
 
     private static string? _xrayVersion;
 
@@ -1593,13 +1751,12 @@ public static class ConnectionService
     private static string? _singBoxVersion;
     private static bool _singBoxVersionProbed;
 
-    /// <summary>sing-box 内核 exe 被替换后调用，让下一次读取重新探测版本与 balancer 能力。
-    /// 不重置的话，更新完内核界面会一直显示旧版本号，且能力判定仍停留在旧内核的结论上。</summary>
+    /// <summary>sing-box 内核 exe 被替换后调用，让下一次读取重新探测版本。
+    /// 不重置的话，更新完内核界面会一直显示旧版本号。</summary>
     public static void ResetSingBoxVersion()
     {
         _singBoxVersion = null;
         _singBoxVersionProbed = false;
-        ResetSingBoxCapability();
     }
 
     public static string? SingBoxVersion

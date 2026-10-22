@@ -53,6 +53,20 @@ public static class SingBoxConfigBuilder
         bool bypassCn, bool blockAds, bool allowLan, IReadOnlyList<RouteRule>? customRules, string logLevel, string dnsServer,
         bool gameDirectEnabled, IReadOnlyList<string>? gameDirectProcesses)
     {
+        // 2026-10-22 TUN 性能评估（sing-box 1.14.2/1.14.3 官方文档；稳定优先，本轮未改运行参数）
+        //   · stack=mixed：官方表格明确 mixed = system TCP + gvisor UDP，且 gvisor 构建下默认即 mixed；
+        //     system 只是把 UDP 也交给系统栈，性能/兼容收益未实测 → 保持 mixed。
+        //     https://github.com/SagerNet/sing-box/blob/v1.14.2/docs/configuration/inbound/tun.md#stack
+        //   · mtu=9000：官方示例值，保持。
+        //   · gso：1.11 起弃用且「对透明代理无优势」→ 不添加。
+        //   · endpoint_independent_nat：1.11 起无效；1.14 起由 udp_mapping/udp_filtering 取代，
+        //     且默认就是 endpoint_independent → 不添加无效字段。
+        //   · tcp_fast_open：sing-box 用 tfo-go，Windows 在 Go 1.23+ 需 `tfogo_checklinkname0`
+        //     构建标签，官方/本项目构建未开启 → Windows 上是无效字段 → 不添加。
+        //   · tcp_multi_path：Go 的 MPTCP 仅在 Linux 实现（!linux 直接回退 TCP）→ 不添加。
+        //   · multiplex：需服务端开启，且多条连接绑到一条 TCP 上会放大单点故障 → 待实测。
+        //   · dns.optimistic（1.14 新，默认陈旧窗口 3d）：需实测再定 → 未启用（默认 DNS 缓存已开）。
+        //   · route_exclude_address_set=["geoip-cn"]：可让国内 IP 绕开用户态栈，需真机验证 → 待实测。
         var tun = new JsonObject
         {
             ["type"] = "tun",

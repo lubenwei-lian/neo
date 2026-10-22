@@ -579,7 +579,13 @@ public sealed partial class ConnectionPage : UserControl
         // 每列 = SlotSeconds 秒时间片（取片内最大速度）；散点标记：只在档位对应的高度亮一个方块，
         // 同流量永远同一行（Y 轴固定 8 档不跳动），旧列从左侧滑出。
         int n = _dnHist.Count;
-        var info = new (DateTime Time, double Dn, double Up, int LvDn, int LvUp)?[cols];
+        // 复用同一块列信息数组：本方法每秒跑一次，原实现每次 new 一个 108 项可空元组数组
+        // （约 4.3KB/秒，约 15.5MB/小时的 gen0 垃圾）。只有列数变化（窗口缩放）时才重建。
+        if (_colInfo == null || _colInfo.Length != cols)
+            _colInfo = new (DateTime Time, double Dn, double Up, int LvDn, int LvUp)?[cols];
+        else
+            Array.Clear(_colInfo, 0, cols);
+        var info = _colInfo;
         if (_sessionStart is { } ss && n > 0)
         {
             int latestSlotS = (int)((_times[^1] - ss).TotalSeconds / SlotSeconds);
@@ -784,7 +790,13 @@ public sealed partial class ConnectionPage : UserControl
     /// 列表项再按 18 ms/项错峰（封顶 7 项，见 PopupList.PlayStagger）。
     private void OnNodePickerClick(object sender, RoutedEventArgs e)
     {
-        _nodePickerList ??= new Neo.App.Ui.PopupList();
+        if (_nodePickerList == null)
+        {
+            _nodePickerList = new Neo.App.Ui.PopupList();
+            // 关闭时释放在场节点行（下次点开会重建）：68 个节点约 270 个 XAML 元素，
+            // 不释放会让复用的弹层在关闭后长期占着整棵列表子树。
+            _nodePickerList.Dismissed += (_, _) => _nodePickerList?.ClearItems();
+        }
 
         // 每次重新填充：节点列表/延迟随时在变（测速会改 RealDelay），
         // 复用一个已建好的 PopupList 只为省掉重复创建控件的开销。

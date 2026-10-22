@@ -9,12 +9,9 @@ namespace Neo.App.Services;
 public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease);
 
 /// sing-box 内核发布。通道指向 **neo 自己的发布仓库**，不是上游 SagerNet。
-///   本项目内置的是带 balancer 补丁的**自编译版**；官方 sing-box（实测 1.14.2 /
-///   1.14.3 / 1.15.0-alpha.12）都不含该出站类型，`sing-box check` 一律报
-///   `unknown outbound type: balancer`。历史上 TUN 多节点配置必写 balancer，
-///   换成官方内核会因该出站类型未知而启动失败；多节点加速功能已移除，
-///   该安装闸门属于历史遗留，行为保持不变。
-public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, bool HasBalancer, string AssetName = "");
+///   资产内容是**上游官方发行版**（zip 内含 sing-box.exe + libcronet.dll），
+///   与同名 .sha256 一起上传；应用只做 SHA-256、版本串与可执行性校验，不再要求任何自编译补丁。
+public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "");
 
 public static class UpdateChecker
 {
@@ -76,7 +73,7 @@ public static class UpdateChecker
         return (true, $"当前内核：xray {cur}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}", rel);
     }
 
-    /// 从 neo 自己的发布仓库取最新的 **自编译 sing-box 内核**资产。
+    /// 从 neo 自己的发布仓库取最新的 **sing-box 内核**资产（上游官方发行版重新打包）。
     /// 走 <see cref="GitHubChannel"/>（非 API 通道）——原先用 `api.github.com/repos/.../releases`
     /// 只认资产名前缀 <see cref="SingBoxAssetPrefix"/> 且扩展名 `.zip`，与同仓库安装包区分。
     /// 用户看到的是长时间转圈。而内核资产按约定与最新版一起发，
@@ -94,13 +91,12 @@ public static class UpdateChecker
         if (asset == null) return null;
 
         var coreVer = ExtractCoreVersion(asset.Name);
-        var hasBalancer = coreVer.Contains("-noGate", StringComparison.OrdinalIgnoreCase)
-            || coreVer.Contains("-neo", StringComparison.OrdinalIgnoreCase);
-        return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, hasBalancer, asset.Name);
+        return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, asset.Name);
     }
 
     /// 从内核资产名里抽出内核版本号。
-    /// `neo-singbox-1.14.2-noGate-windows-amd64.zip` → `1.14.2-noGate`
+    /// `neo-singbox-1.14.3-windows-amd64.zip` → `1.14.3`
+    /// 兼容旧命名：`neo-singbox-1.14.2-noGate-windows-amd64.zip` → `1.14.2-noGate`
     /// 规则：去掉前缀 → 取到 `-windows-` 之前 → 去掉结尾平台的 `-amd64` 等。
     /// 抽不出来（命名不符合约定）时返回 "unknown"，让上层提示而不是崩溃。
     public static string ExtractCoreVersion(string assetName)
@@ -135,7 +131,7 @@ public static class UpdateChecker
         else if (CompareVersions(StripSuffix(rel.Version), StripSuffix(cur)) == 0)
             verdict = "已是最新版本，无需更新。";
         else
-            verdict = "本地版本比发布版本更新（可能是自编译测试版），无需更新。";
+            verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
 
         var preTag = rel.Prerelease ? " · 预发布" : "";
         return (true,
@@ -144,9 +140,9 @@ public static class UpdateChecker
     }
 
     /// 版本号去掉 `-noGate` / `-neo` 这类后缀，只留数字主干。
-    /// 必要性（不这么做会永久误报）：`CompareVersions("1.14.2", "1.14.2-noGate")` 里
-    /// `"2-noGate"` 用 int.TryParse 解析失败被当作 0 → 返回 1 → 官方被误判为"更新"，
-    /// 于是自编译版**每次检查都提示有新版本**，点更新还会把 balancer 冲掉。
+    /// 保留原因：兼容历史资产名（`neo-singbox-1.14.2-noGate-…`）与用户机器上已装的
+    /// `1.14.2-noGate` 内核，否则 `CompareVersions("1.14.3", "1.14.2-noGate")` 里
+    /// `"2-noGate"` 会被 int.TryParse 当成 0 → 每次检查都误报"有新版本"。
     public static string StripSuffix(string v)
     {
         var i = v.IndexOf('-');
@@ -278,13 +274,11 @@ public static class UpdateChecker
         catch { return ""; }
     }
 
-    /// 下载并覆盖安装 **sing-box 内核**（neo 自编译版）。
-    /// 与 xray 的差异（校验项保留：balancer 补丁是历史依赖，官方版会被闸门拦下）：
+    /// 下载并覆盖安装 **sing-box 内核**（上游官方发行版）。
+    /// 与 xray 的差异：
     /// ① **自校验版本**：跑 `sing-box version` 确认拿到的是期望版本；
-    /// ② **自校验 balancer 能力**：用一份最小 balancer 配置跑 `sing-box check`，
-    ///    确认新内核**真的支持 balancer 出站**。官方版这一步必然失败（历史上
-    ///    TUN 多节点配置必写 balancer，装上去会让内核启动失败）；校验不过就拒绝安装、不动现有文件。
-    /// ③ 安装成功后同时重置版本缓存与 balancer 能力缓存。
+    /// ② 安装成功后同时重置版本缓存（下次连接重新探测内核版本）。
+    /// 不再要求 balancer 出站能力：TUN 配置只产出单节点 + direct，上游官方版即可。
     public static async Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
         SingBoxRelease rel, Action<string> progress, CancellationToken ct = default)
     {
@@ -335,7 +329,7 @@ public static class UpdateChecker
         var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "sing-box.exe");
         try
         {
-            //   缺失就中止 —— 自编译内核没有官方 dgst，这是唯一的下载完整性依据，不能静默跳过。
+            //   缺失就中止 —— 发布方 .sha256 是唯一的下载完整性依据，不能静默跳过。
             progress("校验 SHA-256（发布方 .sha256）…");
             var shaAsset = string.IsNullOrEmpty(rel.AssetName) ? "" : rel.AssetName + ".sha256";
             var shaText = shaAsset.Length == 0
@@ -354,7 +348,7 @@ public static class UpdateChecker
             if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
             ZipFile.ExtractToDirectory(zipPath, extractDir);
 
-            // zip 内可能带一层目录，递归找一个 sing-box.exe（官方/自编译包布局不同）。
+            // zip 内可能带一层目录（上游发布包布局），递归找一个 sing-box.exe。
             var newExe = Directory.EnumerateFiles(extractDir, "sing-box.exe", SearchOption.AllDirectories)
                 .FirstOrDefault();
             if (newExe == null) return (false, "解压后未找到 sing-box.exe，安装中止。");
@@ -363,14 +357,6 @@ public static class UpdateChecker
             var verOut = RunSingBoxVersion(newExe);
             if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
                 return (false, $"新内核自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
-
-            progress("校验 balancer 补丁…");
-            if (!SingBoxSupportsBalancerAt(newExe, out var why))
-                return (false,
-                    $"新内核不支持 balancer 出站（{why}），安装已中止。\n\n" +
-                    "安装它会让内核因未知出站类型启动失败（历史上 TUN 多节点配置必写 balancer；" +
-                    "该闸门属历史遗留，多节点功能已移除，行为保持不变）。\n" +
-                    "请确认下载的是 neo 自编译内核，而不是上游官方版。");
 
             if (ConnectionService.IsConnected)
             {
@@ -388,19 +374,13 @@ public static class UpdateChecker
                 File.Copy(backup, target, true);
                 return (false, "安装后版本校验失败，已回滚到旧内核。");
             }
-            if (!SingBoxSupportsBalancerAt(target, out var why2))
-            {
-                File.Copy(backup, target, true);
-                return (false, $"安装后 balancer 校验失败（{why2}），已回滚到旧内核。");
-            }
-
             ConnectionService.ResetSingBoxVersion();
 
             progress("清理临时文件…");
             try { Directory.Delete(extractDir, true); } catch { }
             try { File.Delete(zipPath); } catch { }
 
-            return (true, $"sing-box 已更新到 {rel.Version}（含 balancer 补丁）！重新连接即使用新内核。");
+            return (true, $"sing-box 已更新到 {rel.Version}（官方发行版）！重新连接即使用新内核。");
         }
         catch (Exception ex)
         {
@@ -438,63 +418,6 @@ public static class UpdateChecker
             return txt;
         }
         catch { return ""; }
-    }
-
-    /// 用一份最小 balancer 配置对**指定 exe** 跑 `sing-box check`，判定是否支持 balancer 出站。
-    /// 独立于 ConnectionService 的缓存探测：安装流程要校验的是「待安装的新文件」，
-    /// 而不是当前运行中的内核。失败原因通过 <paramref name="why"/> 带出，用于给用户可读提示。
-    private static bool SingBoxSupportsBalancerAt(string exe, out string why)
-    {
-        why = "";
-        try
-        {
-            var probe = Path.Combine(Path.GetTempPath(), "neo-singbox-balancer-probe.json");
-            const string probeJson = """
-            {
-              "log": {"level": "error"},
-              "inbounds": [{"type":"socks","tag":"probe-in","listen":"127.0.0.1","listen_port":19999}],
-              "outbounds": [
-                {"type":"socks","tag":"pa","server":"127.0.0.1","server_port":1080},
-                {"type":"socks","tag":"pb","server":"127.0.0.1","server_port":1081},
-                {"type":"balancer","tag":"bal","outbounds":["pa","pb"],"strategy":"roundRobin","interval":"45s","idle_timeout":"30m"}
-              ]
-            }
-            """;
-            File.WriteAllText(probe, probeJson);
-
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                ArgumentList = { "check", "-c", probe },
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (p == null) { why = "无法启动内核进程"; return false; }
-
-            // 两个流都要读：只读一个而另一个写满管道缓冲会死锁。
-            var so = p.StandardOutput.ReadToEndAsync();
-            var se = p.StandardError.ReadToEndAsync();
-            if (!Task.WaitAll(new[] { so, se }, TimeSpan.FromSeconds(10)))
-            {
-                try { p.Kill(entireProcessTree: true); } catch { }
-                why = "校验超时";
-                return false;
-            }
-            try { p.WaitForExit(2000); } catch { }
-
-            if (p.ExitCode == 0) return true;
-            var err = (se.Result + " " + so.Result).Trim();
-            why = err.Length > 160 ? err[..160] + "…" : err;
-            if (why.Length == 0) why = $"check 退出码 {p.ExitCode}";
-            return false;
-        }
-        catch (Exception ex)
-        {
-            why = ex.Message;
-            return false;
-        }
     }
 
     /// 取同一 tag 下的小文本资产（xray 的 .dgst / sing-box 的 .sha256）。

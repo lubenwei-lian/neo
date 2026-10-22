@@ -8,6 +8,23 @@ namespace Neo.Core.Core;
 
 public static class XrayConfigBuilder
 {
+    // 2026-10-22 内核性能调整清单（稳定优先；未改动的项附官方依据）
+    //   已落地：
+    //     1) 关闭 policy 的 user 级流量统计（App 只读 outbound>>>/inbound>>>，见 XrayStats.cs）
+    //     2) routing 规则重排：把系统内置的「IP 条件」规则整体移到「域名条件」规则之后
+    //        —— 配合现有 domainStrategy=IPOnDemand，命中域名规则的连接不再先做一次本地 DNS 解析
+    //        依据：https://xtls.github.io/config/routing.html（IPOnDemand 语义）
+    //   评估后明确不采用：
+    //     · sockopt.tcpFastOpen：官方注明 Windows 10 1607 起「实现不正确」→ 不启用
+    //       https://xtls.github.io/config/transports/sockopt.html
+    //     · sockopt.tcpcongestion / tcpMptcp / mark / tcpWindowClamp：仅 Linux
+    //     · sockopt.bufferSize：桌面默认已是 512KB，调大属内存换吞吐且收益未实测 → 不动
+    //     · mux：官方明确「减少握手延迟但不提高吞吐，看视频/下载/测速通常反效果」→ 不动
+    //       https://xtls.github.io/config/outbound.html
+    //     · sniffing.routeOnly：会把客户端（可能被污染的）DNS 结果发给服务端 → 风险高于收益
+    //     · dns.serveStale：默认永不淘汰的陈旧记录可能导致连接失败 → 不动
+    //   待实测（见 planning\2026-10-22-稳定路线与测速改造\子报告-内核性能调优.md）：mux、bufferSize、dns 乐观缓存
+
     public const int DefaultSocksPort = 10808;
     public const int DefaultHttpPort = 10809;
 
@@ -50,7 +67,12 @@ public static class XrayConfigBuilder
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
             {
-                ["levels"] = new JsonObject { ["0"] = new JsonObject { ["statsUserUplink"] = true, ["statsUserDownlink"] = true } },
+                // ★ 2026-10-22 性能调整：关闭「每用户」流量统计（statsUserUplink/Downlink）。
+                //   依据：xray 官方 policy 文档 https://xtls.github.io/config/policy.html
+                //   该项官方默认 false，此前被显式打开；但 App 的统计（XrayStats.cs）只解析
+                //   outbound>>>.../inbound>>>... 计数器，从不读取 user>>>...，打开它只是给每条连接
+                //   多加两份原子计数与内存。system 级入站/出站统计保持不变（App 依赖）。
+                ["levels"] = new JsonObject { ["0"] = new JsonObject { ["statsUserUplink"] = false, ["statsUserDownlink"] = false } },
                 ["system"] = new JsonObject { ["statsInboundUplink"] = true, ["statsInboundDownlink"] = true, ["statsOutboundUplink"] = true, ["statsOutboundDownlink"] = true },
             },
             ["inbounds"] = new JsonArray
@@ -292,7 +314,12 @@ public static class XrayConfigBuilder
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
             {
-                ["levels"] = new JsonObject { ["0"] = new JsonObject { ["statsUserUplink"] = true, ["statsUserDownlink"] = true } },
+                // ★ 2026-10-22 性能调整：关闭「每用户」流量统计（statsUserUplink/Downlink）。
+                //   依据：xray 官方 policy 文档 https://xtls.github.io/config/policy.html
+                //   该项官方默认 false，此前被显式打开；但 App 的统计（XrayStats.cs）只解析
+                //   outbound>>>.../inbound>>>... 计数器，从不读取 user>>>...，打开它只是给每条连接
+                //   多加两份原子计数与内存。system 级入站/出站统计保持不变（App 依赖）。
+                ["levels"] = new JsonObject { ["0"] = new JsonObject { ["statsUserUplink"] = false, ["statsUserDownlink"] = false } },
                 ["system"] = new JsonObject { ["statsInboundUplink"] = true, ["statsInboundDownlink"] = true, ["statsOutboundUplink"] = true, ["statsOutboundDownlink"] = true },
             },
             ["inbounds"] = new JsonArray
@@ -426,6 +453,9 @@ public static class XrayConfigBuilder
             }
         }
 
+        // 记录用户自定义规则的边界：后面的性能重排只调整系统内置规则，不动用户规则的优先级。
+        var customRuleCount = rules.Count;
+
         if (blockAds)
         {
             rules.Add(new JsonObject
@@ -521,7 +551,30 @@ public static class XrayConfigBuilder
             });
         }
 
-        return rules;
+        // ★ 2026-10-22 性能调整（稳定优先）：把系统内置的「IP 条件」规则整体后移。
+        //   原因：routing.domainStrategy 已是 IPOnDemand —— 官方文档：
+        //     “IPOnDemand：若目标包含域名，遇到包含 ip 条件的规则时，使用内置 DNS 将域名解析为 IP 后进行匹配”
+        //     https://xtls.github.io/config/routing.html
+        //   原顺序中 geoip:private / DNS IP 列表 / geoip:cn 这些 IP 规则排在
+        //   geosite:private / NCSI / geosite:cn 等域名规则之前，于是每个带域名的连接
+        //   在第一条 IP 规则处就要先做一次本地 DNS 解析 —— 哪怕它马上会被后面的域名规则命中。
+        //   调整后：域名规则先判，命中即出结果（国内站点/广告/NCSI 全部不再解析）；
+        //   只有域名规则全不命中时才落到 IP 规则做 geoip 判断（原有能力不变）。
+        //   等价性：被后移的 IP 规则与前面的域名规则都指向 direct（geoip:private / DNS IP 列表 /
+        //   geoip:cn）或 block，改的只是匹配顺序；用户自定义规则仍在最前，不参与重排。
+        //   实现用 DeepClone 重建数组，避免 JsonNode 的 parent 归属限制。
+        var reordered = new JsonArray();
+        var ipTail = new List<JsonNode>();
+        for (var i = 0; i < rules.Count; i++)
+        {
+            var node = rules[i]!;
+            if (i >= customRuleCount && node is JsonObject obj && obj.ContainsKey("ip"))
+                ipTail.Add(node.DeepClone());
+            else
+                reordered.Add(node.DeepClone());
+        }
+        foreach (var ipRule in ipTail) reordered.Add(ipRule);
+        return reordered;
     }
 
     private static JsonObject BuildProxyOutbound(NodeItem n)
