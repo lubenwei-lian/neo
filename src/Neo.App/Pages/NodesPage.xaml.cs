@@ -899,6 +899,79 @@ public sealed partial class NodesPage : UserControl
         }
     }
 
+    /// <summary>
+    /// 一键注册 Cloudflare WARP：生成 X25519 密钥 → 调 Cloudflare 注册接口 →
+    /// 把返回的 peer/endpoint/reserved 拼成 wireguard:// 链接，走「手动节点」通道加入列表。
+    /// 仅作为「没有自建 WG 服务端」时的补充出口（免费共享、速度一般）。
+    /// </summary>
+    private async void OnAddWarpClick(object sender, RoutedEventArgs e)
+    {
+        if (_realTesting) return;
+        try
+        {
+            var confirm = new ContentDialog
+            {
+                Title = "添加 WARP 节点",
+                Content = "WARP 是 Cloudflare 的免费公网出口（WireGuard）。\n\n"
+                        + "· 会向 Cloudflare 注册一个匿名免费账号，生成一个 WireGuard 节点加入「手动节点」\n"
+                        + "· 免费共享出口，速度/可用性受地区与策略影响，适合作为没有自建 WG 服务端时的补充\n"
+                        + "· 注册请求会自动走当前代理（未连接时直连重试）",
+                PrimaryButtonText = "注册并添加",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = XamlRoot,
+            };
+            if (await Neo.App.Ui.DialogGuard.ShowAsync(confirm) != ContentDialogResult.Primary) return;
+
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            panel.Children.Add(new ProgressRing { IsActive = true, Width = 18, Height = 18 });
+            panel.Children.Add(new TextBlock { Text = "正在向 Cloudflare 注册…", FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center });
+            var busy = new ContentDialog { Title = "WARP", Content = panel, XamlRoot = XamlRoot };
+            var showTask = Neo.App.Ui.DialogGuard.ShowAsync(busy);
+            var (ok, msg, link) = await WarpService.RegisterAsync();
+            try { busy.Hide(); } catch { }
+            try { await showTask; } catch { }
+
+            if (!ok || string.IsNullOrEmpty(link))
+            {
+                await Neo.App.Ui.DialogGuard.ShowAsync(new ContentDialog
+                {
+                    Title = "WARP 注册失败",
+                    Content = msg,
+                    CloseButtonText = "知道了",
+                    XamlRoot = XamlRoot,
+                });
+                return;
+            }
+
+            var (added, failed) = AppState.AddManualLinks(new[] { link });
+            RebuildList();
+            LogBus.App($"WARP 节点已添加（added={added}, failed={failed}）：{msg}", "Info");
+            await Neo.App.Ui.DialogGuard.ShowAsync(new ContentDialog
+            {
+                Title = "WARP 节点已添加",
+                Content = msg + "\n\n请在节点列表选择「WARP（Cloudflare 免费出口）」后连接。",
+                CloseButtonText = "知道了",
+                XamlRoot = XamlRoot,
+            });
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"WARP 注册失败：{ex.GetType().Name} {ex.Message}", "Warning");
+            try
+            {
+                await Neo.App.Ui.DialogGuard.ShowAsync(new ContentDialog
+                {
+                    Title = "WARP 注册失败",
+                    Content = ex.Message,
+                    CloseButtonText = "知道了",
+                    XamlRoot = XamlRoot,
+                });
+            }
+            catch { }
+        }
+    }
+
     private async void OnAddManualClick(object sender, RoutedEventArgs e)
     {
         var input = new TextBox

@@ -87,14 +87,25 @@
                 </StackPanel>
             </Button>
 
-            <Button Grid.Column="3" Style="{StaticResource ToolBtn}" Click="OnAddManualClick"
-                    AutomationProperties.AutomationId="AddManualBtn"
-                    ToolTipService.ToolTip="粘贴分享链接导入节点：vmess:// vless:// trojan:// ss:// hysteria2:// tuic://">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock Text="手动节点" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
+            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="10">
+                <Button Style="{StaticResource ToolBtn}" Click="OnAddManualClick"
+                        AutomationProperties.AutomationId="AddManualBtn"
+                        ToolTipService.ToolTip="粘贴分享链接导入节点：vmess:// vless:// trojan:// ss:// hysteria2:// tuic://">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Text="手动节点" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <!-- 一键注册 Cloudflare WARP（免费 WireGuard 出口），生成节点后走现有 WireGuard 链路 -->
+                <Button Style="{StaticResource ToolBtn}" Click="OnAddWarpClick"
+                        AutomationProperties.AutomationId="AddWarpBtn"
+                        ToolTipService.ToolTip="一键注册 Cloudflare WARP 免费 WireGuard 出口（速度一般，仅作没有自建 WG 服务端时的补充）">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <TextBlock Text="&#xE753;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
+                        <TextBlock Text="WARP" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
 
             <Button Grid.Column="4" Style="{StaticResource ToolBtn}" Click="OnGeoTestClick"
                     AutomationProperties.AutomationId="GeoTestBtn"
