@@ -245,7 +245,7 @@ public static class ConnectionService
             try
             {
                 group = NodeGrouper.PickGroup(AppState.Nodes, node,
-                    Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
+                    Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
             }
             catch (Exception ex)
             {
@@ -1613,8 +1613,8 @@ public static class ConnectionService
             .ThenByDescending(n => TryGetCachedSpeed(n, out var k) ? k : 0)
             .ToList();
         if (count <= 0) count = pool.Count;
-        // 上限 12：入口本质是并发连接数，开太多容易被商家按「设备/并发超限」限制。
-        return pool.Take(Math.Clamp(count, 1, 12)).ToList();
+        // 上限 8：入口本质是并发连接数，开太多容易被商家按「设备/并发超限」限制。
+        return pool.Take(Math.Clamp(count, 1, 8)).ToList();
     }
 
     /// 缓存命中判定：内存/落盘共用同一个 6 小时 TTL（落盘加载时已按 TTL 过滤）。
@@ -1693,7 +1693,7 @@ public static class ConnectionService
             List<NodeItem> group;
             try
             {
-                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
+                group = NodeGrouper.PickGroup(AppState.Nodes, node, Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
             }
             catch { return; }
             if (group.Count < 2) return;

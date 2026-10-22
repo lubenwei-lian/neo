@@ -1259,7 +1259,14 @@ public sealed partial class ConnectionPage : UserControl
             SetMode(AppState.State.ProxyMode);
 
         bool on = ConnectionService.IsConnected;
-        var node = ConnectionService.ConnectedNode ?? AppState.CurrentNode ?? AppState.Nodes.FirstOrDefault();
+        var selected = AppState.CurrentNode;
+        var connected = ConnectionService.ConnectedNode;
+        // 固定出口生效时，实际出口是「出口节点」，用户选中的节点只是入口之一 ——
+        // 用户反馈「切到 0.1 倍节点但圆环还显示旧节点」，根因就在这里：显示的是 ConnectedNode。
+        var fixedExit = on && ConnectionService.FixedExitActive
+            ? AppState.Nodes.FirstOrDefault(n => n.Name == ConnectionService.FixedExitName)
+            : null;
+        var node = fixedExit ?? connected ?? selected ?? AppState.Nodes.FirstOrDefault();
 
         bool hasSub = !string.IsNullOrWhiteSpace(AppState.State.SubscriptionUrl);
         SubBadge.Text = hasSub ? $"{AppState.Nodes.Count} 节点" : "未配置订阅";
@@ -1319,7 +1326,12 @@ public sealed partial class ConnectionPage : UserControl
 
         // 多节点加速标记：仅在真正连接且确实组了多个节点时显示
         var multi = on ? ConnectionService.MultiNodeCount : 0;
-        if (multi > 1)
+        if (fixedExit != null)
+        {
+            HeroMultiText.Text = $"固定出口 · 入口 {ConnectionService.FixedExitEntries} 条";
+            HeroMultiBadge.Visibility = Visibility.Visible;
+        }
+        else if (multi > 1)
         {
             HeroMultiText.Text = $"加速中 · {ConnectionService.MultiNodeRegion}×{multi}";
             HeroMultiBadge.Visibility = Visibility.Visible;
@@ -1333,14 +1345,19 @@ public sealed partial class ConnectionPage : UserControl
         var flagKey = node == null ? "other" : AppState.GuessFlag(node.Name);
         Ui.FlagPainter.Draw(SelFlag, flagKey);
 
-        SelNodeName.Text = node?.Name ?? "未选择节点";
-        SelHint.Text = node == null
-            ? "去节点页选择一个"
-            : node.RealDelay > 0
-                ? $"延迟 {(node.RealDelay <= 800 ? "低" : node.RealDelay <= 2000 ? "中" : "高")}"
-                : node.RealDelay == -1
-                    ? "真连超时"
-                    : "";
+        SelNodeName.Text = fixedExit != null ? "出口：" + fixedExit.Name : (node?.Name ?? "未选择节点");
+        SelHint.Text = fixedExit != null
+            ? "固定出口 · 入口 " + ConnectionService.FixedExitEntries + " 条（切换入口不影响出口）"
+            : on && selected != null && connected != null
+                && !ReferenceEquals(selected, connected) && selected.Name != connected.Name
+                ? "已选择「" + selected.Name + "」，点击圆环重连后生效"
+                : node == null
+                    ? "去节点页选择一个"
+                    : node.RealDelay > 0
+                        ? $"延迟 {(node.RealDelay <= 800 ? "低" : node.RealDelay <= 2000 ? "中" : "高")}"
+                        : node.RealDelay == -1
+                            ? "真连超时"
+                            : "";
             UpdateStatusRing();
         UpdateCoreCardUi();
     }

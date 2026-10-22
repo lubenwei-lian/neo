@@ -241,7 +241,7 @@ public sealed partial class SettingsPage : UserControl
             return;
         }
 
-        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 64));
+        var group = NodeGrouper.PickGroup(AppState.Nodes, cur, Math.Clamp(AppState.State.MultiNodeMax, 2, 10));
         var region = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(cur.Name));
         if (group.Count <= 1)
         {
@@ -327,7 +327,7 @@ public sealed partial class SettingsPage : UserControl
     {
         _fixedExitEntryList ??= new Neo.App.Ui.PopupList();
         _fixedExitEntryList.ClearItems();
-        foreach (var v in new[] { 3, 6, 12 })
+        foreach (var v in new[] { 3, 6, 8 })
         {
             var val = v;
             _fixedExitEntryList.AddItem(val + " 个", null, async () =>
@@ -347,7 +347,7 @@ public sealed partial class SettingsPage : UserControl
             LogBus.App("固定出口：入口使用全部可用节点");
             await ReloadForFixedExitAsync();
         });
-        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路；上限 12 条（太多容易被商家限制）");
+        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路；上限 8 条（太多容易被商家限制）");
         ShowListBelow(_fixedExitEntryList, sender, FixedExitEntryBox);
     }
 
@@ -716,7 +716,7 @@ public sealed partial class SettingsPage : UserControl
     // 原先上限写死 16（默认 8），而订阅里同地区同协议的节点往往有十几二十个，
     // 用户会觉得「并发 8 太少」。这里给出档位 + 「全部」，实际可组队数量由 NodeGrouper 决定。
     private static readonly int[] MultiCountPresets = { 3, 6, 8, 10 };
-    private const int MultiCountAll = 64;
+    private const int MultiCountAll = 10;
 
     private int MultiGroupAvailable()
     {
@@ -756,14 +756,14 @@ public sealed partial class SettingsPage : UserControl
             await ConnectionService.ReloadForSettingsAsync();
         });
 
-        _multiCountList.AddDisabled("只组合同地区、同协议的节点：跨地区会让出口 IP 乱跳；协议不同内核不兼容");
+        _multiCountList.AddDisabled("只组合同地区、同协议的节点：跨地区会让出口 IP 乱跳；协议不同内核不兼容。并发上限 10 个（太多容易被商家限制）");
         ShowListBelow(_multiCountList, sender, MultiCountBox);
     }
 
     private void UpdateMultiCountUi()
     {
         var avail = MultiGroupAvailable();
-        var max = Math.Clamp(AppState.State.MultiNodeMax, 2, 64);
+        var max = Math.Clamp(AppState.State.MultiNodeMax, 2, 10);
         MultiCountText.Text = avail > 0 && max >= avail ? $"全部（{avail} 个）" : $"{max} 个";
         MultiCountHint.Text = avail > 1
             ? $"当前可组队 {avail} 个（同地区同协议）；「全部」把可用的都用上"

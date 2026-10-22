@@ -368,7 +368,7 @@ public static class AppState
                 State.MultiNodeMode = "weighted";
                 changed = true;
             }
-            var maxNodes = Math.Clamp(State.MultiNodeMax, 2, 64);
+            var maxNodes = Math.Clamp(State.MultiNodeMax, 2, 10);
             if (maxNodes != State.MultiNodeMax) { State.MultiNodeMax = maxNodes; changed = true; }
             if (string.IsNullOrWhiteSpace(State.DnsServer)) { State.DnsServer = "223.5.5.5"; changed = true; }
 
