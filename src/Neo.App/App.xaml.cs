@@ -1,3 +1,4 @@
+using Neo.Core;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
@@ -215,7 +216,7 @@ public partial class App : Application
                 return new System.Net.Http.HttpClientHandler
                 {
                     Proxy = new System.Net.WebProxy(
-                        $"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}"),
+                        $"socks5://127.0.0.1:{Neo.Core.LocalPorts.Socks}"),
                     UseProxy = true,
                 };
             };

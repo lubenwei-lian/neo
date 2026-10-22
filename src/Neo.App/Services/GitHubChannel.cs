@@ -1,3 +1,4 @@
+using Neo.Core;
 using System.Net;
 using System.Net.Http;
 
@@ -30,7 +31,7 @@ public static class GitHubChannel
         {
             case "socks":
                 // neo 自己的本地 socks 端口；socks5:// = 本地解析域名。
-                h.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
+                h.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.LocalPorts.Socks}");
                 h.UseProxy = true;
                 break;
             case "sys":

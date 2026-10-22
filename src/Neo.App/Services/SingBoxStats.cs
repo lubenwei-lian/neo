@@ -1,3 +1,4 @@
+using Neo.Core;
 using System.Net.Http;
 using System.Text.Json;
 using Neo.Core.Core;
@@ -16,7 +17,7 @@ public static class SingBoxStats
         {
             using var req = new HttpRequestMessage(
                 HttpMethod.Get,
-                $"http://127.0.0.1:{SingBoxConfigBuilder.ClashApiPort}/connections");
+                $"http://127.0.0.1:{LocalPorts.ClashApi}/connections");
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + SingBoxConfigBuilder.ClashApiSecret);
 
             using var resp = Http.Send(req);

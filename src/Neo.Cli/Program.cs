@@ -80,10 +80,10 @@ internal static class Program
         var node = r.Nodes[index];
         Console.Error.WriteLine($"节点: {node}");
         var json = tun
-            ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+            ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
                 "rule", true, true, true, false, null, "warning", "223.5.5.5", true,
                 new System.Collections.Generic.List<string> { "TslGame.exe", "cs2.exe" })
-            : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+            : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
                 "rule", true, true, true, false, null, "warning", "223.5.5.5");
         Console.WriteLine(json);
         return 0;
@@ -170,8 +170,8 @@ internal static class Program
         var tcpDelay = await TcpProbeAsync(node.Server, node.Port);
         Console.WriteLine($"      TCP 预检: {(tcpDelay >= 0 ? tcpDelay + " ms" : "超时/不达（继续尝试）")}");
 
-        const int socksPort = XrayConfigBuilder.DefaultSocksPort;
-        const int httpPort = XrayConfigBuilder.DefaultHttpPort;
+        var socksPort = LocalPorts.Socks;
+        var httpPort = LocalPorts.Http;
         bool useSingBox = node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC;
         var cfgPath = System.IO.Path.Combine(NeoPaths.DataDir, useSingBox ? "singbox-test-config.json" : "xray-test-config.json");
         var json = useSingBox

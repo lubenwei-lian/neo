@@ -189,7 +189,10 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBlock x:Name="PortSocksText" Text="10808" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                            <TextBox x:Name="PortSocksBox" Text="21808" Width="92" BorderThickness="0" Background="Transparent"
+                                     Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
+                                     Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
+                                     AutomationProperties.AutomationId="PortSocksBox" />
                         </Border>
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
@@ -210,8 +213,26 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBlock x:Name="PortHttpText" Text="10809" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                            <TextBox x:Name="PortHttpBox" Text="21809" Width="92" BorderThickness="0" Background="Transparent"
+                                     Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
+                                     Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
+                                     AutomationProperties.AutomationId="PortHttpBox" />
                         </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <!-- 端口可配置：改完点「应用」会保存并自动重载内核（已连接时立即生效）。 -->
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="应用本地端口" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="PortHintText" Text="修改后自动重载内核；默认 21808 / 21809" FontSize="10.5"
+                                       TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Button x:Name="BtnApplyPorts" Style="{StaticResource GhostSm}" Click="OnApplyPortsClick"
+                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                AutomationProperties.AutomationId="BtnApplyPorts">
+                            <TextBlock Text="应用" FontSize="11.5" />
+                        </Button>
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 

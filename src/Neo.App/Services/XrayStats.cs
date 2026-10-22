@@ -30,7 +30,7 @@ public static class XrayStats
             using var p = Process.Start(new ProcessStartInfo
             {
                 FileName = exe,
-                ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.StatsApiPort}" },
+                ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.LocalPorts.StatsApi}" },
                 RedirectStandardOutput = true,
                 // 刻意不重定向 stderr：重定向了却不读，子进程写满管道缓冲（约 4 KB）后会阻塞，
                 // 而父进程正在等 stdout → 双方互等死锁。本调用只需要 stdout。

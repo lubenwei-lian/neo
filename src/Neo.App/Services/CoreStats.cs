@@ -23,6 +23,6 @@ public static class CoreStats
         if (ConnectionService.CoreKind is "sing-box" or "mihomo")
             return SingBoxStats.Query()?.ActiveConnections ?? 0;
 
-        return TcpConnCounter.CountEstablished(Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort);
+        return TcpConnCounter.CountEstablished(Neo.Core.LocalPorts.Socks);
     }
 }

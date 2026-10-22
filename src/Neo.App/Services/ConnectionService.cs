@@ -333,12 +333,12 @@ public static class ConnectionService
                 customConfigPath = Path.Combine(customDir, "runtime-config.json");
                 json = customSingBox
                     ? CustomConfigBuilder.BuildSingBox(srcJson,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
-                        SingBoxConfigBuilder.ClashApiPort, SingBoxConfigBuilder.ClashApiSecret,
+                        LocalPorts.Socks, LocalPorts.Http,
+                        LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
                         AppState.State.AllowLan)
                     : CustomConfigBuilder.BuildXray(srcJson,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
-                        XrayConfigBuilder.StatsApiPort, AppState.State.AllowLan, AppState.State.LogLevel);
+                        LocalPorts.Socks, LocalPorts.Http,
+                        LocalPorts.StatsApi, AppState.State.AllowLan, AppState.State.LogLevel);
                 var ctmp = customConfigPath + ".tmp";
                 File.WriteAllText(ctmp, json);
                 File.Move(ctmp, customConfigPath, true);
@@ -347,9 +347,9 @@ public static class ConnectionService
             else if (useMihomo)
             {
                 // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
-                var apiPort = SingBoxConfigBuilder.ClashApiPort;
+                var apiPort = LocalPorts.ClashApi;
                 var yaml = MihomoConfigBuilder.Build(node,
-                    XrayConfigBuilder.DefaultHttpPort, XrayConfigBuilder.DefaultSocksPort,
+                    LocalPorts.Http, LocalPorts.Socks,
                     apiPort, AppState.State.LogLevel);
                 mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
                 Directory.CreateDirectory(mihomoDataDir);
@@ -376,7 +376,7 @@ public static class ConnectionService
             else if (fixedExit != null && !useSingBox)
             {
                 json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
-                    XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    LocalPorts.Socks, LocalPorts.Http,
                     AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                     AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                     AppState.State.LogLevel, AppState.State.DnsServer);
@@ -391,18 +391,18 @@ public static class ConnectionService
             {
                 json = useMihomo ? "" : useSingBox
                     ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        LocalPorts.Socks, LocalPorts.Http,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
@@ -422,18 +422,18 @@ public static class ConnectionService
                 FixedExitName = null;
                 json = useMihomo ? "" : useSingBox
                     ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
-                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        LocalPorts.Socks, LocalPorts.Http,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
@@ -593,7 +593,7 @@ public static class ConnectionService
             return (false, failMsg);
         }
 
-        LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 端口 {XrayConfigBuilder.DefaultSocksPort}/{XrayConfigBuilder.DefaultHttpPort}）");
+        LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 端口 {LocalPorts.Socks}/{LocalPorts.Http}）");
 
         // 系统代理：非 TUN 时连上就自动写入 Windows。
         //   Enable()，开关的两种状态落到同一结果，纯属误导）。因此这里不再有任何开关判断，
@@ -607,9 +607,9 @@ public static class ConnectionService
         //   同时把 socks 显式写进分号串，支持 socks 的程序仍可直连 10808。
         if (!useTun)
             SystemProxy.Enable(
-                $"http=127.0.0.1:{XrayConfigBuilder.DefaultHttpPort};" +
-                $"https=127.0.0.1:{XrayConfigBuilder.DefaultHttpPort};" +
-                $"socks=127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}");
+                $"http=127.0.0.1:{LocalPorts.Http};" +
+                $"https=127.0.0.1:{LocalPorts.Http};" +
+                $"socks=127.0.0.1:{LocalPorts.Socks}");
 
         // 记录本次会话是否用了 TUN：断开时据此决定是否清理 neo-tun 网卡与路由
         // （TUN 打开就"关闭不掉"的修复，见 TeardownTunNetwork 注释）
@@ -816,12 +816,12 @@ public static class ConnectionService
             if (useSingBox)
             {
                 return AppState.State.UseTun
-                    ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
                         "global", false, false, false, false, null, "error", dns)
-                    : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
                         "global", false, false, false, false, null, "error", dns);
             }
-            return XrayConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+            return XrayConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
                 "global", false, false, false, false, null, "error", dns);
         }
         catch (Exception ex)
@@ -1489,7 +1489,7 @@ public static class ConnectionService
             //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
             //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。
             if (SystemProxy.CleanupOrphaned(
-                    XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                    LocalPorts.Socks, LocalPorts.Http,
                     10808, 10809))
             {
                 LogBus.App("检测到上次异常退出残留的系统代理（端口无监听），已自动清理恢复网络", "Warning");
@@ -1528,10 +1528,10 @@ public static class ConnectionService
     ///   ERROR 内核启动后立即退出（配置或参数错误，详见上方内核日志）
     private static (int Port, bool Busy)[] CheckAllBoundPorts() => new[]
     {
-        (XrayConfigBuilder.DefaultSocksPort, !PortFree(XrayConfigBuilder.DefaultSocksPort)),
-        (XrayConfigBuilder.DefaultHttpPort, !PortFree(XrayConfigBuilder.DefaultHttpPort)),
-        (XrayConfigBuilder.StatsApiPort, !PortFree(XrayConfigBuilder.StatsApiPort)),
-        (SingBoxConfigBuilder.ClashApiPort, !PortFree(SingBoxConfigBuilder.ClashApiPort)),
+        (LocalPorts.Socks, !PortFree(LocalPorts.Socks)),
+        (LocalPorts.Http, !PortFree(LocalPorts.Http)),
+        (LocalPorts.StatsApi, !PortFree(LocalPorts.StatsApi)),
+        (LocalPorts.ClashApi, !PortFree(LocalPorts.ClashApi)),
     };
 
     /// <summary>返回第一个被占用的端口号；全空闲返回 0。</summary>
@@ -1801,7 +1801,7 @@ public static class ConnectionService
         {
             using var handler = new SocketsHttpHandler
             {
-                Proxy = new System.Net.WebProxy($"socks5://127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}"),
+                Proxy = new System.Net.WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
                 UseProxy = true,
                 ConnectTimeout = TimeSpan.FromSeconds(timeoutSeconds),
                 // 不跟随重定向：拿到有效 HTTP 响应就证明链路可用，跟随只会多一次请求。
@@ -2132,8 +2132,8 @@ public static class ConnectionService
             var why = "";
             var processOk = _xray != null && _xray.IsRunning;
             if (!processOk) why = "内核进程未运行";
-            else if (PortFree(XrayConfigBuilder.DefaultSocksPort) || PortFree(XrayConfigBuilder.DefaultHttpPort))
-                why = $"本地 {XrayConfigBuilder.DefaultSocksPort}/{XrayConfigBuilder.DefaultHttpPort} 端口未监听";
+            else if (PortFree(LocalPorts.Socks) || PortFree(LocalPorts.Http))
+                why = $"本地 {LocalPorts.Socks}/{LocalPorts.Http} 端口未监听";
             else if (_tunSessionActive && !HasTunAdapter())
                 why = "TUN 网卡 neo-tun 不存在";
 
@@ -2302,7 +2302,7 @@ public static class ConnectionService
                 // TCP、TLS 冷启动成本，一次往返被算进「节点延迟」。因此先做 1 次**丢弃的预热探测**，
                 // 把这部分一次性成本吃掉；显示值只取热身之后 3 轮里的最优。
                 var cold = await RealDelayTester.PingViaSocksAsync(
-                    XrayConfigBuilder.DefaultSocksPort,
+                    LocalPorts.Socks,
                     target: "https://x.com/",
                     timeoutMs: 12000,   // 冷启动放宽超时，避免把「第一次慢」误判成失败
                     rounds: 1,
@@ -2318,7 +2318,7 @@ public static class ConnectionService
 
                 // 走「已连接的代理」测，而不是另起临时内核（另起进程任一步慢就误判 -1）。
                 var best = await RealDelayTester.PingViaSocksAsync(
-                    XrayConfigBuilder.DefaultSocksPort,
+                    LocalPorts.Socks,
                     rounds: AutoMeasureAttempts,
                     ct: CancellationToken.None);
 
@@ -2371,7 +2371,7 @@ public static class ConnectionService
                 try
                 {
                     await RealDelayTester.PingViaSocksAsync(
-                        XrayConfigBuilder.DefaultSocksPort,
+                        LocalPorts.Socks,
                         target: url,
                         timeoutMs: 12000,
                         rounds: 1,

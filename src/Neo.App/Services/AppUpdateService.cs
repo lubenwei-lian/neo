@@ -247,7 +247,7 @@ public static class AppUpdateService
                 switch (kind)
                 {
                     case "socks":
-                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}");
+                        handler.Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}");
                         handler.UseProxy = true;
                         break;
                     case "sys":

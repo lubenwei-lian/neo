@@ -128,6 +128,12 @@ public static class AppState
         /// </summary>
         public bool CheckKernelPreRelease { get; set; } = false;
 
+        /// <summary>本地 SOCKS 入站端口（默认 21808，可在 设置→内核 修改；改后下次连接生效）。</summary>
+        public int SocksPort { get; set; } = Neo.Core.LocalPorts.DefaultSocks;
+
+        /// <summary>本地 HTTP 入站端口（默认 21809）。</summary>
+        public int HttpPort { get; set; } = Neo.Core.LocalPorts.DefaultHttp;
+
         /// <summary>
         /// 「协议 → 内核」手动映射（对标成熟客户端的 CoreTypeItem）：
         /// 键 = NodeProtocol 名称（VLESS/VMess/...），值 = "xray" / "sing-box"；缺省 = 自动按能力选。
@@ -240,6 +246,21 @@ public static class AppState
     ///    落盘一次，若它恰落在 Load() 替换 State 的窗口内，就会把**替换前的旧对象**写盘
     ///    —— 内存是新值、磁盘是旧值，用户的设置改动在下次启动时静默回滚。
     ///    共用锁之后，任何 Save() 要么整体发生在替换之前、要么整体发生在之后，该交错不再可能。
+    /// <summary>把持久化的本地端口写入运行期真源（无效/旧配置回退默认值）。</summary>
+    public static void ApplyLocalPorts()
+    {
+        try
+        {
+            var err = Neo.Core.LocalPorts.TryApply(State.SocksPort, State.HttpPort);
+            if (err == null) return;
+            LogBus.App($"本地端口配置无效（{State.SocksPort}/{State.HttpPort}）：{err} —— 已回退默认 {Neo.Core.LocalPorts.DefaultSocks}/{Neo.Core.LocalPorts.DefaultHttp}", "Warning");
+            Neo.Core.LocalPorts.Reset();
+            State.SocksPort = Neo.Core.LocalPorts.DefaultSocks;
+            State.HttpPort = Neo.Core.LocalPorts.DefaultHttp;
+        }
+        catch { Neo.Core.LocalPorts.Reset(); }
+    }
+
     /// <summary>把持久化的协议→内核映射同步给 Core 层的路由表（连接/测速都用它）。</summary>
     public static void SyncCoreMap()
     {
@@ -317,6 +338,7 @@ public static class AppState
                     CurrentNode = Nodes[0];
 
                 SyncCoreMap();
+                ApplyLocalPorts();
             }
             catch (Exception ex)
             {
@@ -566,6 +588,7 @@ public static class AppState
             try
             {
                 SyncCoreMap();   // 保存即生效，不用重启
+                ApplyLocalPorts();
                 var tmp = StatePath + ".tmp";
                 File.WriteAllText(tmp, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true }));
                 File.Move(tmp, StatePath, true);

@@ -1,3 +1,4 @@
+using Neo.Core;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
@@ -700,7 +701,7 @@ public static class UpdateChecker
                     switch (kind)
                     {
                         case "socks":
-                            handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}");
+                            handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.LocalPorts.Socks}");
                             handler.UseProxy = true;
                             break;
                         case "sys":

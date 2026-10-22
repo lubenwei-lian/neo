@@ -1089,6 +1089,41 @@ public sealed partial class SettingsPage : UserControl
         catch { }
     }
 
+    private async void OnApplyPortsClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button b) return;
+        b.IsEnabled = false;
+        try
+        {
+            if (!int.TryParse(PortSocksBox.Text.Trim(), out var socks) || !int.TryParse(PortHttpBox.Text.Trim(), out var http))
+            {
+                PortHintText.Text = "端口必须是数字（1024–65535）";
+                return;
+            }
+            var err = LocalPorts.TryApply(socks, http);
+            if (err != null)
+            {
+                PortHintText.Text = err;
+                return;
+            }
+            AppState.State.SocksPort = socks;
+            AppState.State.HttpPort = http;
+            AppState.Save();   // Save 内会 ApplyLocalPorts
+            PortHintText.Text = $"已应用：SOCKS {socks} / HTTP {http}（内核将按新端口重建）";
+            LogBus.App($"本地端口已修改：SOCKS {socks} / HTTP {http}", "Info");
+            await ConnectionService.ReloadForSettingsAsync();
+        }
+        catch (Exception ex)
+        {
+            PortHintText.Text = "应用失败：" + ex.Message;
+            LogBus.App($"应用端口失败：{ex.GetType().Name} {ex.Message}", "Warning");
+        }
+        finally
+        {
+            b.IsEnabled = true;
+        }
+    }
+
     private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
     {
         try
@@ -1336,8 +1371,8 @@ public sealed partial class SettingsPage : UserControl
             ? "默认自动：按节点传输/加密能力选择内核"
             : $"已指定 {coreCustom} 个协议 · 其余自动";
 
-        PortSocksText.Text = XrayConfigBuilder.DefaultSocksPort.ToString();
-        PortHttpText.Text = XrayConfigBuilder.DefaultHttpPort.ToString();
+        PortSocksBox.Text = LocalPorts.Socks.ToString();
+        PortHttpBox.Text = LocalPorts.Http.ToString();
         LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)
             ? Path.Combine("data", "logs")
             : NeoPaths.LogDir);

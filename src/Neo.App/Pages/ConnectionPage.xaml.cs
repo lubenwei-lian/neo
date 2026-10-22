@@ -1,3 +1,4 @@
+using Neo.Core;
 using System.Linq;
 using Microsoft.UI;
 using Microsoft.UI.Text;
@@ -1253,7 +1254,7 @@ public sealed partial class ConnectionPage : UserControl
         // 本地代理地址跟随后端常量（2026-10-23 端口迁移到 21xxx，避免与其它客户端撞端口）。
         try
         {
-            LocalProxyAddrText.Text = $"127.0.0.1:{Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort}";
+            LocalProxyAddrText.Text = $"127.0.0.1:{Neo.Core.LocalPorts.Socks}";
         }
         catch { }
 

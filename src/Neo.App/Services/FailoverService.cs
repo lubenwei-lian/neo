@@ -288,7 +288,7 @@ public static class FailoverService
         {
             if (!ConnectionService.IsTunSession && !SystemProxy.IsEnabled && AppState.State.AutoRepairSystemProxy)
             {
-                var own = "127.0.0.1:" + Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort;
+                var own = "127.0.0.1:" + Neo.Core.LocalPorts.Socks;
                 var cur = SystemProxy.CurrentServer;
                 bool isOurs = string.IsNullOrWhiteSpace(cur) || string.Equals(cur, own, StringComparison.OrdinalIgnoreCase);
                 if (isOurs)
@@ -426,7 +426,7 @@ public static class FailoverService
         {
             using var handler = new SocketsHttpHandler
             {
-                Proxy = new WebProxy($"socks5://127.0.0.1:{XrayConfigBuilder.DefaultSocksPort}"),
+                Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
                 UseProxy = true,
                 ConnectTimeout = TimeSpan.FromSeconds(8),
                 // 不跟随重定向：telegram 根路径就是 302，跟下去会白拉一次请求、拉长探测时间
