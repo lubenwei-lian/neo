@@ -145,6 +145,11 @@ public partial class App : Application
             }
             if (guard.SafeMode)
             {
+                // 记住进入安全模式前的三项，供用户一键恢复（否则等于程序偷偷改了设置）。
+                Services.AppState.State.SafeModePrevTun = Services.AppState.State.UseTun;
+                Services.AppState.State.SafeModePrevMultiNode = Services.AppState.State.MultiNodeEnabled;
+                Services.AppState.State.SafeModePrevFixedExit = Services.AppState.State.FixedExitEnabled;
+                Services.AppState.State.SafeModeAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
                 Services.AppState.State.UseTun = false;
                 Services.AppState.State.MultiNodeEnabled = false;
                 Services.AppState.State.FixedExitEnabled = false;

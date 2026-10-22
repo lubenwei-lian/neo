@@ -104,6 +104,16 @@ public static class AppState
         /// 默认开；如果你会同时用别的代理软件，可以关掉它，避免互相覆盖。
         public bool AutoRepairSystemProxy { get; set; } = true;
 
+        /// 内核异常退出后是否自动重启。默认开；关掉后内核崩溃只断开、等你手动重连。
+        public bool AutoRestartCore { get; set; } = true;
+
+        /// 安全模式记录的「进入前」三项设置，配合 SafeModeAt 让用户一键恢复。
+        public bool SafeModePrevTun { get; set; }
+        public bool SafeModePrevMultiNode { get; set; }
+        public bool SafeModePrevFixedExit { get; set; }
+        /// 上次进入安全模式的时间；空 = 没有待恢复的安全模式记录。
+        public string SafeModeAt { get; set; } = "";
+
         public bool AutoSpeedTest { get; set; } = true;
 
         /// 启动后自动测一次全部节点的真连延迟（与节点页「真连测速」同一套实现），

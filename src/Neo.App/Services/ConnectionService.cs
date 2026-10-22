@@ -1304,7 +1304,18 @@ public static class ConnectionService
         // 必须先把自动重启安排出去：本方法运行在 Process.Exited 的线程池线程上，
         // 而 StateChanged 的订阅者里有直接操作 XAML 的（MainWindow.UpdateConnUi），
         // 跨线程访问 UI 会抛异常，且该异常会被 CoreProcess 的 try/catch 静默吞掉——
-        if (node != null) _ = TryAutoRestartCoreAsync(node);
+        if (node != null)
+        {
+            if (AppState.State.AutoRestartCore)
+            {
+                _ = TryAutoRestartCoreAsync(node);
+            }
+            else
+            {
+                LogBus.App("内核异常退出：设置里关闭了「内核异常退出后自动重启」，保持断开（可手动重连）", "Warning");
+                IncidentLog.Record("kernel-exit", "内核异常退出，自动重启已关闭（设置）");
+            }
+        }
 
         NotifyStateChanged();
     }

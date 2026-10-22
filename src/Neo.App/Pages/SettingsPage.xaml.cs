@@ -166,6 +166,39 @@ public sealed partial class SettingsPage : UserControl
         LogBus.App(SwitchFailover.IsOn ? "自动故障转移：已开启" : "自动故障转移：已关闭");
     }
 
+    private void OnAutoRestartCoreToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.AutoRestartCore = SwitchAutoRestartCore.IsOn;
+        AppState.Save();
+        LogBus.App(SwitchAutoRestartCore.IsOn ? "内核异常退出后自动重启：已开启" : "内核异常退出后自动重启：已关闭");
+    }
+
+    private async void OnRestoreSafeModeClick(object sender, RoutedEventArgs e)
+    {
+        var st = AppState.State;
+        st.UseTun = st.SafeModePrevTun;
+        st.MultiNodeEnabled = st.SafeModePrevMultiNode;
+        st.FixedExitEnabled = st.SafeModePrevFixedExit;
+        st.SafeModeAt = "";
+        AppState.Save();
+        LogBus.App("已恢复安全模式前的设置（TUN / 多节点 / 固定出口）");
+        IncidentLog.Record("startup", "用户恢复了安全模式前的设置");
+        RefreshFromState();
+        if (ConnectionService.IsConnected)
+        {
+            try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
+        }
+    }
+
+    private void RefreshSafeModeRow()
+    {
+        var at = AppState.State.SafeModeAt ?? "";
+        SafeModeRow.Visibility = at.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (at.Length > 0)
+            SafeModeHint.Text = $"上次启动失败（{at}）时已临时关闭 TUN / 多节点 / 固定出口，可一键恢复";
+    }
+
     private void OnAutoRepairProxyToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
@@ -1244,7 +1277,8 @@ public sealed partial class SettingsPage : UserControl
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
         st.FailoverEnabled = true; st.MultiNodeEnabled = false; st.MultiNodeMax = 8;
-        st.AutoRepairSystemProxy = true;
+        st.AutoRepairSystemProxy = true; st.AutoRestartCore = true;
+        st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevMultiNode = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
         st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;
@@ -1269,6 +1303,7 @@ public sealed partial class SettingsPage : UserControl
         SwitchShowRealIp.IsOn = AppState.State.ShowRealIp;
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchAutoRepairProxy.IsOn = AppState.State.AutoRepairSystemProxy;
+        SwitchAutoRestartCore.IsOn = AppState.State.AutoRestartCore;
         SwitchMultiNode.IsOn = AppState.State.MultiNodeEnabled;
         SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
@@ -1289,6 +1324,7 @@ public sealed partial class SettingsPage : UserControl
         UpdateMultiModeUi();
         UpdateMultiCountUi();
         UpdateFixedExitUi();
+        RefreshSafeModeRow();
         UpdateRuleSetCount();
         UpdateDnsUi();
         UpdateLangUi();
