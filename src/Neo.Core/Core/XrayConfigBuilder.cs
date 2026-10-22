@@ -230,6 +230,8 @@ public static class XrayConfigBuilder
         n.IsValid
         && !string.Equals(n.Security, "reality", StringComparison.OrdinalIgnoreCase)
         && n.Network is not ("h2" or "quic")
+        // ★ 2026-10-23 第二批：链式出站只有 xray 跑；必须 sing-box 的节点（ss-plugin/明文 vless 等）不能当 chain
+        && !n.RequiresSingBox
         && n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks;
 
     /// 固定出口（多入口加速）配置：出口固定为一个节点，其他节点作为入口链路。
@@ -620,6 +622,17 @@ public static class XrayConfigBuilder
     private static string StripBrackets(string host) =>
         host.Length >= 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
 
+    /// <summary>64 位十六进制（sha256）判定：xray 的 pinnedPeerCertSha256 只接受这种形式，其它（如 hy2 的 base64 pin）忽略。</summary>
+    private static bool IsHexSha256(string? s)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length != 64) return false;
+        foreach (var c in s)
+        {
+            if (!char.IsAsciiHexDigit(c)) return false;
+        }
+        return true;
+    }
+
     private static JsonObject BuildProxyOutbound(NodeItem n)
     {
         var stream = BuildStreamSettings(n);
@@ -657,7 +670,10 @@ public static class XrayConfigBuilder
                 var vlessUser = new JsonObject
                 {
                     ["id"] = n.Uuid ?? "",
-                    ["encryption"] = "none",
+                    // ★ 2026-10-23 第二批：VLESS 后量子加密（xray 25+，链接参数 encryption=mlkem768x25519plus...）。
+                    //   旧实现写死 "none" → 这类节点能导入、能测速（测速配置同样写死 none 会失败）、连不上。
+                    //   xray 26.10.17 实测接受该字段（台账 F1）；空/ none 时行为与旧版一致。
+                    ["encryption"] = string.IsNullOrEmpty(n.VlessEncryption) ? "none" : n.VlessEncryption,
                 };
                 if (!string.IsNullOrEmpty(n.Flow)) vlessUser["flow"] = n.Flow;
                 return new JsonObject
@@ -711,6 +727,34 @@ public static class XrayConfigBuilder
                     ["streamSettings"] = stream,
                 };
 
+            case NodeProtocol.Socks:
+                // ★ 2026-10-23 第二批：socks5 出站（v2rayN socks:// 分享链接）。xray 实测接受（台账 F1）。
+                var socksServer = new JsonObject
+                {
+                    ["address"] = server,
+                    ["port"] = n.Port,
+                };
+                if (!string.IsNullOrEmpty(n.Username))
+                {
+                    socksServer["users"] = new JsonArray(new JsonObject
+                    {
+                        ["user"] = n.Username,
+                        ["pass"] = n.Password ?? "",
+                    });
+                }
+                return new JsonObject
+                {
+                    ["tag"] = "proxy",
+                    ["protocol"] = "socks",
+                    ["settings"] = new JsonObject { ["servers"] = new JsonArray(socksServer) },
+                };
+
+            case NodeProtocol.AnyTls:
+                // xray 26.10.17 实测没有 anytls 出站（台账 F1：unknown config id: anytls）→ 必须走 sing-box。
+                // 这里抛出可读原因，由 ConnectionService / 内核能力判定提前拦下，不会走到这个分支。
+                throw new NotSupportedException(
+                    $"节点「{n.Name}」是 anytls 协议，xray 内核不支持（实测 unknown config id: anytls），请走 sing-box 内核");
+
             default:
                 throw new NotSupportedException($"协议 {n.Protocol} 暂不支持 xray 内核（等待 sing-box 支持）");
         }
@@ -733,10 +777,63 @@ public static class XrayConfigBuilder
                 break;
 
             case "grpc":
-                s["grpcSettings"] = new JsonObject
+                var grpc = new JsonObject
                 {
                     ["serviceName"] = n.ServiceName ?? "",
                 };
+                // ★ 2026-10-23 第二批：gRPC authority / multi 模式（分享链接 authority=、mode=multi）。
+                //   旧实现只写 serviceName → 需要 authority 的节点（多数 CDN 前置）握手 Host 不对，连不上。
+                if (!string.IsNullOrEmpty(n.GrpcAuthority)) grpc["authority"] = n.GrpcAuthority;
+                if (!string.IsNullOrEmpty(n.GrpcMode) && n.GrpcMode.Equals("multi", StringComparison.OrdinalIgnoreCase))
+                    grpc["multiMode"] = true;
+                s["grpcSettings"] = grpc;
+                break;
+
+            case "httpupgrade":
+                // ★ 2026-10-23 第二批：HTTPUpgrade 传输（xray 支持但已标记 deprecated，实测仍可用）。
+                var httpup = new JsonObject
+                {
+                    ["path"] = string.IsNullOrEmpty(n.Path) ? "/" : n.Path,
+                };
+                if (!string.IsNullOrEmpty(n.HostHeader)) httpup["host"] = n.HostHeader;
+                s["httpupgradeSettings"] = httpup;
+                break;
+
+            case "kcp":
+            case "mkcp":
+                // ★ 2026-10-23 第二批：mKCP 传输（xray 专有，sing-box 不支持）。
+                //   xray 26 实测要求 maxSendingWindow >= 1350（旧默认 0 会被拒绝启动）；
+                //   头混淆 / 种子已从 kcpSettings 移到 finalmask.udp（v2rayN 同样写法），
+                //   kcpSettings 里的 header 字段在 26 已被移除。
+                s["network"] = "kcp";
+                s["kcpSettings"] = new JsonObject
+                {
+                    ["mtu"] = n.KcpMtu is > 0 ? n.KcpMtu.Value : 1350,
+                    ["tti"] = 20,
+                    ["uplinkCapacity"] = 5,
+                    ["downlinkCapacity"] = 20,
+                    ["cwndMultiplier"] = 1,
+                    ["maxSendingWindow"] = 1350,
+                };
+                var masks = new JsonArray();
+                if (!string.IsNullOrEmpty(n.HeaderType) &&
+                    !n.HeaderType.Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    masks.Add(new JsonObject
+                    {
+                        ["type"] = "mkcp-legacy",
+                        ["settings"] = new JsonObject { ["header"] = n.HeaderType.ToLowerInvariant() },
+                    });
+                }
+                if (!string.IsNullOrEmpty(n.KcpSeed))
+                {
+                    masks.Add(new JsonObject
+                    {
+                        ["type"] = "mkcp-legacy",
+                        ["settings"] = new JsonObject { ["value"] = n.KcpSeed },
+                    });
+                }
+                if (masks.Count > 0) s["finalmask"] = new JsonObject { ["udp"] = masks };
                 break;
 
             case "http":
@@ -760,12 +857,25 @@ public static class XrayConfigBuilder
                 break;
 
             case "xhttp":
-                s["xhttpSettings"] = new JsonObject
+                // ★ 2026-10-23 第二批：xhttp 的 mode / extra（分享链接 mode=stream-one&extra={...}）。
+                //   旧实现写死 mode=auto、丢 extra → 服务端要求固定模式/分片参数时直接连不上。
+                var xhttp = new JsonObject
                 {
                     ["path"] = string.IsNullOrEmpty(n.Path) ? "/" : n.Path,
-                    ["host"] = n.HostHeader ?? n.Server,
-                    ["mode"] = "auto",
+                    ["host"] = string.IsNullOrEmpty(n.HostHeader) ? StripBrackets(n.Server) : n.HostHeader,
                 };
+                var xm = (n.XhttpMode ?? "").Trim().ToLowerInvariant();
+                if (xm is "auto" or "packet-up" or "stream-up" or "stream-one") xhttp["mode"] = xm;
+                if (!string.IsNullOrEmpty(n.XhttpExtra))
+                {
+                    try
+                    {
+                        var extraNode = JsonNode.Parse(n.XhttpExtra);
+                        if (extraNode is JsonObject extraObj) xhttp["extra"] = extraObj;
+                    }
+                    catch { /* extra 不是合法 JSON：丢弃，不影响主配置 */ }
+                }
+                s["xhttpSettings"] = xhttp;
                 break;
         }
 
@@ -778,6 +888,19 @@ public static class XrayConfigBuilder
                 };
                 if (!string.IsNullOrEmpty(n.Fingerprint)) tls["fingerprint"] = n.Fingerprint;
                 if (n.AllowInsecure) tls["allowInsecure"] = true;
+
+                // ★ 2026-10-23 第二批（v2rayN 对齐，BaseFmt ResolveUriQuery / V2rayOutboundService.cs:325-364）：
+                //   · ech → echConfigList（base64 ECHConfigList）；xray 26 还要求 echForceQuery=full 才真正查询
+                //   · vcn → verifyPeerCertByName（按证书里的名字校验，不依赖 SNI）
+                //   · pcs → pinnedPeerCertSha256（证书链 pin，xray 要求 64 位十六进制）
+                //   三者 xray 26.10.17 实测均接受（台账 F1）；旧实现全部丢失 → 这类节点证书校验必失败。
+                if (!string.IsNullOrEmpty(n.EchConfigList))
+                {
+                    tls["echConfigList"] = n.EchConfigList;
+                    tls["echForceQuery"] = "full";
+                }
+                if (!string.IsNullOrEmpty(n.VerifyPeerCertByName)) tls["verifyPeerCertByName"] = n.VerifyPeerCertByName;
+                if (IsHexSha256(n.CertSha256)) tls["pinnedPeerCertSha256"] = n.CertSha256;
                 if (n.Extras.TryGetValue("alpn", out var alpn) && !string.IsNullOrEmpty(alpn))
                 {
                     tls["alpn"] = new JsonArray(alpn.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -789,7 +912,7 @@ public static class XrayConfigBuilder
 
             case "reality":
                 s["security"] = "reality";
-                s["realitySettings"] = new JsonObject
+                var reality = new JsonObject
                 {
                     ["serverName"] = n.Sni ?? "",
                     ["fingerprint"] = string.IsNullOrEmpty(n.Fingerprint) ? "chrome" : n.Fingerprint,
@@ -797,6 +920,10 @@ public static class XrayConfigBuilder
                     ["shortId"] = n.ShortId ?? "",
                     ["spiderX"] = n.SpiderX ?? "",
                 };
+                // ★ 2026-10-23 第二批：REALITY 的 ML-DSA-65 后量子校验（分享链接 pqv=）。
+                //   xray 26.10.17 实测接受该字段（用 xray mldsa65 生成的真实验证串验过，台账 F1）。
+                if (!string.IsNullOrEmpty(n.Mldsa65Verify)) reality["mldsa65Verify"] = n.Mldsa65Verify;
+                s["realitySettings"] = reality;
                 break;
 
             default:

@@ -131,6 +131,15 @@ public sealed partial class MainWindow : Window
             if (App.IsShuttingDown) return;
             ShowStatusText(msg);
         });
+        // ★ 2026-10-23 第二批（F9）：内核看门狗进安全模式时必须让用户看见。
+        //   转成「状态条 + 托盘气泡」双通道：窗口最小化到托盘时只有气泡可见，
+        //   而 v2rayN 的痛点正是「内核死了/退化了却毫无提示」。
+        ConnectionService.UserNotice += msg => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (App.IsShuttingDown) return;
+            ShowStatusText(msg);
+            try { TrayIcon.ShowNotification("neo 内核兜底", msg); } catch { }
+        });
         // 让「不在 MainWindow 里的退出路径」（提权重启）也能走有序收尾，
         App.ExitRequested = ExitForRelaunch;
         // 交给后台线程按 1 秒节奏采样，UI 线程只读缓存，界面不再被同步子进程调用冻结。

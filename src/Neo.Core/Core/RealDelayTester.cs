@@ -85,7 +85,11 @@ public static class RealDelayTester
     {
         if (!node.IsValid) return -1;
 
-        bool useSingBox = node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC;
+        // ★ 2026-10-23 第二批：内核选择改为「协议 + 能力」双判定（NodeItem.RequiresSingBox）：
+        //   anytls / ss-plugin / h2 / hy2 gecko / 明文 vless 都只能走 sing-box；
+        //   旧实现只看 hy2/tuic → 这些节点用 xray 测速必失败（配置被内核拒绝），界面显示「超时」。
+        bool useSingBox = node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (node.RequiresSingBox && !node.RequiresXray);
         var exe = Path.Combine(runtimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
         if (!File.Exists(exe))
         {
@@ -294,8 +298,10 @@ public static class RealDelayTester
     {
         var result = new ConcurrentDictionary<NodeItem, int>();
         var valid = nodes.Where(n => n.IsValid).ToList();
-        var xrayNodes = valid.Where(n => n.Protocol is not NodeProtocol.Hysteria2 and not NodeProtocol.TUIC).ToList();
-        var sbNodes = valid.Where(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC).ToList();
+        var sbNodes = valid.Where(n =>
+            n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (n.RequiresSingBox && !n.RequiresXray)).ToList();
+        var xrayNodes = valid.Where(n => !sbNodes.Contains(n)).ToList();
         var done = 0;
 
         // ★ 2026-10-23 真连测速总预算：弱网/大量死节点时避免拖到 1 分半。
@@ -652,7 +658,8 @@ public static class RealDelayTester
     {
         var result = new ConcurrentDictionary<NodeItem, (string Country, string Ip)>();
         var xrayNodes = nodes.Where(n => n.IsValid
-            && n.Protocol is not NodeProtocol.Hysteria2 and not NodeProtocol.TUIC).ToList();
+            && n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC)
+            && !(n.RequiresSingBox && !n.RequiresXray)).ToList();
         if (xrayNodes.Count == 0) return result;
 
         var ports = AllocPorts(xrayNodes.Count);

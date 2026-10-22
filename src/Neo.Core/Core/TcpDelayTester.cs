@@ -60,7 +60,11 @@ public static class TcpDelayTester
         foreach (var node in nodes)
         {
             if (node == null) continue;
-            if (!node.IsValid || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC)
+            //   ★ 2026-10-23 第二批补 mKCP：mKCP 是 UDP 传输，服务端通常不监听 TCP，
+            //   测出来的「超时」不代表节点坏（v2rayN 也只对 TCP 类协议做 tcping）。
+            if (!node.IsValid
+                || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                || (node.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp")
             {
                 result[node] = 0;
                 continue;

@@ -145,6 +145,14 @@ public static class ConnectionService
 
     public static event Action<string>? LogLine;
 
+    /// <summary>
+    /// 需要直接告诉用户的兜底事件（内核看门狗进安全模式等）。
+    /// 与 LogLine 的区别：LogLine 是日志流（用户不看日志就永远不知道），本事件由 MainWindow
+    /// 转成状态条 + 托盘气泡 —— 因为内核异常时窗口常常在托盘里，只有气泡才看得见。
+    /// 2026-10-23 第二批新增（F9）。
+    /// </summary>
+    public static event Action<string>? UserNotice;
+
     public static string ConfigPath => Path.Combine(NeoPaths.DataDir, "config.json");
 
     public static async Task<(bool Ok, string? Error)> ConnectAsync(NodeItem node, bool force = false)
@@ -210,7 +218,24 @@ public static class ConnectionService
         FixedExitName = null;
 
         bool useTun = AppState.State.UseTun;
-        bool useSingBox = useTun || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC;
+
+        // ★ 2026-10-23 第二批：内核能力判定（NodeItem.RequiresXray / RequiresSingBox，依据见台账 F1 实测）。
+        //   TUN 模式固定跑 sing-box，而 mKCP / xhttp / VLESS 后量子加密 / REALITY pqv / vcn 只有 xray 支持。
+        //   这类节点在 TUN 下**必须明确拒绝**：静默改走 sing-box 会变成「连上了但所有站点超时」，
+        //   比直接提示难排查得多；静默改走系统代理又会让用户以为 TUN 生效（UDP 泄漏）。
+        if (useTun && node.RequiresXray)
+        {
+            var why = XrayOnlyReason(node);
+            LogBus.App($"连接中止：节点「{node.Name}」需要 xray 专有能力（{why}），TUN 模式固定跑 sing-box，无法承载", "Error");
+            IncidentLog.Record("connect", "TUN 与节点能力冲突，已拒绝连接", $"{node.Name}：{why}");
+            return (false, $"节点「{node.Name}」用到 xray 专有能力（{why}），TUN 模式不支持；请关闭 TUN 或换节点");
+        }
+
+        //   优先级：xray 专有能力（xhttp/kcp/VLESS 加密/pqv/vcn）优先于「明文 vless 需 sing-box」的判定，
+        //   否则「明文 vless + xhttp」这类节点会被推给 sing-box，然后因为 xhttp 不支持而直接失败。
+        bool useSingBox = useTun
+            || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (node.RequiresSingBox && !node.RequiresXray);
 
         // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
         // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
@@ -1484,6 +1509,8 @@ public static class ConnectionService
         var top3 = AppState.Nodes
             .Where(n => n.IsValid && n.RealDelay > 0)
             .Where(n => n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC))
+            // ★ 2026-10-23 第二批：TUN 下跳过 xray 专有能力节点（它们会被 ConnectAsync 直接拒绝）
+            .Where(n => !(AppState.State.UseTun && n.RequiresXray))
             .Where(n => string.Equals(NodeGrouper.RegionOf(n.Name), region, StringComparison.Ordinal))
             .OrderBy(n => n.RealDelay)
             .Take(3)
@@ -1671,6 +1698,20 @@ public static class ConnectionService
     /// （如 Process.Exited）调用它 —— 跨线程碰 UI 会抛异常，且该异常会被
     /// 因此这里：① 必要时 marshal 到 UI 线程；② 每个订阅者单独 try/catch，互不牵连；③ 失败留痕不再静默。
     public static Microsoft.UI.Dispatching.DispatcherQueue? UiDispatcher;
+
+    /// <summary>列出该节点用到的 xray 专有能力（用于 TUN 冲突提示与日志，口径与 NodeItem.RequiresXray 一致）。</summary>
+    private static string XrayOnlyReason(NodeItem n)
+    {
+        var list = new List<string>();
+        var net = (n.Network ?? "").ToLowerInvariant();
+        if (net is "kcp" or "mkcp") list.Add("mKCP 传输");
+        if (net is "xhttp") list.Add("xhttp 传输");
+        if (!string.IsNullOrEmpty(n.VlessEncryption) && !n.VlessEncryption.Equals("none", StringComparison.OrdinalIgnoreCase))
+            list.Add("VLESS 后量子加密");
+        if (!string.IsNullOrEmpty(n.Mldsa65Verify)) list.Add("REALITY pqv 校验");
+        if (!string.IsNullOrEmpty(n.VerifyPeerCertByName)) list.Add("证书名校验 vcn");
+        return list.Count == 0 ? "xray 专有能力" : string.Join(" / ", list);
+    }
 
     private static void NotifyStateChanged()
     {
@@ -1958,6 +1999,11 @@ public static class ConnectionService
         try { Disconnect("内核兜底：进入安全模式"); } catch { }
         LogBus.App($"内核兜底：已进入安全模式（原因：{reason}）—— TUN 与固定出口已关闭，请检查内核日志/配置后在设置页按需重新开启", "Error");
         IncidentLog.Record("watchdog", "看门狗进入安全模式", reason);
+
+        // ★ 2026-10-23 第二批（F9）：内核兜底必须让用户看见。
+        //   旧实现只写日志 + 状态字段：窗口在托盘里时用户完全无感（v2rayN 的死穴正是「内核死了没人知道」）。
+        try { NotifyStateChanged(); } catch { }
+        try { UserNotice?.Invoke($"内核连续异常，已进入安全模式（TUN/固定出口已关闭）：{reason}"); } catch { }
     }
     /// 解析固定出口的出口节点：优先用户手动指定的键，否则自动选延迟最好的非 REALITY 节点。
     private static NodeItem? ResolveFixedExitNode()
@@ -1983,6 +2029,9 @@ public static class ConnectionService
             .Where(n => n.IsValid && !string.Equals(AppState.NodeKey(n), exitKey, StringComparison.Ordinal))
             .Where(n => n.Network is not ("h2" or "quic"))
             .Where(n => n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks)
+            // ★ 2026-10-23 第二批：xray 链式出站要求每个 hop 都能被 xray 承载
+            //   （ss-plugin / 明文 vless 只有 sing-box 支持，混进链里会让整份配置被拒）
+            .Where(n => !n.RequiresSingBox)
             .OrderByDescending(n => n.RealDelay > 0)
             .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
             .ToList();

@@ -9,6 +9,12 @@ public enum NodeProtocol
     Shadowsocks,
     Hysteria2,
     TUIC,
+
+    /// <summary>anytls（xray 不支持，只能走 sing-box 内核）。</summary>
+    AnyTls,
+
+    /// <summary>socks5 出站节点（v2rayN 的 socks:// / socks5:// 分享链接）。</summary>
+    Socks,
 }
 
 public sealed class NodeItem
@@ -62,6 +68,85 @@ public sealed class NodeItem
 
     /// 最近一次 TCP 握手延迟测试的时间（本地时间）；默认值表示从未测过。
     public DateTime TcpDelayAt { get; set; }
+
+    // ================= 2026-10-23 第二批：向 v2rayN 对齐的协议能力字段 =================
+    // 说明：以下字段全部可空/默认值，旧 state 与旧订阅缓存反序列化后保持原行为。
+
+    /// <summary>socks5 用户名（仅 NodeProtocol.Socks 使用；也可用于其它需要认证的协议）。</summary>
+    public string? Username { get; set; }
+
+    /// <summary>
+    /// VLESS 后量子加密串（xray 25+）：形如 "mlkem768x25519plus.native.0rtt.xxx"。
+    /// 空 / "none" = 不加密。sing-box 1.14 不支持该字段 ⇒ 这类节点必须走 xray 内核。
+    /// </summary>
+    public string? VlessEncryption { get; set; }
+
+    /// <summary>REALITY 的 ML-DSA-65 后量子校验（v2rayN 分享链接参数 pqv）。空 = 不校验。</summary>
+    public string? Mldsa65Verify { get; set; }
+
+    /// <summary>TLS ECH 配置列表（base64，xray 的 echConfigList / sing-box 的 tls.ech.config）。空 = 不用 ECH。</summary>
+    public string? EchConfigList { get; set; }
+
+    /// <summary>证书名校验（v2rayN 分享链接参数 vcn → xray tlsSettings.verifyPeerCertByName）。空 = 不启用。</summary>
+    public string? VerifyPeerCertByName { get; set; }
+
+    /// <summary>
+    /// 证书 pin：v2rayN 的 pcs（xray pinnedPeerCertSha256）/ hy2 的 pinSHA256。
+    /// xray 要求 64 位十六进制（sha256）；hy2 的 pin 另存 Extras["pinsha256"]。
+    /// </summary>
+    public string? CertSha256 { get; set; }
+
+    /// <summary>mKCP 种子（分享链接 seed）。空 = 不用种子。</summary>
+    public string? KcpSeed { get; set; }
+
+    /// <summary>mKCP MTU（分享链接 mtu）；null = 用默认 1350。</summary>
+    public int? KcpMtu { get; set; }
+
+    /// <summary>xhttp 模式（auto / packet-up / stream-up / stream-one）。空 = auto。</summary>
+    public string? XhttpMode { get; set; }
+
+    /// <summary>xhttp 的 extra JSON 对象原文（分享链接 extra=）。空 = 不写。</summary>
+    public string? XhttpExtra { get; set; }
+
+    /// <summary>gRPC authority（分享链接 authority=）；空 = 用 Host 头/服务器名。</summary>
+    public string? GrpcAuthority { get; set; }
+
+    /// <summary>gRPC 模式（gun / multi）；空 = 默认。</summary>
+    public string? GrpcMode { get; set; }
+
+    /// <summary>hysteria2 gecko 混淆的最小分片（分享链接 minPacketSize）；空 = 非 gecko。</summary>
+    public int? GeckoMinPacketSize { get; set; }
+
+    /// <summary>hysteria2 gecko 混淆的最大分片（分享链接 maxPacketSize）；空 = 非 gecko。</summary>
+    public int? GeckoMaxPacketSize { get; set; }
+
+    /// <summary>
+    /// 该节点是否用到 xray 专有能力（sing-box 1.14 不支持，实测见台账）：
+    /// mKCP / xhttp 传输、VLESS 后量子加密、REALITY pqv、证书名校验 vcn。
+    /// TUN 模式固定跑 sing-box ⇒ 这类节点在 TUN 下必须明确拒绝，不能静默降级成「能连上但走错传输」。
+    /// </summary>
+    public bool RequiresXray =>
+        Network.ToLowerInvariant() is "kcp" or "xhttp"
+        || (!string.IsNullOrEmpty(VlessEncryption) && !VlessEncryption.Equals("none", StringComparison.OrdinalIgnoreCase))
+        || !string.IsNullOrEmpty(Mldsa65Verify)
+        || !string.IsNullOrEmpty(VerifyPeerCertByName);
+
+    /// <summary>
+    /// 该节点是否必须走 sing-box（xray 无法承载）：
+    /// anytls、ss SIP003 插件、h2（xray 26 已移除 h2/quic）、hy2 gecko、
+    /// 以及「无 TLS 的明文 VLESS」——xray 26 实测直接拒绝启动（见台账 F1）。
+    /// 注意：hysteria2 / tuic 恒走 sing-box，由调用方另行判断，不在此列。
+    /// </summary>
+    public bool RequiresSingBox =>
+        Protocol is NodeProtocol.AnyTls
+        || (Protocol is NodeProtocol.Shadowsocks && !string.IsNullOrEmpty(Plugin))
+        || Network.ToLowerInvariant() is "h2"
+        || GeckoMinPacketSize.HasValue || GeckoMaxPacketSize.HasValue
+        // 明文 VLESS 只有 xray 26 会拒绝（公网地址），但带 xray 专有能力时仍归 xray —— 以 xray 为准。
+        || (Protocol is NodeProtocol.VLESS
+            && (Security ?? "none").Equals("none", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(VlessEncryption)
+            && !RequiresXray);
 
     /// 实测出口国家代码（小写 ISO，如 "jp"）。空 = 未检测/检测失败。
     /// 由「位置检测」写入，仅本进程会话有效（不落盘）。

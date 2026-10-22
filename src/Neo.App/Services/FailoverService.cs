@@ -472,7 +472,10 @@ public static class FailoverService
             //   这里把 UDP 类节点排到 TCP 类节点之后，仅在没有任何可用 TCP 节点时才会退给它。
             var candidates = AppState.Nodes
                 .Where(n => !SameNode(n, current))
-                .OrderBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC ? 1 : 0)
+                // ★ 2026-10-23 第二批：TUN 模式下跳过 xray 专有能力节点（mKCP/xhttp/VLESS 加密/pqv/vcn）。
+                //   这些节点在 TUN 下会被 ConnectionService 直接拒绝，留在候选里只会白白消耗 3 次尝试机会。
+                .Where(n => !(AppState.State.UseTun && n.RequiresXray))
+                .OrderBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC or NodeProtocol.AnyTls ? 1 : 0)
                 .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : (n.RealDelay == 0 ? 100_000 : 200_000))
                 .ToList();
 

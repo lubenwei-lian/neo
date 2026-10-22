@@ -132,90 +132,108 @@ public static class SubscriptionFetcher
         if (text.StartsWith("<") || text.Contains("<html", StringComparison.OrdinalIgnoreCase))
             return SubscriptionFetchResult.Fail("订阅返回的是网页而非节点内容（可能已失效/需要续费）");
 
-        if (LooksLikeClashYaml(text))
+        // ★ 2026-10-23 第二批：订阅识别顺序对齐 v2rayN（ConfigHandler.cs:2064-2134）：
+        //   ① base64 解码 → ② 原文 → ③ 再试一次解码 → ④ SIP008。
+        //   每步内部再区分「Clash YAML」与「分享链接行」两种形态（v2rayN 对应 AddBatchServersCommon /
+        //   AddBatchServers4Custom）。旧实现固定「先 Clash 原文 → 再 SIP008 → 再 base64」，
+        //   遇到「base64 包 SIP008」「base64 包 WG」「二次编码」这类面板就会直接判「未解析出节点」。
+        var compact = new string(text.Where(c => !char.IsWhiteSpace(c)).ToArray());
+        var decoded = ShareLinkParser.TryB64Decode(compact);
+        // ★ 2026-10-23 第二批补强：有些面板会做**两层** base64（base64(base64(links))）。
+        //   v2rayN 的三次尝试其实都是同一份解码结果，覆盖不到这种情况；这里把「解码结果仍是 base64」
+        //   再解一层作为额外尝试，其余顺序与 v2rayN 一致。
+        var decoded2 = decoded == null
+            ? null
+            : ShareLinkParser.TryB64Decode(new string(decoded.Where(c => !char.IsWhiteSpace(c)).ToArray()));
+        var attempts = new List<string>();
+        if (decoded != null && !string.Equals(decoded, text, StringComparison.Ordinal)) attempts.Add(decoded);
+        attempts.Add(text);
+        // v2rayN 的第三次仍是「解码原文」（等价于第一次），这里保留一次重复尝试：
+        // 若第一次解码结果被判定为「格式不支持」，第三次同样会失败，但顺序与行为保持与 v2rayN 一致，
+        // 便于后续对照排障；不做去重是为了日志里能对上 v2rayN 的步骤编号。
+        if (decoded != null && !string.Equals(decoded, text, StringComparison.Ordinal)) attempts.Add(decoded);
+        // 额外一层：base64(base64(links)) —— v2rayN 的三次尝试覆盖不到，部分面板会这么发。
+        if (decoded2 != null && !string.Equals(decoded2, text, StringComparison.Ordinal)
+            && !string.Equals(decoded2, decoded, StringComparison.Ordinal))
+            attempts.Add(decoded2);
+
+        var lastFail = "";
+        for (var i = 0; i < attempts.Count; i++)
         {
-            var yamlNodes = ClashYamlParser.Parse(text);
-            if (yamlNodes.Count == 0)
-                return SubscriptionFetchResult.Fail("检测到 Clash YAML 格式，但未解析出可用节点（格式可能不受支持）");
-            var yr = SubscriptionFetchResult.Ok(text);
-            yr.Nodes.AddRange(yamlNodes);
-            return yr;
+            var attempt = attempts[i];
+            var step = i + 1;
+
+            // ① Clash YAML（含 base64 包着的 Clash YAML）
+            if (LooksLikeClashYaml(attempt))
+            {
+                var yamlNodes = ClashYamlParser.Parse(attempt);
+                if (yamlNodes.Count > 0)
+                {
+                    LogBus($"订阅识别：第 {step} 步（Clash YAML）解析出 {yamlNodes.Count} 个节点");
+                    var yr = SubscriptionFetchResult.Ok(attempt);
+                    yr.Nodes.AddRange(yamlNodes);
+                    return yr;
+                }
+                lastFail = "检测到 Clash YAML 格式，但未解析出可用节点（格式可能不受支持）";
+                LogBus($"订阅识别：第 {step} 步是 Clash YAML 但 0 个可用节点，继续尝试");
+                continue;
+            }
+
+            // ② 分享链接行
+            var result = SubscriptionFetchResult.Ok(attempt);
+            var lines = attempt.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            var meta = lines.Where(l => !l.Contains("://")).Take(3).ToList();
+
+            var parseFailed = 0;
+            foreach (var line in lines)
+            {
+                var node = ShareLinkParser.Parse(line);
+                if (node != null && node.IsValid) result.Nodes.Add(node);
+                else if (line.Contains("://")) parseFailed++;
+            }
+            if (parseFailed > 0) LogBus($"订阅识别：第 {step} 步有 {parseFailed} 行分享链接无法解析（已静默跳过）");
+
+            var kept = new List<NodeItem>();
+            foreach (var n in result.Nodes)
+            {
+                if (IsMetaName(n.Name)) meta.Add(n.Name.Trim());
+                else kept.Add(n);
+            }
+            if (kept.Count > 0 && kept.Count != result.Nodes.Count)
+            {
+                result.Nodes.Clear();
+                result.Nodes.AddRange(kept);
+            }
+            if (meta.Count > 0) result.TrafficInfo = string.Join(" | ", meta);
+
+            if (result.Nodes.Count > 0)
+            {
+                LogBus($"订阅识别：第 {step} 步（分享链接）解析出 {result.Nodes.Count} 个节点");
+                return result;
+            }
+            lastFail = "未解析出任何有效节点（格式可能不支持）";
         }
 
-        // ★ 2026-10-23 新增 SIP008（Shadowsocks 官方 JSON，根对象 `servers` 数组）识别。
-        //   只在「JSON 根对象确实有 servers 数组」时按 SIP008 处理，不对其它 JSON 乱猜；
-        //   识别/解析失败仍走现有「未解析出任何有效节点」提示。
-        if (LooksLikeSip008(text))
+        // ③ SIP008（Shadowsocks 官方 JSON，根对象 servers 数组）：原文或解码后命中皆可
+        foreach (var attempt in attempts)
         {
-            var (sipNodes, skipped) = ParseSip008(text);
+            if (!LooksLikeSip008(attempt)) continue;
+            var (sipNodes, skipped) = ParseSip008(attempt);
             if (skipped > 0)
                 LogBus($"SIP008 解析：跳过 {skipped} 条无效条目（缺 server/port/method/password 等）");
             if (sipNodes.Count == 0)
             {
                 LogBus("SIP008 解析：识别到 servers 数组，但 0 个可用节点");
-                return SubscriptionFetchResult.Fail("检测到 Shadowsocks SIP008 格式，但未解析出可用节点（格式可能不受支持）");
+                lastFail = "检测到 Shadowsocks SIP008 格式，但未解析出可用节点（格式可能不受支持）";
+                continue;
             }
-            var sr = SubscriptionFetchResult.Ok(text);
+            var sr = SubscriptionFetchResult.Ok(attempt);
             sr.Nodes.AddRange(sipNodes);
+            LogBus($"订阅识别：SIP008 解析出 {sipNodes.Count} 个节点");
             return sr;
         }
 
-        string content = text;
-        var compact = new string(text.Where(c => !char.IsWhiteSpace(c)).ToArray());
-        var decoded = ShareLinkParser.TryB64Decode(compact);
-        if (decoded != null)
-        {
-            // ★ 2026-10-23 新增「base64 包着 Clash YAML」识别：部分面板把 Clash 配置也统一 b64，
-            //   旧逻辑只接受解码后含 "://" 的内容 → 这类订阅直接判「未解析出节点」。
-            //   只对确实像 Clash（含顶层 proxies:）的解码结果走 YAML 解析，其余仍按原文处理。
-            if (LooksLikeClashYaml(decoded))
-            {
-                var b64YamlNodes = ClashYamlParser.Parse(decoded);
-                if (b64YamlNodes.Count == 0)
-                {
-                    LogBus("订阅：base64 解码后是 Clash YAML，但未解析出可用节点");
-                    return SubscriptionFetchResult.Fail("检测到 Clash YAML 格式，但未解析出可用节点（格式可能不受支持）");
-                }
-                var br = SubscriptionFetchResult.Ok(decoded);
-                br.Nodes.AddRange(b64YamlNodes);
-                return br;
-            }
-            if (decoded.Contains("://")) content = decoded;
-            else LogBus("订阅：base64 解码成功但既非 Clash YAML 也不含分享链接，按原文解析");
-        }
-
-        var result = SubscriptionFetchResult.Ok(content);
-        var lines = content.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-
-        var meta = lines.Where(l => !l.Contains("://")).Take(3).ToList();
-
-        var parseFailed = 0;
-        foreach (var line in lines)
-        {
-            var node = ShareLinkParser.Parse(line);
-            if (node != null && node.IsValid) result.Nodes.Add(node);
-            else if (line.Contains("://")) parseFailed++;
-        }
-        // 解析失败保持静默跳过（不阻断整份订阅），但留一条 Debug 日志便于排障（Logger 由上层接到 Debug）。
-        if (parseFailed > 0) LogBus($"订阅：{parseFailed} 行分享链接无法解析（已静默跳过）");
-
-        var kept = new List<NodeItem>();
-        foreach (var n in result.Nodes)
-        {
-            if (IsMetaName(n.Name)) meta.Add(n.Name.Trim());
-            else kept.Add(n);
-        }
-        if (kept.Count > 0 && kept.Count != result.Nodes.Count)
-        {
-            result.Nodes.Clear();
-            result.Nodes.AddRange(kept);
-        }
-        if (meta.Count > 0) result.TrafficInfo = string.Join(" | ", meta);
-
-        if (result.Nodes.Count == 0)
-            return SubscriptionFetchResult.Fail("未解析出任何有效节点（格式可能不支持）");
-
-        return result;
+        return SubscriptionFetchResult.Fail(string.IsNullOrEmpty(lastFail) ? "未解析出任何有效节点（格式可能不支持）" : lastFail);
     }
 
     private static bool LooksLikeClashYaml(string text)

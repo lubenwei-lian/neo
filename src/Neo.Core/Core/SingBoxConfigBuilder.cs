@@ -153,6 +153,15 @@ public static class SingBoxConfigBuilder
         switch (n.Protocol)
         {
             case NodeProtocol.VLESS:
+                // ★ 2026-10-23 第二批：sing-box 1.14.3 的 vless 出站没有 encryption 字段
+                //   （实测报错 json: unknown field "encryption"，台账 F1）→ 带 VLESS 后量子加密的节点
+                //   绝不能静默生成一份「不带加密」的 outbound（那样能启动但握手必失败）。
+                if (!string.IsNullOrEmpty(n.VlessEncryption) &&
+                    !n.VlessEncryption.Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new NotSupportedException(
+                        $"节点「{n.Name}」使用 VLESS 后量子加密，sing-box 1.14 不支持该字段，请改用 xray 内核（关闭 TUN）");
+                }
                 o["type"] = "vless";
                 o["uuid"] = n.Uuid ?? "";
                 if (!string.IsNullOrEmpty(n.Flow)) o["flow"] = n.Flow;
@@ -198,9 +207,19 @@ public static class SingBoxConfigBuilder
                 ApplyTls(o, n, forceTls: true);
                 if (n.Extras.TryGetValue("obfs", out var obfs) && !string.IsNullOrEmpty(obfs))
                 {
-                    var ob = new JsonObject { ["type"] = obfs };
+                    // ★ 2026-10-23 第二批：gecko 混淆（v2rayN Hysteria2Fmt.cs:196-215）。
+                    //   sing-box 1.14.3 实测支持 obfs.type=gecko + min_packet_size/max_packet_size（台账 F1）；
+                    //   旧实现只写 type=obfs 值，从不带分片大小 → 对端按 gecko 校验分片，必连不上。
+                    var isGecko = obfs.Equals("gecko", StringComparison.OrdinalIgnoreCase)
+                        || n.GeckoMinPacketSize.HasValue || n.GeckoMaxPacketSize.HasValue;
+                    var ob = new JsonObject { ["type"] = isGecko ? "gecko" : obfs };
                     if (n.Extras.TryGetValue("obfs-password", out var obPwd) && !string.IsNullOrEmpty(obPwd))
                         ob["password"] = obPwd;
+                    if (isGecko)
+                    {
+                        ob["min_packet_size"] = n.GeckoMinPacketSize is > 0 ? n.GeckoMinPacketSize.Value : 512;
+                        ob["max_packet_size"] = n.GeckoMaxPacketSize is > 0 ? n.GeckoMaxPacketSize.Value : 1200;
+                    }
                     o["obfs"] = ob;
                 }
                 // ★ 2026-10-23 hy2 端口跳跃（v2rayN 标准写法 host:443,5000-6000）：
@@ -213,6 +232,20 @@ public static class SingBoxConfigBuilder
                 if (serverPorts != null) o["server_ports"] = serverPorts;
                 if (n.Extras.TryGetValue("up", out var up) && int.TryParse(up, out var upMbps)) o["up_mbps"] = upMbps;
                 if (n.Extras.TryGetValue("down", out var down) && int.TryParse(down, out var downMbps)) o["down_mbps"] = downMbps;
+                break;
+
+            case NodeProtocol.AnyTls:
+                // ★ 2026-10-23 第二批：anytls 出站（sing-box 1.10+，实测 1.14.3 接受；xray 无此协议）。
+                o["type"] = "anytls";
+                o["password"] = n.Password ?? "";
+                ApplyTls(o, n, forceTls: true);
+                break;
+
+            case NodeProtocol.Socks:
+                // ★ 2026-10-23 第二批：socks5 出站（v2rayN socks:// 分享链接；sing-box 1.14 实测接受）。
+                o["type"] = "socks";
+                if (!string.IsNullOrEmpty(n.Username)) o["username"] = n.Username;
+                if (!string.IsNullOrEmpty(n.Password)) o["password"] = n.Password;
                 break;
 
             case NodeProtocol.TUIC:
@@ -278,6 +311,20 @@ public static class SingBoxConfigBuilder
             if (arr.Count > 0) tls["alpn"] = arr;
         }
 
+        // ★ 2026-10-23 第二批：ECH（分享链接 ech= / Clash ech-opts）。
+        //   sing-box 1.14.3 实测接受 tls.ech = { enabled, config: [PEM 块] }（台账 F1），
+        //   PEM 包法与 v2rayN SingboxOutboundService.cs:826-850 完全一致。
+        //   带 "://" 的写法（用 DoH 查 ECH 配置）需要额外的 dns server 配置，本版不支持 → 跳过并维持原行为。
+        if (!string.IsNullOrEmpty(n.EchConfigList) && !n.EchConfigList.Contains("://"))
+        {
+            tls["ech"] = new JsonObject
+            {
+                ["enabled"] = true,
+                ["config"] = new JsonArray(
+                    "-----BEGIN ECH CONFIGS-----\n" + n.EchConfigList + "\n-----END ECH CONFIGS-----"),
+            };
+        }
+
         o["tls"] = tls;
     }
 
@@ -310,7 +357,7 @@ public static class SingBoxConfigBuilder
             case "http":
             case "h2":
                 var host = new JsonArray();
-                host.Add(n.HostHeader ?? StripBrackets(n.Server));
+                host.Add(string.IsNullOrEmpty(n.HostHeader) ? StripBrackets(n.Server) : n.HostHeader);
                 o["transport"] = new JsonObject
                 {
                     ["type"] = "http",
@@ -318,6 +365,27 @@ public static class SingBoxConfigBuilder
                     ["path"] = string.IsNullOrEmpty(n.Path) ? "/" : n.Path,
                 };
                 break;
+
+            case "httpupgrade":
+                // ★ 2026-10-23 第二批：HTTPUpgrade 传输（sing-box 实测接受，台账 F1）。
+                var hu = new JsonObject
+                {
+                    ["type"] = "httpupgrade",
+                    ["path"] = string.IsNullOrEmpty(n.Path) ? "/" : n.Path,
+                };
+                if (!string.IsNullOrEmpty(n.HostHeader)) hu["host"] = n.HostHeader;
+                o["transport"] = hu;
+                break;
+
+            case "xhttp":
+            case "kcp":
+            case "mkcp":
+                // ★ 2026-10-23 第二批：这两种传输只有 xray 支持（sing-box 1.14.3 实测：
+                //   transport.type=xhttp → unknown transport type；mKCP 完全没有）。
+                //   必须显式抛错，绝不能静默生成一份「走 tcp」的 outbound —— 那会表现为
+                //   「TUN 下能连上但所有域名超时」，比直接报错难排查得多。
+                throw new NotSupportedException(
+                    $"节点「{n.Name}」的传输方式 {n.Network} 只有 xray 内核支持，sing-box 不支持；请关闭 TUN 再用该节点");
         }
     }
 

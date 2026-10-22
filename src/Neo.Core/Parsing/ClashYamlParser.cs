@@ -88,6 +88,14 @@ public static class ClashYamlParser
             parent[key] = child;
             stack.Add((indent, child));
         }
+        else if (val.Length >= 2 && val[0] == '{' && val[^1] == '}')
+        {
+            // ★ 2026-10-23 第二批：嵌套 flow mapping（xhttp-opts: {path: /x, host: h, mode: stream-one}）
+            //   旧实现把整段当字符串存，Map() 永远取不到 ⇒ xhttp-opts / h2-opts / http-opts / ech-opts 全丢。
+            var child = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            FillFlowMapping(val, child);
+            parent[key] = child;
+        }
         else
         {
             parent[key] = Unquote(val);
@@ -274,6 +282,10 @@ public static class ClashYamlParser
                     node.ShortId = Str(ro, "short-id");
                     node.Fingerprint = Str(item, "client-fingerprint");
                 }
+                // ★ 2026-10-23 第二批：Clash Meta 的 vless 后量子加密（部分面板会写 encryption: mlkem... 或 mlkem768x25519plus...）
+                var encC = Str(item, "encryption");
+                if (encC.Length > 0 && !encC.Equals("none", StringComparison.OrdinalIgnoreCase) && !encC.Equals("false", StringComparison.OrdinalIgnoreCase))
+                    node.VlessEncryption = encC;
                 break;
 
             case "trojan":
@@ -292,6 +304,23 @@ public static class ClashYamlParser
                 Put(item, node, "up");
                 Put(item, node, "down");
                 if (Bool(item, "skip-cert-verify")) node.AllowInsecure = true;
+                break;
+
+            case "socks5":
+            case "socks":
+                // ★ 2026-10-23 第二批：Clash 的 socks5 条目（v2rayN 由 mihomo 直吃 YAML，我们坚持拆成节点）。
+                node.Protocol = NodeProtocol.Socks;
+                node.Username = StrOrNull(item, "username");
+                node.Password = StrOrNull(item, "password") ?? "";
+                break;
+
+            case "anytls":
+                node.Protocol = NodeProtocol.AnyTls;
+                node.Password = StrOrNull(item, "password") ?? "";
+                node.Security = "tls";
+                node.Sni = sni;
+                if (Bool(item, "skip-cert-verify")) node.AllowInsecure = true;
+                if (Str(item, "client-fingerprint") is { Length: > 0 } anyFp) node.Fingerprint = anyFp;
                 break;
 
             case "tuic":
@@ -325,9 +354,62 @@ public static class ClashYamlParser
         var grpc = Map(item, "grpc-opts");
         if (grpc != null) node.ServiceName = Str(grpc, "grpc-service-name");
 
+        // ★ 2026-10-23 第二批：更多 Clash 传输/安全扩展（此前只有 ws/grpc，其余项全丢）：
+        //   · h2-opts（network: h2）→ network=h2 + host/path（xray 26 已移除 h2，自动改走 sing-box）
+        //   · http-opts（network: http）→ host/path
+        //   · xhttp-opts（network: xhttp）→ path/host/mode（mihomo 的新传输，xray 支持）
+        //   · ech-opts（enable/config）→ TLS ECH 配置列表
+        var h2 = Map(item, "h2-opts");
+        if (h2 != null)
+        {
+            node.HostHeader = SplitList(Str(h2, "host"));
+            node.Path = Str(h2, "path");
+        }
+
+        var http = Map(item, "http-opts");
+        if (http != null)
+        {
+            node.Path = Str(http, "path");
+            var hh = Map(http, "headers");
+            if (hh != null)
+            {
+                var hv = SplitList(Str(hh, "Host"));
+                if (hv.Length > 0) node.HostHeader = hv;
+            }
+        }
+
+        var xhttp = Map(item, "xhttp-opts");
+        if (xhttp != null)
+        {
+            node.Path = string.IsNullOrEmpty(Str(xhttp, "path")) ? node.Path : Str(xhttp, "path");
+            var xh = Str(xhttp, "host");
+            if (xh.Length > 0) node.HostHeader = xh;
+            var xm = Str(xhttp, "mode");
+            if (xm.Length > 0) node.XhttpMode = xm;
+        }
+
+        var ech = Map(item, "ech-opts");
+        if (ech != null && (Str(ech, "enable").Equals("true", StringComparison.OrdinalIgnoreCase) || Bool(item, "ech")))
+        {
+            var cfg = Str(ech, "config");
+            if (cfg.Length > 0) node.EchConfigList = cfg;
+        }
+
         var cf = Str(item, "client-fingerprint");
         if (cf.Length > 0 && string.IsNullOrEmpty(node.Fingerprint)) node.Fingerprint = cf;
         if (Bool(item, "skip-cert-verify")) node.AllowInsecure = true;
+
+        // 传输名归一化：Clash 的 "tcp" 在 neo/xray 里叫 tcp（一致）；"h2" 保留，让生成器决定内核。
+        node.Network = node.Network.ToLowerInvariant();
+    }
+
+    /// <summary>取列表式标量（"[a.com, b.com]" / "a.com"）的第一个值，并去掉方括号/引号。</summary>
+    private static string SplitList(string s)
+    {
+        var t = s.Trim().Trim('[', ']').Trim();
+        if (t.Length == 0) return "";
+        var first = t.Split(',')[0].Trim().Trim('"', '\'');
+        return first;
     }
 
 

@@ -944,6 +944,9 @@ public static class AppState
         NodeProtocol.Shadowsocks => "Shadowsocks",
         NodeProtocol.Hysteria2 => "Hysteria2",
         NodeProtocol.TUIC => "TUIC",
+        // ★ 2026-10-23 第二批：新增协议显示名（节点页/连接页均走这个方法）
+        NodeProtocol.AnyTls => "AnyTLS",
+        NodeProtocol.Socks => "Socks5",
         _ => "Unknown",
     };
 
