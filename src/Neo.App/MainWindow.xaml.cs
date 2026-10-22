@@ -361,7 +361,17 @@ public sealed partial class MainWindow : Window
             return;
         }
         args.Cancel = true;
-        try { sender.Hide(); } catch { }
+        HideToTray();
+    }
+
+    /// <summary>
+    /// 隐藏窗口到托盘（关窗分支与「启动时最小化」共用）：
+    /// 释放页面、停核心采样计时器，但**保留**托盘图标与动画（否则图标会消失）。
+    /// 对应恢复逻辑在 ShowMainWindow()。
+    /// </summary>
+    private void HideToTray()
+    {
+        try { AppWindow.Hide(); } catch { }
 
         // 隐藏到托盘后用户看不到任何页面：立刻释放全部页面（含当前页），
         // 把节点页那 30MB+ 的卡片树还给系统；再点托盘图标会重新惰性创建。
@@ -1456,6 +1466,27 @@ public sealed partial class MainWindow : Window
             // 任一环节失败：退回最朴素的做法，保证窗口一定以不透明状态出现在正确位置。
             LogBus.App($"启动预热失败（不影响使用）：{ex.GetType().Name}", "Warning");
             try { ShowMainWindow(); } catch { }
+        }
+
+        // 启动时最小化到托盘：等窗口真正显示/预热完成后再隐藏，避免「先闪一下再消失」。
+        //   放在这里而不是构造函数：OnRootLoaded 阶段才完成显示与几何恢复。
+        if (AppState.State.StartMinimized && AppState.State.MinimizeToTray)
+        {
+            try
+            {
+                var hideTimer = DispatcherQueue.CreateTimer();
+                hideTimer.Interval = TimeSpan.FromMilliseconds(900);
+                hideTimer.IsRepeating = false;
+                hideTimer.Tick += (_, _) =>
+                {
+                    hideTimer.Stop();
+                    if (App.IsShuttingDown) return;
+                    HideToTray();
+                    LogBus.App("已按设置「启动时最小化到托盘」隐藏主窗口（托盘图标/代理继续运行）", "Info");
+                };
+                hideTimer.Start();
+            }
+            catch (Exception ex) { LogBus.App("启动时最小化失败：" + ex.Message, "Warning"); }
         }
 
         // 网络请求放到界面可见之后：它慢不该让用户对着黑屏等。

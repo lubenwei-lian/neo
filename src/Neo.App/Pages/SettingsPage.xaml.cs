@@ -126,6 +126,9 @@ public sealed partial class SettingsPage : UserControl
     {
         if (_syncing) return;
         AppState.State.MinimizeToTray = SwitchMinTray.IsOn;
+        StartMinHint.Text = SwitchMinTray.IsOn
+            ? "开机自启时静默启动，不弹主窗口（可点托盘图标或再次启动 neo 唤出）"
+            : "当前「关闭窗口时最小化到托盘」已关闭，此项不会生效";
         AppState.Save();
     }
 
@@ -1178,6 +1181,14 @@ public sealed partial class SettingsPage : UserControl
         }
     }
 
+    private void OnStartMinToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.StartMinimized = SwitchStartMin.IsOn;
+        AppState.Save();
+        LogBus.App("启动时最小化到托盘：" + (SwitchStartMin.IsOn ? "开" : "关"), "Info");
+    }
+
     private void OnKernelPreReleaseToggled(object sender, RoutedEventArgs e)
     {
         try
@@ -1365,6 +1376,7 @@ public sealed partial class SettingsPage : UserControl
         AppVersionText.Text = $"当前版本 {AppUpdateService.CurrentVersion}";
         RefreshUpdateStatusHint();
         SwitchMinTray.IsOn = AppState.State.MinimizeToTray;
+        SwitchStartMin.IsOn = AppState.State.StartMinimized;
         SwitchCompact.IsOn = AppState.State.CompactLayout;
         SwitchBypass.IsOn = AppState.State.BypassCn;
         SwitchLan.IsOn = AppState.State.AllowLan;

@@ -56,6 +56,9 @@ public static class AppState
         /// 0 = 迁移前的旧配置。新增迁移时递增此值并在 Load 里补对应分支。
         public int ConfigVersion { get; set; }
         public bool MinimizeToTray { get; set; } = true;
+
+        /// <summary>启动后直接最小化到托盘（开机自启常配此项；默认关）。</summary>
+        public bool StartMinimized { get; set; } = false;
         public bool CompactLayout { get; set; } = false;
 
         public string DnsServer { get; set; } = "223.5.5.5";
