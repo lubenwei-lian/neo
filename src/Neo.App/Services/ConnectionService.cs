@@ -28,8 +28,11 @@ public static class ConnectionService
     /// 连接后自检的取消源：断开 / 切换会话 / 内核退出时取消。
     private static CancellationTokenSource? _selfCheckCts;
 
-    /// 本轮会话是否已经自动切换过（最多自动切 1 次，避免连环切）。
-    private static bool _selfCheckAutoSwitched;
+    /// 本轮会话已自动切换过几次（最多 2 次：一个坏节点可能是偶然，两次都坏就停手）。
+    private static int _selfCheckSwitchCount;
+
+    /// 本轮会话已经试过的节点键（避免自检在两个坏节点之间来回切）。
+    private static readonly HashSet<string> _selfCheckTried = new(StringComparer.Ordinal);
 
     /// 当前 ConnectAsync 是否由「自检自动切换」发起（该新会话不再自检，保证一轮最多切 1 次）。
     private static bool _selfCheckSwitching;
@@ -148,6 +151,14 @@ public static class ConnectionService
     {
         if (!force && IsConnected && ConnectedNode != null && SameNode(ConnectedNode, node))
             return (true, null);
+
+        // 用户/故障转移发起的连接：重置「自检自动切换」的预算。
+        // （自检自己发起的连接不清零，否则会无限切下去。）
+        if (!_selfCheckSwitching)
+        {
+            _selfCheckSwitchCount = 0;
+            _selfCheckTried.Clear();
+        }
 
         //   正在建会话 —— 直接拒绝，避免双内核抢端口。
         if (!await SessionGate.WaitAsync(0))
@@ -1366,11 +1377,16 @@ public static class ConnectionService
     /// <summary>启动本会话的连接后自检（fire-and-forget）。</summary>
     private static void StartPostConnectSelfCheck(NodeItem node)
     {
-        // 由自检自动切换产生的新会话不再自检：配合 _selfCheckAutoSwitched 保证一轮最多切 1 次。
-        if (_selfCheckSwitching) return;
+        // 自检自动切换出来的新会话**也要自检**：否则「切到的备用节点同样不可用」就再也发现不了。
+        // 防连环切靠 _selfCheckSwitchCount（每轮最多 2 次）与 _selfCheckTried（不重复试同一节点），
+        // 只有用户/故障转移发起的新连接才重置这两个预算。
+        if (!_selfCheckSwitching)
+        {
+            _selfCheckSwitchCount = 0;
+            _selfCheckTried.Clear();
+        }
 
         CancelPostConnectSelfCheck();
-        _selfCheckAutoSwitched = false;
 
         var cts = new CancellationTokenSource();
         _selfCheckCts = cts;
@@ -1446,9 +1462,9 @@ public static class ConnectionService
         LogBus.App($"连接后自检：目标站不可用（{detail}）", "Warning");
         IncidentLog.Record("selfcheck", "连接后自检目标站不可用", $"{cur.Name} · {detail}");
 
-        if (_selfCheckAutoSwitched)
+        if (_selfCheckSwitchCount >= 2)
         {
-            LogBus.App("连接后自检：本会话已自动切换过，不再重试（避免连环切换）", "Debug");
+            LogBus.App($"连接后自检：本会话已自动切换 {_selfCheckSwitchCount} 次仍不可用，停止自动切换（避免连环切）", "Warning");
             return;
         }
         if (IsConnecting || IsSessionBusy)
@@ -1468,7 +1484,13 @@ public static class ConnectionService
             .Take(3)
             .ToList();
         var curKey = AppState.NodeKey(cur);
-        var cand = top3.FirstOrDefault(n => !string.Equals(AppState.NodeKey(n), curKey, StringComparison.Ordinal));
+        // 排除当前节点与本次会话已经试过的节点（否则会在两个坏节点间来回切）。
+        var cand = top3.FirstOrDefault(n =>
+        {
+            var key = AppState.NodeKey(n);
+            return !string.Equals(key, curKey, StringComparison.Ordinal)
+                   && !_selfCheckTried.Contains(key);
+        });
         if (cand == null)
         {
             // 未测速 / 无同地区候选：只记录，不切换。
@@ -1481,8 +1503,9 @@ public static class ConnectionService
         cur = ConnectedNode;
         if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
 
-        // 最多自动切 1 次：先置标记再切，失败也不会再试第二次。
-        _selfCheckAutoSwitched = true;
+        // 记下当前节点已试过，并计入本轮切换次数（最多 2 次，见方法开头）。
+        _selfCheckTried.Add(AppState.NodeKey(cur));
+        _selfCheckSwitchCount++;
         LogBus.App($"连接后自检：正在自动切换到同地区节点「{cand.Name}」（{cand.RealDelay} ms）", "Warning");
         _selfCheckSwitching = true;
         bool ok;
@@ -1505,7 +1528,7 @@ public static class ConnectionService
         if (ok)
         {
             AppState.SetCurrentNode(cand);
-            LogBus.App($"自检不可用，已自动切换到 {cand.Name}（本会话不再自动重试）", "Warning");
+            LogBus.App($"自检不可用，已自动切换到 {cand.Name}（第 {_selfCheckSwitchCount}/2 次）", "Warning");
             IncidentLog.Record("selfcheck", "自检不可用，已自动切换节点", $"{cur.Name} → {cand.Name}（{cand.RealDelay} ms）");
         }
         else

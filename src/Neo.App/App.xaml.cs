@@ -183,8 +183,10 @@ public partial class App : Application
             Neo.Core.Parsing.SubscriptionFetcher.Logger = m => Services.LogBus.App(m, "Debug");
             //   本机原因（内核起不来/端口被占）造成的整批失败在日志里零痕迹，
             //   界面却把全部节点显示成「超时」，用户会误判成节点的问题。
+            //   非错误的测速/可用性复核/预检记录改落 Info：原来一律降级成 Debug，
+            //   日志级别一高就全看不见（本次卡顿排查就吃过这个亏）。
             Neo.Core.Core.RealDelayTester.Logger = (m, isError) =>
-                Services.LogBus.App(m, isError ? "Error" : "Debug");
+                Services.LogBus.App(m, isError ? "Error" : "Info");
         }
         catch { }
 

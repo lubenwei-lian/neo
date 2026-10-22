@@ -469,6 +469,15 @@ public static class SingBoxConfigBuilder
                 ["outbound"] = "direct",
             });
 
+            // Steam 连通性探测 + 内容 CDN 直连（与 xray 侧同一规则）。
+            // 日志里反复出现 ipv6check-http.steamserver.net EOF 就是被塞进代理导致的；
+            // 商店/社区（steampowered.com / steamcommunity.com）仍走代理，不放这里。
+            rules.Add(new JsonObject
+            {
+                ["domain_suffix"] = new JsonArray(".steamserver.net", ".steamcontent.com"),
+                ["outbound"] = "direct",
+            });
+
             if (bypassCn)
                 rules.Add(new JsonObject
                 {

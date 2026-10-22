@@ -521,6 +521,20 @@ public static class XrayConfigBuilder
             ["outboundTag"] = "direct",
         });
 
+        // Steam 的连通性探测与内容下载 CDN 走直连。
+        //   实测日志里一晚 10 条「proxy/http: failed to read response from
+        //   ipv6check-http.steamserver.net > unexpected EOF」——Steam 探测被塞进代理后失败，
+        //   客户端因此反复重试、商店/库页面转圈。这两个域在国内可直连且更快，走代理纯负收益。
+        //   注意：store.steampowered.com / steamcommunity.com 仍走代理（国内被墙），不放这里。
+        rules.Add(new JsonObject
+        {
+            ["type"] = "field",
+            ["domain"] = new JsonArray(
+                "domain:steamserver.net",
+                "domain:steamcontent.com"),
+            ["outboundTag"] = "direct",
+        });
+
         if (bypassCn)
         {
             // 对齐 v2rayN「绕过大陆」模板的单一职责写法：xray 规则内多字段是 AND 语义，
