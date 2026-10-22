@@ -267,6 +267,19 @@ public static class FailoverService
         if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 120) return;
         if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < 300) return;
 
+        // 自动修复：已连接但系统代理被别的程序关掉时，网页会突然全断，用户只会觉得「网坏了」。
+        // TUN 会话不需要系统代理，跳过。每 30 秒巡航时顺手检查一次。
+        try
+        {
+            if (!ConnectionService.IsTunSession && !SystemProxy.IsEnabled)
+            {
+                SystemProxy.Enable("127.0.0.1:" + Neo.Core.Core.XrayConfigBuilder.DefaultSocksPort);
+                LogBus.App("自动修复：系统代理被关闭，已重新开启", "Warning");
+                IncidentLog.Record("auto-repair", "系统代理被关闭，已自动恢复");
+            }
+        }
+        catch { }
+
         if (await ProbeAsync(ct))
         {
             _failStreak = 0;
@@ -275,6 +288,7 @@ public static class FailoverService
 
         _failStreak++;
         LogBus.App($"故障转移探活失败（{_failStreak}/2）", "Warning");
+        IncidentLog.Record("failover", "探活失败（" + _failStreak + "/2）");
         if (_failStreak < 2) return;
 
         await FailoverAsync(ct);
@@ -334,6 +348,7 @@ public static class FailoverService
         AppState.SetCurrentNode(node);
         var msg = $"已重新连接节点「{node.Name}」，故障转移恢复待命";
         LogBus.App(msg, "Warning");
+        IncidentLog.Record("failover", msg);
         Switched?.Invoke(msg);
     }
 
@@ -461,6 +476,7 @@ public static class FailoverService
                 if (!ok)
                 {
                     LogBus.App($"故障转移切换失败（{name}）：{err}", "Error");
+                    IncidentLog.Record("failover", "切换备选节点失败：" + name, err);
                     continue;
                 }
 
@@ -468,12 +484,14 @@ public static class FailoverService
                 _lastSwitchAt = DateTime.Now;
                 var msg = $"节点失联，已自动切换至「{name}」";
                 LogBus.App(msg, "Warning");
+                IncidentLog.Record("failover", msg, "原节点：" + (current?.Name ?? "?"));
                 Switched?.Invoke(msg);
                 return;
             }
 
             _lastGiveUpAt = DateTime.Now;
             LogBus.App("当前节点失联，未找到可用备用节点（5 分钟后将重试连接当前节点）", "Error");
+            IncidentLog.Record("failover", "当前节点失联且无可用备选（5 分钟后重试）");
             Switched?.Invoke("节点失联，暂无可用备用节点（将每 5 分钟重试）");
         }
         finally

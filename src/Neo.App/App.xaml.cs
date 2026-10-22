@@ -139,7 +139,10 @@ public partial class App : Application
         {
             var guard = Services.StartupGuard.Begin();
             if (guard.PreviousLaunchFailed)
+            {
                 Services.LogBus.App($"检测到上次启动未完成（{guard.MarkerDetail}），连续失败 {guard.ConsecutiveFailures} 次", "Warning");
+                Services.IncidentLog.Record("startup", "上次启动未完成（连续失败 " + guard.ConsecutiveFailures + " 次）", guard.MarkerDetail);
+            }
             if (guard.SafeMode)
             {
                 Services.AppState.State.UseTun = false;
@@ -148,6 +151,7 @@ public partial class App : Application
                 Services.AppState.Save();
                 Services.AppState.SafeModeActive = true;
                 Services.LogBus.App("已进入安全模式：TUN / 多节点加速 / 固定出口 已临时关闭（其他设置保留）。请确认启动正常后，再按需在设置里重新开启", "Error");
+                Services.IncidentLog.Record("safe-mode", "连续启动失败，已进入安全模式（关闭 TUN/多节点/固定出口）");
             }
         }
         catch { }

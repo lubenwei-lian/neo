@@ -75,6 +75,9 @@ public static class ConnectionService
     /// 固定出口是否生效（本次会话）。生效时出口固定为单一节点，其它节点只作入口。
     public static bool FixedExitActive { get; private set; }
 
+    /// 当前会话是否由 TUN 接管（系统代理不生效，故障转移自愈逻辑据此跳过）。
+    public static bool IsTunSession => _tunSessionActive;
+
     /// 固定出口模式下参与分摊的入口链路数。
     public static int FixedExitEntries { get; private set; }
 
@@ -397,6 +400,7 @@ public static class ConnectionService
             try
             {
                 LogBus.App("配置生成失败，正在改用单节点配置重试（兜底）：" + ex.Message, "Warning");
+                IncidentLog.Record("fallback", "配置生成失败，已退回单节点重试", ex.Message);
                 FixedExitActive = false;
                 FixedExitEntries = 0;
                 FixedExitName = null;
@@ -523,9 +527,11 @@ public static class ConnectionService
             LogBus.App(busy
                 ? $"内核启动失败：本地端口 {busyPort} 被占用（残留内核已尝试清理，请重试）"
                 : "内核启动后立即退出（配置或参数错误）" + (bootTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{bootTail}" : ""), "Error");
-            return (false, busy
-                ? $"内核启动失败：本地端口 {busyPort} 被占用（残留内核已尝试清理，请重试）"
-                : "内核启动后立即退出（配置或参数错误，详见内核日志）");
+            var failMsg = busy
+                ? "内核启动失败：本地端口 " + busyPort + " 被占用（残留内核已尝试清理，请重试）"
+                : "内核启动后立即退出（配置或参数错误，详见内核日志）";
+            IncidentLog.Record("error", failMsg, bootTail);
+            return (false, failMsg);
         }
 
         LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 端口 {XrayConfigBuilder.DefaultSocksPort}/{XrayConfigBuilder.DefaultHttpPort}）");
@@ -546,6 +552,8 @@ public static class ConnectionService
 
         IsConnected = true;
         ConnectedNode = node;
+        IncidentLog.Record("connect", "已连接 " + node.Name
+            + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : MultiNodeCount > 1 ? "（多节点 " + MultiNodeCount + "）" : ""));
         ConnectedAt = DateTime.Now;
         _lastCoreStartAt = DateTime.Now;   // 供「内核是否稳定运行过」判断使用
         _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
@@ -1280,6 +1288,7 @@ public static class ConnectionService
         var crashTail = KernelTailText();
         LogBus.App($"内核意外退出（exit code {code}）— 已自动断开并清理系统代理"
                    + (crashTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{crashTail}" : ""), "Error");
+        IncidentLog.Record("kernel-exit", "内核意外退出（exit code " + code + "）", crashTail);
 
         //   所以「=== 会话结束」那行日志根本不会打印 —— 内核自己退出时，
         //   那次 18.6 秒瞬断「查不出是谁断的」的原因之一。这里补上同格式的收尾记录
@@ -1399,8 +1408,8 @@ public static class ConnectionService
                 if (ReferenceEquals(_coreRestartCts, cts)) _coreRestartCts = null;
 
                 var (rok, rerr) = await ConnectAsync(node);
-                if (rok) { _earlyCrashCount = 0; LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); }
-                else LogBus.App($"内核自动重启失败：{rerr}", "Error");
+                if (rok) { _earlyCrashCount = 0; LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
+                else { LogBus.App($"内核自动重启失败：{rerr}", "Error"); IncidentLog.Record("kernel-restart", "内核自动重启失败", rerr); }
                 return;
             }
 
@@ -1429,8 +1438,8 @@ public static class ConnectionService
             if (ReferenceEquals(_coreRestartCts, cts)) _coreRestartCts = null;
 
             var (ok, err) = await ConnectAsync(node);
-            if (ok) LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning");
-            else LogBus.App($"内核自动重启失败：{err}", "Error");
+            if (ok) { LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
+            else { LogBus.App($"内核自动重启失败：{err}", "Error"); IncidentLog.Record("kernel-restart", "内核自动重启失败", err); }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)

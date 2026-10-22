@@ -1172,7 +1172,18 @@ public sealed partial class SettingsPage : UserControl
                 info.AppendLine($"代理模式：{AppState.State.ProxyMode} · TUN={AppState.State.UseTun} · 多节点={AppState.State.MultiNodeEnabled}({AppState.State.MultiNodeMax})");
                 info.AppendLine($"分流：国内直连={AppState.State.BypassCn} 广告拦截={AppState.State.BlockAds} DNS={AppState.State.DnsServer} 日志级别={AppState.State.LogLevel}");
                 info.AppendLine($"系统代理：{SystemProxy.IsEnabled}");
+                try { info.AppendLine($"最近 24 小时自动记录事件：{IncidentLog.CountRecent(TimeSpan.FromHours(24))} 条"); } catch { }
                 System.IO.File.WriteAllText(System.IO.Path.Combine(tmp, "info.txt"), info.ToString());
+
+                // 人话版问题报告：不用看技术日志也能知道发生了什么
+                try { System.IO.File.WriteAllText(System.IO.Path.Combine(tmp, "问题报告.txt"), IncidentLog.BuildReport(3)); } catch { }
+                try
+                {
+                    var inc = System.IO.Path.Combine(NeoPaths.DataDir, "incidents.jsonl");
+                    if (System.IO.File.Exists(inc))
+                        System.IO.File.Copy(inc, System.IO.Path.Combine(tmp, "incidents.jsonl"), true);
+                }
+                catch { }
 
                 // 配置脱敏：去掉订阅 URL / 手动节点链接 / 节点键（含服务器地址）
                 try
@@ -1201,7 +1212,7 @@ public sealed partial class SettingsPage : UserControl
                 try { System.IO.Directory.Delete(tmp, true); } catch { }
             }
             LogBus.App($"诊断包已导出：{zipPath}");
-            await ShowSettingsInfo("导出诊断", $"已生成诊断包（日志 + 版本信息，配置已脱敏）：\n\n{zipPath}");
+            await ShowSettingsInfo("导出诊断", $"已生成诊断包（日志 + 自动事件报告 + 版本信息，配置已脱敏）：\n\n{zipPath}");
         }
         catch (Exception ex)
         {
