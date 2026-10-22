@@ -132,6 +132,9 @@ public static class AppState
         public List<string> GameDirectProcesses { get; set; } = new();
     }
     public static PersistedState State { get; private set; } = new();
+
+    /// 本次启动是否走了安全模式（主窗口会据此提示一次）。不落盘。
+    public static bool SafeModeActive { get; set; }
     /// <summary>游戏直连进程名单（内置 + 用户自定义合并）</summary>
     public static System.Collections.Generic.List<string> GameDirectProcessList()
     {

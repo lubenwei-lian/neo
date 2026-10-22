@@ -133,6 +133,25 @@ public partial class App : Application
         try { Services.AppState.Load(); } catch { }
         try { Services.UsageTracker.Load(); } catch { }
 
+        // 启动看门狗：上次没走到窗口显示 → 计数；连续两次失败 → 安全模式（先保证能起来）。
+        // 只关「TUN / 多节点 / 固定出口」这三项最容易把启动拖死的设置，其他设置原样保留。
+        try
+        {
+            var guard = Services.StartupGuard.Begin();
+            if (guard.PreviousLaunchFailed)
+                Services.LogBus.App($"检测到上次启动未完成（{guard.MarkerDetail}），连续失败 {guard.ConsecutiveFailures} 次", "Warning");
+            if (guard.SafeMode)
+            {
+                Services.AppState.State.UseTun = false;
+                Services.AppState.State.MultiNodeEnabled = false;
+                Services.AppState.State.FixedExitEnabled = false;
+                Services.AppState.Save();
+                Services.AppState.SafeModeActive = true;
+                Services.LogBus.App("已进入安全模式：TUN / 多节点加速 / 固定出口 已临时关闭（其他设置保留）。请确认启动正常后，再按需在设置里重新开启", "Error");
+            }
+        }
+        catch { }
+
         //   清掉上次安装中断留下的 xray.exe.new / sing-box.exe.new；
         //   若内核文件缺失但 .bak-prev 还在（替换恰好死在半路），用备份恢复，避免「内核没了」。
         try { Services.KernelInstall.RecoverIfNeeded(); } catch { }

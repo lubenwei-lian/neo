@@ -1182,6 +1182,14 @@ public sealed partial class MainWindow : Window
                 }
                 catch { }
                 App.StartupMark("窗口已恢复不透明（内容已渲染完成）");
+
+        // 启动走到「窗口已显示且内容已渲染」才算成功：清掉看门狗 marker 与失败计数。
+        try { Services.StartupGuard.Clear(); } catch { }
+        if (Services.AppState.SafeModeActive)
+        {
+            Services.AppState.SafeModeActive = false;
+            try { ShowStatusText("已用安全模式启动：TUN / 多节点 / 固定出口已关闭，可在设置里重新开启"); } catch { }
+        }
             }
 
             // 两帧：第一帧建合成器，第二帧确保画面真的画出来了

@@ -1224,7 +1224,7 @@ public sealed partial class SettingsPage : UserControl
         st.BypassPrivate = true; st.BypassCn = true; st.BlockAds = true; st.AllowLan = false;
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
-        st.FailoverEnabled = true; st.MultiNodeEnabled = true; st.MultiNodeMax = 8;
+        st.FailoverEnabled = true; st.MultiNodeEnabled = false; st.MultiNodeMax = 8;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
         st.MultiNodeStrategy = "leastLoad"; st.MultiNodeMode = "weighted";
         st.AutoSpeedTest = true; st.StartupSpeedTest = true; st.WarmCacheOnStartup = true; st.ShowRealIp = false;

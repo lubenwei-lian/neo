@@ -390,7 +390,41 @@ public static class ConnectionService
             }
             CoreKind = useSingBox ? "sing-box" : "xray";
         }
-        catch (Exception ex) { return (false, "配置生成失败：" + ex.Message); }
+        catch (Exception ex)
+        {
+            // 兜底：多节点 / 固定出口的配置生成失败（例如出口节点类型不支持串联）时，
+            // 自动退回单节点再试一次，避免用户直接连不上（稳中取快）。
+            try
+            {
+                LogBus.App("配置生成失败，正在改用单节点配置重试（兜底）：" + ex.Message, "Warning");
+                FixedExitActive = false;
+                FixedExitEntries = 0;
+                FixedExitName = null;
+                MultiNodeCount = 1;
+                MultiNodeRegion = null;
+                json = useSingBox
+                    ? (useTun
+                        ? SingBoxConfigBuilder.BuildTun(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
+                        : SingBoxConfigBuilder.Build(node, XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
+                    : XrayConfigBuilder.Build(node,
+                        XrayConfigBuilder.DefaultSocksPort, XrayConfigBuilder.DefaultHttpPort,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.LogLevel, AppState.State.DnsServer);
+            }
+            catch (Exception ex2)
+            {
+                return (false, "配置生成失败：" + ex2.Message);
+            }
+        }
 
         // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
         // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
