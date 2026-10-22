@@ -24,6 +24,8 @@ public static class ShareLinkParser
             //   anytls 只能走 sing-box（xray 26 实测无 anytls 出站）；
             //   socks:// 是常见的分享链接写法，此前 neo 完全不认。
             if (link.StartsWith("anytls://", StringComparison.OrdinalIgnoreCase)) return ParseAnyTls(link);
+            if (link.StartsWith("wireguard://", StringComparison.OrdinalIgnoreCase)
+                || link.StartsWith("wg://", StringComparison.OrdinalIgnoreCase)) return ParseWireGuard(link);
             if (link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5h://", StringComparison.OrdinalIgnoreCase)) return ParseSocks(link);
@@ -275,6 +277,36 @@ public static class ShareLinkParser
         ApplyCommonQuery(node, ParseQuery(uri.Query));
         node.Security = "tls";
         return node;
+    }
+
+    /// <summary>
+    /// WireGuard 分享链接（对标主流客户端 WireguardFmt）：
+    ///   wireguard://&lt;私钥&gt;@host:port?publickey=&amp;address=&amp;presharedkey=&amp;mtu=&amp;reserved=&amp;dns=#name
+    /// 私钥放在 userinfo（URL 编码）；地址/端口是**对端** endpoint。
+    /// </summary>
+    private static NodeItem? ParseWireGuard(string link)
+    {
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var uri)) return null;
+        var q = ParseQuery(uri.Query);
+        var node = new NodeItem
+        {
+            Protocol = NodeProtocol.WireGuard,
+            Password = Uri.UnescapeDataString(uri.UserInfo),
+            Server = StripBrackets(uri.Host),
+            Port = uri.Port > 0 ? uri.Port : 51820,
+            Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
+            Security = "none",
+            Network = "udp",
+            WgPublicKey = OrNull(G(q, "publickey")),
+            WgPresharedKey = OrNull(G(q, "presharedkey")),
+            WgAddress = OrNull(G(q, "address")),
+            WgReserved = OrNull(G(q, "reserved")),
+            WgDns = OrNull(G(q, "dns")),
+        };
+        if (int.TryParse(G(q, "mtu"), out var mtu) && mtu > 0) node.WgMtu = mtu;
+        if (int.TryParse(G(q, "keepalive"), out var ka) && ka > 0) node.WgKeepAlive = ka;
+        if (node.Name.Length == 0) node.Name = "WireGuard " + node.EndPoint;
+        return node.IsValid && !string.IsNullOrEmpty(node.Password) ? node : null;
     }
 
     /// <summary>

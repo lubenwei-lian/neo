@@ -32,6 +32,7 @@ public static class SingBoxConfigBuilder
             ["route"] = BuildRoute(proxyMode, bypassPrivate, bypassCn, blockAds, customRules, tunMode: false, gameDirect: gameDirectEnabled, gameProcesses: gameDirectProcesses),
             ["experimental"] = BuildExperimental(),
         };
+        ApplyWireGuardEndpoints(root, node);
 
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
@@ -45,6 +46,7 @@ public static class SingBoxConfigBuilder
         var root = BuildTunCore(BuildOutbounds(node), socksPort, httpPort, proxyMode, bypassPrivate,
             bypassCn, blockAds, allowLan, customRules, logLevel, dnsServer,
             gameDirectEnabled, gameDirectProcesses);
+        ApplyWireGuardEndpoints(root, node);
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -110,13 +112,90 @@ public static class SingBoxConfigBuilder
                 ["listen"] = "127.0.0.1",
                 ["listen_port"] = socksPort,
             }),
-            ["outbounds"] = new JsonArray(
-                BuildOutbound(node),
-                new JsonObject { ["type"] = "direct", ["tag"] = "direct" }),
+            ["outbounds"] = BuildOutbounds(node),
             ["route"] = new JsonObject { ["default_domain_resolver"] = "dns-direct" },
         };
+        ApplyWireGuardEndpoints(root, node);
+        if (node.Protocol is NodeProtocol.WireGuard)
+        {
+            // WG 是 endpoint 而不是 outbound：测速配置必须显式把 final 指到它，否则流量走 direct。
+            root["outbounds"] = new JsonArray(new JsonObject { ["type"] = "direct", ["tag"] = "direct" });
+            root["route"] = new JsonObject
+            {
+                ["default_domain_resolver"] = "dns-direct",
+                ["final"] = "proxy",
+            };
+        }
 
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>
+    /// WireGuard 用 sing-box 的 endpoint（1.11+）而不是 outbound：
+    /// 把 endpoint 挂到 root.endpoints，tag 与普通节点一致用 "proxy"，路由/统计无需特殊处理。
+    /// </summary>
+    private static void ApplyWireGuardEndpoints(JsonObject root, NodeItem n)
+    {
+        if (n.Protocol is not NodeProtocol.WireGuard) return;
+        root["endpoints"] = new JsonArray(BuildWireGuardEndpoint(n));
+    }
+
+    private static JsonObject BuildWireGuardEndpoint(NodeItem n)
+    {
+        var addresses = (n.WgAddress ?? "172.16.0.2/32")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(a => a.Length > 0)
+            .Select(a => (JsonNode)a!)
+            .ToArray();
+        if (addresses.Length == 0) addresses = new JsonNode[] { "172.16.0.2/32" };
+
+        var peer = new JsonObject
+        {
+            ["address"] = StripBrackets(n.Server),
+            ["port"] = n.Port,
+            ["public_key"] = n.WgPublicKey ?? "",
+            ["allowed_ips"] = new JsonArray("0.0.0.0/0", "::/0"),
+        };
+        if (!string.IsNullOrEmpty(n.WgPresharedKey)) peer["pre_shared_key"] = n.WgPresharedKey;
+        if (n.WgKeepAlive is > 0) peer["persistent_keepalive_interval"] = n.WgKeepAlive.Value;
+        var reserved = ParseReserved(n.WgReserved);
+        if (reserved != null) peer["reserved"] = reserved;
+
+        var endpoint = new JsonObject
+        {
+            ["type"] = "wireguard",
+            ["tag"] = "proxy",
+            ["address"] = new JsonArray(addresses),
+            ["private_key"] = n.Password ?? "",
+            ["peers"] = new JsonArray(peer),
+        };
+        if (n.WgMtu is > 0) endpoint["mtu"] = n.WgMtu.Value;
+        return endpoint;
+    }
+
+    /// <summary>reserved 支持 "0,0,0" 与 WARP 的三字节 base64 两种写法；解析失败返回 null（不写该字段）。</summary>
+    private static JsonArray? ParseReserved(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var s = raw.Trim();
+        if (s.Contains(','))
+        {
+            var parts = s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var arr = new JsonArray();
+            foreach (var part in parts)
+            {
+                if (!int.TryParse(part, out var v) || v < 0 || v > 255) return null;
+                arr.Add(v);
+            }
+            return arr.Count == 3 ? arr : null;
+        }
+        try
+        {
+            var bytes = Convert.FromBase64String(s);
+            if (bytes.Length != 3) return null;
+            return new JsonArray(bytes[0], bytes[1], bytes[2]);
+        }
+        catch { return null; }
     }
 
     private static JsonObject BuildSocksInbound(int port, bool allowLan) => new()
@@ -135,9 +214,12 @@ public static class SingBoxConfigBuilder
         ["listen_port"] = port,
     };
 
-    private static JsonArray BuildOutbounds(NodeItem n) => new(
-        BuildOutbound(n),
-        new JsonObject { ["type"] = "direct", ["tag"] = "direct" });
+    private static JsonArray BuildOutbounds(NodeItem n) => n.Protocol is NodeProtocol.WireGuard
+        // WireGuard 走 endpoints（sing-box 1.11+），没有对应 outbound。
+        ? new JsonArray(new JsonObject { ["type"] = "direct", ["tag"] = "direct" })
+        : new JsonArray(
+            BuildOutbound(n),
+            new JsonObject { ["type"] = "direct", ["tag"] = "direct" });
 
     private static JsonObject BuildOutbound(NodeItem n)
     {

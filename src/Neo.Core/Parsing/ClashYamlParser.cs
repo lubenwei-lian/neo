@@ -323,6 +323,18 @@ public static class ClashYamlParser
                 if (Str(item, "client-fingerprint") is { Length: > 0 } anyFp) node.Fingerprint = anyFp;
                 break;
 
+            case "wireguard":
+                // Clash.Meta 的 WireGuard 条目 → 生成器的 endpoints 形态。
+                node.Protocol = NodeProtocol.WireGuard;
+                node.Password = StrOrNull(item, "private-key") ?? "";
+                node.WgPublicKey = StrOrNull(item, "public-key");
+                node.WgPresharedKey = StrOrNull(item, "pre-shared-key") ?? StrOrNull(item, "preshared-key");
+                node.WgAddress = SplitList(Str(item, "ip"));
+                node.WgReserved = StrOrNull(item, "reserved");
+                if (int.TryParse(Str(item, "mtu"), out var wgMtu) && wgMtu > 0) node.WgMtu = wgMtu;
+                node.Network = "udp";
+                break;
+
             case "tuic":
                 node.Protocol = NodeProtocol.TUIC;
                 node.Uuid = Str(item, "uuid");

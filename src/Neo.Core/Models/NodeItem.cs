@@ -21,6 +21,12 @@ public enum NodeProtocol
     /// 用于 proxy-providers / 复杂 rule-provider 这类用 NodeItem 模型表达不了的订阅。
     /// </summary>
     MihomoConfig,
+
+    /// <summary>
+    /// WireGuard（sing-box 的 endpoints 形态；xray 不支持 WG 出站）。
+    /// 分享链接：wireguard://&lt;私钥&gt;@host:port?publickey=...&amp;address=... 或整份 .conf。
+    /// </summary>
+    WireGuard,
 }
 
 public sealed class NodeItem
@@ -126,6 +132,28 @@ public sealed class NodeItem
     /// <summary>hysteria2 gecko 混淆的最大分片（分享链接 maxPacketSize）；空 = 非 gecko。</summary>
     public int? GeckoMaxPacketSize { get; set; }
 
+    // ================= WireGuard（sing-box endpoint）=================
+    /// <summary>WireGuard 对端公钥（分享链接 publickey）。</summary>
+    public string? WgPublicKey { get; set; }
+
+    /// <summary>WireGuard 预共享密钥（分享链接 presharedkey）；空 = 不用。</summary>
+    public string? WgPresharedKey { get; set; }
+
+    /// <summary>本机接口地址，可多个用逗号分隔（分享链接 address / .conf 的 Address）。</summary>
+    public string? WgAddress { get; set; }
+
+    /// <summary>WireGuard MTU（.conf 的 MTU / 分享链接 mtu）；空 = 不写（用内核默认）。</summary>
+    public int? WgMtu { get; set; }
+
+    /// <summary>WARP reserved 字节（三字节 base64 或 "0,0,0"）；空 = 不写。</summary>
+    public string? WgReserved { get; set; }
+
+    /// <summary>WireGuard DNS（.conf 的 DNS）；空 = 不写。</summary>
+    public string? WgDns { get; set; }
+
+    /// <summary>持久保活秒数；null = 不写（sing-box 默认 0/关闭）。</summary>
+    public int? WgKeepAlive { get; set; }
+
     /// <summary>
     /// 该节点是否用到 xray 专有能力（sing-box 1.14 不支持，实测见台账）：
     /// mKCP / xhttp 传输、VLESS 后量子加密、REALITY pqv、证书名校验 vcn。
@@ -144,7 +172,7 @@ public sealed class NodeItem
     /// 注意：hysteria2 / tuic 恒走 sing-box，由调用方另行判断，不在此列。
     /// </summary>
     public bool RequiresSingBox =>
-        Protocol is NodeProtocol.AnyTls
+        Protocol is NodeProtocol.AnyTls or NodeProtocol.WireGuard
         || (Protocol is NodeProtocol.Shadowsocks && !string.IsNullOrEmpty(Plugin))
         || Network.ToLowerInvariant() is "h2"
         || GeckoMinPacketSize.HasValue || GeckoMaxPacketSize.HasValue

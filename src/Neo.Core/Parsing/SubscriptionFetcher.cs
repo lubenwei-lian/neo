@@ -248,6 +248,22 @@ public static class SubscriptionFetcher
             return sr;
         }
 
+        // ④ WireGuard .conf（[Interface]/[Peer] 文本；对标成熟客户端的顺序：SIP008 之后、自定义之前）
+        foreach (var attempt in attempts)
+        {
+            if (!WireGuardConfParser.LooksLike(attempt)) continue;
+            var wgNodes = WireGuardConfParser.Parse(attempt);
+            if (wgNodes.Count == 0)
+            {
+                lastFail = "检测到 WireGuard .conf 格式，但未解析出可用节点（缺 PrivateKey/PublicKey/Endpoint）";
+                continue;
+            }
+            var wr = SubscriptionFetchResult.Ok(attempt);
+            wr.Nodes.AddRange(wgNodes);
+            LogBus($"订阅识别：WireGuard .conf 解析出 {wgNodes.Count} 个节点");
+            return wr;
+        }
+
         return SubscriptionFetchResult.Fail(string.IsNullOrEmpty(lastFail) ? "未解析出任何有效节点（格式可能不支持）" : lastFail);
     }
 

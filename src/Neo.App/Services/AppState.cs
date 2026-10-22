@@ -998,6 +998,7 @@ public static class AppState
         NodeProtocol.AnyTls => "AnyTLS",
         NodeProtocol.Socks => "Socks5",
         NodeProtocol.MihomoConfig => "Clash 直通",
+        NodeProtocol.WireGuard => "WireGuard",
         _ => "Unknown",
     };
 
