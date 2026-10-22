@@ -137,9 +137,22 @@ public static class AppUpdateService
         // 优先同 tag 的 <安装包>.sha256；没有则读 build-info.json 的 assets.sha256[安装包名]；
         // 两者都没有 → 旧 release 兼容：仅体积校验并留 Warning（UI 也会提示）。
         string? sha256 = null;
+        long assetSize = asset.SizeBytes;
         if (hasNew)
         {
             sha256 = await TryGetAssetHashAsync(tag, asset.Name, GetBuildInfoAsync);
+            // 非 API 通道拿到的资产没有体积/哈希；缺任意一个就用 REST 的 digest 补一次
+            //（GitHub 自 2025 起在 assets[].digest 给 sha256；这让「发布方没传 .sha256」的包也能校验）。
+            if (sha256 == null || assetSize <= 0)
+            {
+                var meta = await GitHubChannel.GetAssetMetaAsync(
+                    RepoOwner, RepoName, tag, asset.Name, preferProxy, ct);
+                if (meta != null)
+                {
+                    sha256 ??= meta.Digest;
+                    if (assetSize <= 0) assetSize = meta.Size;
+                }
+            }
             if (sha256 == null)
                 LogBus.App($"发布未提供 {asset.Name} 的哈希（.sha256 与 build-info.json 均无），安装时仅校验体积", "Warning");
             else
@@ -148,7 +161,7 @@ public static class AppUpdateService
 
         LogBus.App($"更新检查完成：最新 {tag}（当前 {CurrentVersion}，构建 {LocalBuildTime:yyyy-MM-dd HH:mm}）→ "
                    + (hasNew ? (notes.Length > 0 ? "发现同版本新构建" : "发现新版本") : "已是最新版本"));
-        return new UpdateInfo(true, hasNew, tag, notes, asset.DownloadUrl, asset.Name, asset.SizeBytes, "", sha256);
+        return new UpdateInfo(true, hasNew, tag, notes, asset.DownloadUrl, asset.Name, assetSize, "", sha256);
     }
 
     /// <summary>

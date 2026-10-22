@@ -187,6 +187,49 @@ public static class GitHubChannel
             }
         }, ct);
 
+
+    /// <summary>
+    /// 一次 REST 调用同时拿到资产的官方 digest 与大小（GitHub 2025 起在 assets[].digest 提供 sha256）。
+    /// 用于应用更新：非 API 通道拿到的资产列表没有体积/哈希，这里补一次（仅在确实要下载时调用，节省配额）。
+    /// </summary>
+    public sealed record AssetMeta(string? Digest, long Size);
+
+    public static Task<AssetMeta?> GetAssetMetaAsync(string owner, string repo, string tag, string assetName,
+        bool preferProxy, CancellationToken ct = default)
+        => RaceAsync<AssetMeta>(preferProxy, async (handler, _, token) =>
+        {
+            using (handler)
+            {
+                try
+                {
+                    using var client = new HttpClient(handler) { Timeout = Timeout };
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
+                    client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/vnd.github+json");
+                    using var resp = await client.GetAsync(
+                        $"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", token);
+                    if (!resp.IsSuccessStatusCode) return null;
+                    var json = await resp.Content.ReadAsStringAsync(token);
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("assets", out var assets)) return null;
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        if (!a.TryGetProperty("name", out var n)) continue;
+                        if (!string.Equals(n.GetString(), assetName, StringComparison.OrdinalIgnoreCase)) continue;
+                        long size = a.TryGetProperty("size", out var sz) && sz.TryGetInt64(out var sv) ? sv : 0L;
+                        if (!a.TryGetProperty("digest", out var d)
+                            || d.ValueKind != System.Text.Json.JsonValueKind.String) return new AssetMeta(null, size);
+                        var digest = d.GetString() ?? "";
+                        var idx = digest.IndexOf(':');
+                        var hex = idx >= 0 ? digest[(idx + 1)..] : digest;
+                        return new AssetMeta(hex.Length == 64 ? hex.ToLowerInvariant() : null, size);
+                    }
+                    return null;
+                }
+                catch (OperationCanceledException) { return null; }
+                catch { return null; }
+            }
+        }, ct);
+
     /// <summary>从 releases.atom 取版本 tag 列表（最新在前）。取不到时返回空表（调用方无需判 null）。</summary>
     public static async Task<List<string>> GetTagsFromAtomAsync(string owner, string repo, bool preferProxy, CancellationToken ct = default)
     {
