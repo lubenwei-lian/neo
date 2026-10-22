@@ -1560,6 +1560,16 @@ public static class ConnectionService
         }
     }
 
+    /// <summary>
+    /// 内核连续崩溃、自动重启被放弃时，必须让用户「看见」——否则表现为
+    /// 「刚刚还在用，突然所有网页打不开」，用户不知道是内核退出了保护机制。
+    /// 走 UserNotice（状态条 + 托盘气泡双通道；托盘模式下只有气泡可见）。
+    /// </summary>
+    private static void NotifyKernelGaveUp(string detail)
+    {
+        try { UserNotice?.Invoke($"{detail}，已停止自动重启。请手动重连；若反复出现，请导出诊断（日志里带内核最后输出）。"); } catch { }
+    }
+
     /// <see cref="SettingsReloadFailed"/>。事件订阅者异常单独吞掉：重载流程已经失败，
     /// 不能因为页面弹提示出错再抛一次。
     private static void RaiseSettingsReloadFailed(string message)
@@ -2032,12 +2042,14 @@ public static class ConnectionService
                     //   三条路径本来就有 Error 日志，缺的只是**一致的措辞**；
                     //   再补一条只会重复刷屏（当年正是「反复刷日志」引发的整改）。
                     LogBus.App($"内核连续 {_earlyCrashCount} 次启动即崩溃，判定为配置或环境问题：已停止自动重启，请手动重连或检查内核日志", "Error");
+                    NotifyKernelGaveUp($"内核连续 {_earlyCrashCount} 次启动即崩溃");
                     return;
                 }
                 _coreRestartAttempts++;
                 if (_coreRestartAttempts > MaxCoreRestartAttempts)
                 {
                     LogBus.App($"内核已连续异常退出 {_coreRestartAttempts} 次：已停止自动重启，请手动重连或检查内核日志", "Error");
+                    NotifyKernelGaveUp($"内核已连续异常退出 {_coreRestartAttempts} 次");
                     return;
                 }
                 var retryDelay = TimeSpan.FromSeconds(5 * _earlyCrashCount);
@@ -2064,6 +2076,7 @@ public static class ConnectionService
             {
                 // 与上面两条放弃路径同一句文案（参见 earlyCrash 分支的注释）：
                 LogBus.App($"内核已连续异常退出 {_coreRestartAttempts} 次：已停止自动重启，请手动重连或检查内核日志", "Error");
+                NotifyKernelGaveUp($"内核已连续异常退出 {_coreRestartAttempts} 次");
                 return;
             }
 
