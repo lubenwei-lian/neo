@@ -25,6 +25,8 @@ public sealed class PortRelay : IDisposable
     private volatile int _backendPort;
     private volatile bool _running;
     private long _connCount;
+    /// <summary>按后端端口统计的活跃连接数（用于「等旧内核的连接全部结束再退役」）。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> _activeByBackend = new();
 
     public PortRelay(int listenPort, int backendPort, Action<int>? onBackendFail = null)
     {
@@ -37,6 +39,10 @@ public sealed class PortRelay : IDisposable
     public int BackendPort => _backendPort;
     public bool IsRunning => _running;
     public long ConnCount => Interlocked.Read(ref _connCount);
+
+    /// <summary>指定后端端口当前还有多少条连接（切换后旧内核靠它判断何时可以退役）。</summary>
+    public int ActiveFor(int backendPort)
+        => _activeByBackend.TryGetValue(backendPort, out var n) ? n : 0;
 
     public void Start()
     {
@@ -89,9 +95,17 @@ public sealed class PortRelay : IDisposable
             }
 
             Interlocked.Increment(ref _connCount);
-            var up = PumpAsync(client.GetStream(), backend.GetStream(), ct);
-            var down = PumpAsync(backend.GetStream(), client.GetStream(), ct);
-            await Task.WhenAny(up, down).ConfigureAwait(false);
+            _activeByBackend.AddOrUpdate(target, 1, (_, v) => v + 1);
+            try
+            {
+                var up = PumpAsync(client.GetStream(), backend.GetStream(), ct);
+                var down = PumpAsync(backend.GetStream(), client.GetStream(), ct);
+                await Task.WhenAny(up, down).ConfigureAwait(false);
+            }
+            finally
+            {
+                _activeByBackend.AddOrUpdate(target, 0, (_, v) => Math.Max(0, v - 1));
+            }
         }
         catch { }
         finally

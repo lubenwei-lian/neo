@@ -13,6 +13,13 @@ public static class SingBoxConfigBuilder
 
     /// <summary>sing-box 的 Clash API 端口（仅本机回环；与 xray 的 21xxx 端口段一致）。</summary>
     public const int ClashApiPort = 21811;
+
+    /// <summary>
+    /// 生成本次配置时使用的 clash_api 端口。默认 21811；
+    /// 无感切换时由 ConnectionService 临时改成目标槽位（21821），保证两个内核不抢控制器。
+    /// 生成完由调用方恢复，单线程使用即可。
+    /// </summary>
+    public static int ClashApiPortOverride { get; set; } = ClashApiPort;
     public const string ClashApiSecret = "neo-local-stats";
 
     public static string Build(NodeItem node, int socksPort, int httpPort, string proxyMode, bool bypassPrivate,
@@ -731,7 +738,7 @@ public static class SingBoxConfigBuilder
     {
         ["clash_api"] = new JsonObject
         {
-            ["external_controller"] = $"127.0.0.1:{ClashApiPort}",
+            ["external_controller"] = $"127.0.0.1:{ClashApiPortOverride}",
             ["secret"] = ClashApiSecret,
         },
     };

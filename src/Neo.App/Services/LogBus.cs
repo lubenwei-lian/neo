@@ -29,7 +29,8 @@ public sealed class LogEntry
 public static class LogBus
 {
     private const int MaxLines = 4000;
-    private const int KeepDays = 30;
+    // 2026-10-23 用户要求：日志只保留 7 天。
+    private const int KeepDays = 7;
 
     /// 单文件过大时记事本/杀软读取会卡死，且写坏一次就丢掉整天日志。
     private const long MaxFileBytes = 32L * 1024 * 1024;

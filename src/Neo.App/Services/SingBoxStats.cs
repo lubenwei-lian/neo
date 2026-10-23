@@ -17,7 +17,7 @@ public static class SingBoxStats
         {
             using var req = new HttpRequestMessage(
                 HttpMethod.Get,
-                $"http://127.0.0.1:{LocalPorts.ClashApi}/connections");
+                $"http://127.0.0.1:{LocalPorts.CoreClashApi}/connections");
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + SingBoxConfigBuilder.ClashApiSecret);
 
             using var resp = Http.Send(req);

@@ -40,6 +40,13 @@ public static class LocalPorts
     /// <summary>活跃内核的统计 API 端口。</summary>
     public static int CoreStatsApi => SlotStats(ActiveSlot);
 
+    /// <summary>sing-box / mihomo 的 clash_api 端口（slot 0 = 21811，slot 1 = 21821）。
+    /// 双内核并存时必须分开，否则两个实例抢控制器端口，统计和连接列表都会乱。</summary>
+    public static int SlotClashApi(int slot) => FixedClashApi + (slot == 0 ? 0 : 10);
+
+    /// <summary>活跃内核的 clash_api 端口。</summary>
+    public static int CoreClashApi => SlotClashApi(ActiveSlot);
+
     /// <summary>校验并应用；返回错误文案（null = 成功）。</summary>
     public static string? TryApply(int socks, int http)
     {

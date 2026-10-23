@@ -14,6 +14,11 @@ public static class ConnectionService
     // 用户端口的本地中继（无感切换的核心）：内核监听 21908/21909，用户仍用 21808/21809。
     private static PortRelay? _relaySocks;
     private static PortRelay? _relayHttp;
+    /// <summary>正在退役的旧内核（等它连接归零后 Stop）。下一次切换若目标槽位被它占着，会强停它。</summary>
+    private static CoreProcess? _retiringCore;
+
+    /// <summary>无感切换的互斥门（0 = 空闲，1 = 切换中），防连点并发。</summary>
+    private static int _switchGate;
 
     /// <summary>确保用户端口的中继在跑，并把后端指向当前活跃内核。</summary>
     private static void EnsureRelays()
@@ -332,6 +337,10 @@ public static class ConnectionService
         // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
         // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
         NodeItem? fixedExit = null;
+        // 2026-10-23 审计 P1-2：完整连接也会生成 sing-box 配置，clash_api 端口必须跟随当前槽位，
+        // 否则 ActiveSlot 变成 1 之后，统计按 21821 取数而内核监听 21811 → 流量统计永久静默失效。
+        SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(LocalPorts.ActiveSlot);
+
         var fixedEntries = new List<NodeItem>();
         if (useCustom && AppState.State.FixedExitEnabled)
         {
@@ -396,12 +405,12 @@ public static class ConnectionService
                     ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer,
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer,
                         AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
                     : SingBoxConfigBuilder.Build(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer,
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer,
                         AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
                 CoreKind = "naive";
             }
@@ -416,15 +425,15 @@ public static class ConnectionService
                     ? (useTun
                         ? CustomConfigBuilder.BuildSingBoxTun(srcJson,
                             LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                            LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
                             AppState.State.AllowLan, AppState.State.DnsServer)
                         : CustomConfigBuilder.BuildSingBox(srcJson,
                             LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                            LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
                             AppState.State.AllowLan))
                     : CustomConfigBuilder.BuildXray(srcJson,
                         LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        LocalPorts.CoreStatsApi, AppState.State.AllowLan, AppState.State.LogLevel);
+                        LocalPorts.CoreStatsApi, AppState.State.AllowLan, AppState.State.KernelLogLevel);
                 var ctmp = customConfigPath + ".tmp";
                 File.WriteAllText(ctmp, json);
                 File.Move(ctmp, customConfigPath, true);
@@ -433,13 +442,13 @@ public static class ConnectionService
             else if (useMihomo)
             {
                 // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
-                var apiPort = LocalPorts.ClashApi;
+                var apiPort = LocalPorts.CoreClashApi;
                 // 2026-10-23 无感切换：mihomo 也必须监听内核内部端口。
                 //   之前这里传的是用户端口（21808/21809），与 PortRelay 抢同一个监听端口，
                 //   表现为 mihomo 会话端口被占、中继也没起到转发作用。
                 var yaml = MihomoConfigBuilder.Build(node,
                     LocalPorts.CoreHttp, LocalPorts.CoreSocks,
-                    apiPort, AppState.State.LogLevel);
+                    apiPort, AppState.State.KernelLogLevel);
                 mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
                 Directory.CreateDirectory(mihomoDataDir);
                 mihomoConfigPath = Path.Combine(mihomoDataDir, "config.yaml");
@@ -468,7 +477,7 @@ public static class ConnectionService
                     LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                     AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                     AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                    AppState.State.LogLevel, AppState.State.DnsServer);
+                    AppState.State.KernelLogLevel, AppState.State.DnsServer);
                 FixedExitActive = true;
                 FixedExitEntries = fixedEntries.Count;
                 FixedExitName = fixedExit.Name;
@@ -483,18 +492,18 @@ public static class ConnectionService
                         ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
                         : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
                         LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer);
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer);
             }
             if (!useMihomo && !useCustom && !useNaive) CoreKind = useSingBox ? "sing-box" : "xray";
         }
@@ -514,18 +523,18 @@ public static class ConnectionService
                         ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
                         : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.LogLevel, AppState.State.DnsServer,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
                         LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.LogLevel, AppState.State.DnsServer);
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer);
             }
             catch (Exception ex2)
             {
@@ -676,7 +685,8 @@ public static class ConnectionService
                 while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
                 LogLine?.Invoke(line);
             };
-            _xray.Exited += code => OnCoreExited(code);
+            var coreSelf = _xray;
+            coreSelf.Exited += code => OnCoreExited(coreSelf, code);
             if (useMihomo)
                 _xray.Start(cfgPath, new[] { "-f", cfgPath, "-d", mihomoDataDir! });
             else
@@ -963,8 +973,12 @@ public static class ConnectionService
     /// </summary>
     public static async Task<(bool Ok, string? Err)> SwitchNodeFastAsync(NodeItem node)
     {
-        if (!IsConnected || _xray is not { IsRunning: true }
-            || !string.Equals(CoreKind, "xray", StringComparison.OrdinalIgnoreCase))
+        // 2026-10-23 审计 P1-4：连点两次/两个入口同时触发会并发跑两次切换，在同一槽位端口上打架。
+        if (Interlocked.Exchange(ref _switchGate, 1) == 1)
+            return (false, "正在切换节点中，请稍候");
+        try
+        {
+        if (!IsConnected || _xray is not { IsRunning: true })
         {
             return await ConnectAsync(node, force: true);
         }
@@ -975,32 +989,78 @@ public static class ConnectionService
             return await ConnectAsync(node, force: true);
         }
 
+        // 2026-10-23：sing-box 节点同样支持无感切换（clash_api 已按槽位分开：21811/21821）。
         var useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
             || (node.RequiresSingBox && !node.RequiresXray));
-        if (useSingBox)
+        var exeName = useSingBox ? "sing-box.exe" : "xray.exe";
+        var exePath = Path.Combine(NeoPaths.RuntimeDir, exeName);
+        if (!File.Exists(exePath))
         {
-            LogBus.App("节点切换：目标节点需要 sing-box，走普通重连（无感切换目前只支持 xray 节点）", "Debug");
-            return await ConnectAsync(node, force: true);
+            LogBus.App("节点切换：缺少内核 " + exeName + "，保持当前节点", "Warning");
+            return (false, "缺少内核 " + exeName);
         }
 
         var oldSlot = LocalPorts.ActiveSlot;
         var newSlot = 1 - oldSlot;
+
+        // 2026-10-23 审计 P0-2：上一轮切换的旧内核可能还在「等连接归零」的退役期，
+        // 仍然占着目标槽位端口。不做预检就直接起新内核 → 绑不上端口 → 8 秒后切换失败
+        //（表现为「连续切第二次必挂」）。这里先把它强停，等端口释放。
+        if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
+        {
+            LogBus.App("无感切换：目标槽位仍被上一轮内核占用（退役中），先强制退役再切", "Warning");
+            try { _retiringCore?.Stop(); } catch { }
+            for (var i = 0; i < 20; i++)
+            {
+                if (PortFree(LocalPorts.SlotSocks(newSlot)) && PortFree(LocalPorts.SlotHttp(newSlot))) break;
+                await Task.Delay(150);
+            }
+            if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
+            {
+                LogBus.App("无感切换：目标槽位端口仍被占用，回退普通重连", "Warning");
+                return await ConnectAsync(node, force: true);
+            }
+        }
+
         var newSocks = LocalPorts.SlotSocks(newSlot);
         var newHttp = LocalPorts.SlotHttp(newSlot);
         var newStats = LocalPorts.SlotStats(newSlot);
 
-        var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
+        // 2026-10-23 审计 P1-6：配置放数据目录而不是 %TEMP% —— IsConfirmedOwnCore 靠
+        // 命令行里是否含数据目录来认「这是我们的内核」，放 TEMP 会导致崩溃后孤儿内核清不掉、
+        // 下次启动一直报「端口被占用」。
+        var cfgPath = Path.Combine(NeoPaths.DataDir, $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
         CoreProcess? newCore = null;
         try
         {
-            var json = XrayConfigBuilder.Build(node, newSocks, newHttp,
-                AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                AppState.State.LogLevel, AppState.State.DnsServer, newStats);
+            var prevClash = SingBoxConfigBuilder.ClashApiPortOverride;
+            string json;
+            try
+            {
+                if (useSingBox)
+                {
+                    SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(newSlot);
+                    json = SingBoxConfigBuilder.Build(node, newSocks, newHttp,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer,
+                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
+                }
+                else
+                {
+                    json = XrayConfigBuilder.Build(node, newSocks, newHttp,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer, newStats);
+                }
+            }
+            finally
+            {
+                SingBoxConfigBuilder.ClashApiPortOverride = prevClash;
+            }
             await File.WriteAllTextAsync(cfgPath, json);
 
-            var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
-            newCore = new CoreProcess(exe, NeoPaths.RuntimeDir);
+            newCore = new CoreProcess(exePath, NeoPaths.RuntimeDir);
             newCore.LogLine += line =>
             {
                 LogBus.Core(line);
@@ -1035,8 +1095,10 @@ public static class ConnectionService
             // 切换：旧内核继续服务已有连接，新连接立刻走新内核
             var prev = _xray;
             _xray = newCore;
-            _xray.Exited += code => OnCoreExited(code);
+            var coreSelf = _xray;
+            coreSelf.Exited += code => OnCoreExited(coreSelf, code);
             LocalPorts.ActiveSlot = newSlot;
+            CoreKind = useSingBox ? "sing-box" : "xray";
             EnsureRelays();
             ConnectedNode = node;
             AppState.SetCurrentNode(node);
@@ -1046,11 +1108,31 @@ public static class ConnectionService
             LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
             try { UserNotice?.Invoke($"已切换到「{node.Name}」（无感切换，未断网）"); } catch { }
 
+            // 旧内核退役（2026-10-23 下载无感）：不再固定 20 秒 —— 正在下载/看视频的连接全在旧内核上，
+            // 到点硬停会把长连接截断。改成「等旧槽位连接数归零」再停，最长 5 分钟兜底。
+            var oldSocks = LocalPorts.SlotSocks(oldSlot);
+            var oldHttp = LocalPorts.SlotHttp(oldSlot);
+            _retiringCore = prev;
             _ = Task.Run(async () =>
             {
-                try { await Task.Delay(20000); } catch { }
+                var deadline = DateTime.Now.AddMinutes(5);
+                while (DateTime.Now < deadline)
+                {
+                    var n = (_relaySocks?.ActiveFor(oldSocks) ?? 0) + (_relayHttp?.ActiveFor(oldHttp) ?? 0);
+                    if (n == 0) break;
+                    try { await Task.Delay(2000); } catch { break; }
+                }
+                var left = (_relaySocks?.ActiveFor(oldSocks) ?? 0) + (_relayHttp?.ActiveFor(oldHttp) ?? 0);
                 try { prev?.Stop(); } catch { }
+                try { if (ReferenceEquals(_retiringCore, prev)) _retiringCore = null; } catch { }
                 try { File.Delete(cfgPath); } catch { }
+                try
+                {
+                    LogBus.App(left > 0
+                        ? $"旧内核已退役（原槽位 {oldSlot}，残留 {left} 条连接被强制关闭）"
+                        : $"旧内核已退役（原槽位 {oldSlot}，连接已全部结束）", "Debug");
+                }
+                catch { }
             });
             return (true, null);
         }
@@ -1061,6 +1143,8 @@ public static class ConnectionService
             LogBus.Exception("无感切换失败", ex);
             return (false, "无感切换失败：" + ex.Message);
         }
+        }
+        finally { Interlocked.Exchange(ref _switchGate, 0); }
     }
 
     public static void Disconnect(string? reason = null)
@@ -1738,7 +1822,11 @@ public static class ConnectionService
             //   换端口后这些残留不再被认作「neo 端口」→ 必须一并纳入清理名单，
             //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
             //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。
+            // 2026-10-23 审计 P0-1 修复：注册表里写的是**用户端口**（21808/21809，由 PortRelay 监听），
+            // 内核端口是 21908/21909。原先这里传内核端口 → PointsToNeoPort 精确比较永不命中 →
+            // 清不掉残代理、启动自愈也静默失效（neo 被强杀后 Edge/Steam 全断网）。
             if (SystemProxy.CleanupOrphaned(
+                    LocalPorts.Socks, LocalPorts.Http,
                     LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                     10808, 10809))
             {
@@ -1784,7 +1872,7 @@ public static class ConnectionService
         (LocalPorts.CoreSocks, !PortFree(LocalPorts.CoreSocks)),
         (LocalPorts.CoreHttp, !PortFree(LocalPorts.CoreHttp)),
         (LocalPorts.CoreStatsApi, !PortFree(LocalPorts.CoreStatsApi)),
-        (LocalPorts.ClashApi, !PortFree(LocalPorts.ClashApi)),
+        (LocalPorts.CoreClashApi, !PortFree(LocalPorts.CoreClashApi)),
     };
 
     /// <summary>返回第一个被占用的端口号；全空闲返回 0。</summary>
@@ -2084,8 +2172,16 @@ public static class ConnectionService
         }
     }
 
-    private static void OnCoreExited(int code)
+    private static void OnCoreExited(CoreProcess? core, int code)
     {
+        // 2026-10-23 审计 P1-1：只处理「当前活跃内核」的退出。
+        // 无感切换后旧内核会被延迟退役，它的退出事件不能把新会话拆掉
+        //（否则表现为「正用着突然断网」，而且新内核变成没人管的孤儿）。
+        if (core != null && !ReferenceEquals(core, _xray))
+        {
+            try { LogBus.App("旧内核已退出（已被新内核替换，忽略）", "Debug"); } catch { }
+            return;
+        }
         if (!IsConnected) return;
         var node = ConnectedNode;
         IsConnected = false;

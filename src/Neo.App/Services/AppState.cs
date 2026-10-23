@@ -50,7 +50,17 @@ public static class AppState
         public bool BypassCn { get; set; } = true;
         public bool BlockAds { get; set; } = true;
         public bool AllowLan { get; set; } = false;
-        public string LogLevel { get; set; } = "warning";
+        // 2026-10-23 用户要求「所有动作都记录、只保留 7 天」：默认改为 info。
+    // Info 级别的连接/切换/测速/更新日志都会落盘；Debug 仍只在排查时手动开启。
+    public string LogLevel { get; set; } = "info";
+
+    /// <summary>
+    /// 传给内核（xray/sing-box/mihomo）的日志级别。
+    /// 和界面日志分开：界面日志要「全部记录」，但内核 Info 是逐连接打印的，
+    /// 若跟着开 info 会一天写几十万行、日志文件暴涨（实测一次连接就十几条）。
+    /// 只有用户显式选 debug 时才让内核也开 debug。
+    /// </summary>
+    public string KernelLogLevel => LogLevel is "debug" ? "debug" : "warning";
 
         /// 配置迁移版本号：用于「只对老配置执行一次」的默认值修正。
         /// 0 = 迁移前的旧配置。新增迁移时递增此值并在 Load 里补对应分支。

@@ -26,6 +26,8 @@ public sealed partial class ConnectionPage : UserControl
     private bool _syncing;
 
     private readonly Microsoft.UI.Xaml.DispatcherTimer _statsTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    /// <summary>上一次刷新时看到的「已连接节点」，用于发现后台无感切换。</summary>
+    private Neo.Core.Models.NodeItem? _lastConnectedNodeSeen;
     private CoreStats.Snapshot? _lastSnap;
     private DateTime _lastSnapAt;
     private long _peakDownBps;
@@ -125,6 +127,15 @@ public sealed partial class ConnectionPage : UserControl
             PeakText.Text = "未连接";
             RingTimeText.Text = "00:00:00";
             return;
+        }
+
+        // 2026-10-23 无感切换：内核在后台换掉了（节点变了），但没有任何点击/导航事件，
+        // 界面必须自己发现「已连接节点变了」并刷新 —— 否则圆环还显示旧节点名。
+        var nowConnected = ConnectionService.ConnectedNode;
+        if (!ReferenceEquals(_lastConnectedNodeSeen, nowConnected))
+        {
+            _lastConnectedNodeSeen = nowConnected;
+            try { RefreshConnUi(); } catch { }
         }
 
         int? mem = ConnectionService.CoreMemoryMb;

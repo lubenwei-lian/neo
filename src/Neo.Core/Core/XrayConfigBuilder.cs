@@ -64,7 +64,7 @@ public static class XrayConfigBuilder
         {
             ["log"] = new JsonObject
             {
-                ["loglevel"] = level,
+                ["loglevel"] = level, ["access"] = "none",
             },
             ["dns"] = new JsonObject
             {
@@ -159,7 +159,7 @@ public static class XrayConfigBuilder
 
         var root = new JsonObject
         {
-            ["log"] = new JsonObject { ["loglevel"] = "warning" },
+            ["log"] = new JsonObject { ["loglevel"] = "warning", ["access"] = "none" },
             ["inbounds"] = new JsonArray
             {
                 new JsonObject
@@ -219,7 +219,7 @@ public static class XrayConfigBuilder
 
         var root = new JsonObject
         {
-            ["log"] = new JsonObject { ["loglevel"] = "warning" },
+            ["log"] = new JsonObject { ["loglevel"] = "warning", ["access"] = "none" },
             ["inbounds"] = inbounds,
             ["outbounds"] = outbounds,
             ["routing"] = new JsonObject
