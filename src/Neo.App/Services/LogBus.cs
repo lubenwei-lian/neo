@@ -208,6 +208,9 @@ public static class LogBus
             foreach (var f in Directory.GetFiles(dir, "neo-*.log"))
             {
                 if (!TryParseLogDate(f, out var d)) continue;
+                // 2026-10-24 审查 P2-14：当天文件永远不删（长跑进程跨过 7 天后，当前文件也会
+                //   「超龄」；原实现靠 Windows 文件锁让它删除失败，属于侥幸而非设计）。
+                if (d.Date >= DateTime.Today) continue;
                 if ((DateTime.Now - d).TotalDays > KeepDays)
                     File.Delete(f);
             }
@@ -256,6 +259,7 @@ public static class LogBus
         try
         {
             var dir = NeoPaths.LogDir;
+            var todayFile = $"neo-{DateTime.Now:yyyyMMdd}.log";
             var files = new List<(FileInfo Fi, long Size)>();
             long total = 0;
             foreach (var f in Directory.GetFiles(dir, "neo-*.log"))
@@ -264,6 +268,8 @@ public static class LogBus
                 {
                     var fi = new FileInfo(f);
                     if (!fi.Exists) continue;
+                    // 2026-10-24 审查 P2-14：当天的活动日志受保护，配额只从历史文件里回收空间。
+                    if (string.Equals(fi.Name, todayFile, StringComparison.OrdinalIgnoreCase)) continue;
                     files.Add((fi, fi.Length));
                     total += fi.Length;
                 }
