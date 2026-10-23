@@ -606,6 +606,11 @@ public static class ConnectionService
             json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
         }
 
+        // 2026-10-24 M2 阶段 1（只读影子模式）：sing-box 会话把「最终配置」交给 Rust 侧 neo-cli
+        //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。
+        if (useSingBox && !useNaive && !useCustom && !useMihomo && !string.IsNullOrEmpty(json))
+            ConfigShadow.QueueIfAvailable(json, node, useTun);
+
         // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
         // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
         if (useSingBox)
