@@ -34,7 +34,12 @@ public static class XrayConfigBuilder
     public const int DefaultHttpPort = 21809;
 
     /// xray 统计 API 端口（仅本机回环）。
+    /// 2026-10-23 无感切换：内核移到内部端口后，统计 API 也跟着移到 CoreStatsApi（21910），
+    /// 否则 XrayStats 查 21910、内核监听 21810，流量统计会一直取不到数（日志表现为读 stdout 超时）。
     public const int StatsApiPort = 21810;
+
+    /// <summary>内核实际监听统计 API 的端口（用户端口已被中继占用，统计端口顺延到 +100）。</summary>
+    public static int CoreStatsPort => LocalPorts.CoreStatsApi;
 
     /// observatory（leastLoad/leastPing 的延迟与存活探测）所用目标。
     ///   observatory 每个探测周期会把**全部出站**各探一次，单次含 TLS 握手约 32 KB。
@@ -86,7 +91,7 @@ public static class XrayConfigBuilder
                 new JsonObject
                 {
                     ["listen"] = "127.0.0.1",
-                    ["port"] = StatsApiPort,
+                    ["port"] = CoreStatsPort,
                     ["protocol"] = "dokodemo-door",
                     ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
                     ["tag"] = "api-in",
@@ -345,7 +350,7 @@ public static class XrayConfigBuilder
                 new JsonObject
                 {
                     ["listen"] = "127.0.0.1",
-                    ["port"] = StatsApiPort,
+                    ["port"] = CoreStatsPort,
                     ["protocol"] = "dokodemo-door",
                     ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
                     ["tag"] = "api-in",

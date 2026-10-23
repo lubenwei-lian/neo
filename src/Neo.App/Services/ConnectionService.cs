@@ -11,6 +11,38 @@ public static class ConnectionService
 {
     private static CoreProcess? _xray;
 
+    // 用户端口的本地中继（无感切换的核心）：内核监听 21908/21909，用户仍用 21808/21809。
+    private static PortRelay? _relaySocks;
+    private static PortRelay? _relayHttp;
+
+    /// <summary>确保用户端口的中继在跑，并把后端指向当前活跃内核。</summary>
+    private static void EnsureRelays()
+    {
+        if (_relaySocks == null || _relaySocks.ListenPort != LocalPorts.Socks)
+        {
+            try { _relaySocks?.Dispose(); } catch { }
+            _relaySocks = new PortRelay(LocalPorts.Socks, LocalPorts.CoreSocks);
+        }
+        if (_relayHttp == null || _relayHttp.ListenPort != LocalPorts.Http)
+        {
+            try { _relayHttp?.Dispose(); } catch { }
+            _relayHttp = new PortRelay(LocalPorts.Http, LocalPorts.CoreHttp);
+        }
+        if (!_relaySocks.IsRunning) _relaySocks.Start();
+        if (!_relayHttp.IsRunning) _relayHttp.Start();
+        _relaySocks.SwitchBackend(LocalPorts.CoreSocks);
+        _relayHttp.SwitchBackend(LocalPorts.CoreHttp);
+    }
+
+    /// <summary>停掉用户端口中继（断开连接时调用；下次连接会重建以适配端口变更）。</summary>
+    private static void StopRelays()
+    {
+        try { _relaySocks?.Dispose(); } catch { }
+        try { _relayHttp?.Dispose(); } catch { }
+        _relaySocks = null;
+        _relayHttp = null;
+    }
+
     /// naive 节点的辅助进程（naive.exe 只提供 socks 入口；前置 sing-box 负责 http/TUN）。
     private static CoreProcess? _naive;
 
@@ -361,12 +393,12 @@ public static class ConnectionService
                     Security = "none",
                 };
                 json = useTun
-                    ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.Socks, LocalPorts.Http,
+                    ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer,
                         AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                    : SingBoxConfigBuilder.Build(frontNode, LocalPorts.Socks, LocalPorts.Http,
+                    : SingBoxConfigBuilder.Build(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer,
@@ -383,16 +415,16 @@ public static class ConnectionService
                 json = customSingBox
                     ? (useTun
                         ? CustomConfigBuilder.BuildSingBoxTun(srcJson,
-                            LocalPorts.Socks, LocalPorts.Http,
+                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
                             AppState.State.AllowLan, AppState.State.DnsServer)
                         : CustomConfigBuilder.BuildSingBox(srcJson,
-                            LocalPorts.Socks, LocalPorts.Http,
+                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             LocalPorts.ClashApi, SingBoxConfigBuilder.ClashApiSecret,
                             AppState.State.AllowLan))
                     : CustomConfigBuilder.BuildXray(srcJson,
-                        LocalPorts.Socks, LocalPorts.Http,
-                        LocalPorts.StatsApi, AppState.State.AllowLan, AppState.State.LogLevel);
+                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                        LocalPorts.CoreStatsApi, AppState.State.AllowLan, AppState.State.LogLevel);
                 var ctmp = customConfigPath + ".tmp";
                 File.WriteAllText(ctmp, json);
                 File.Move(ctmp, customConfigPath, true);
@@ -430,7 +462,7 @@ public static class ConnectionService
             else if (fixedExit != null && !useSingBox)
             {
                 json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
-                    LocalPorts.Socks, LocalPorts.Http,
+                    LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                     AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                     AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                     AppState.State.LogLevel, AppState.State.DnsServer);
@@ -445,18 +477,18 @@ public static class ConnectionService
             {
                 json = useMihomo ? "" : useSingBox
                     ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
+                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
+                        : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
-                        LocalPorts.Socks, LocalPorts.Http,
+                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
@@ -476,18 +508,18 @@ public static class ConnectionService
                 FixedExitName = null;
                 json = useMihomo ? "" : useSingBox
                     ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
+                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
+                        : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                             AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                             AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                             AppState.State.LogLevel, AppState.State.DnsServer,
                             AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
                     : XrayConfigBuilder.Build(node,
-                        LocalPorts.Socks, LocalPorts.Http,
+                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.LogLevel, AppState.State.DnsServer);
@@ -677,7 +709,10 @@ public static class ConnectionService
             return (false, failMsg);
         }
 
-        LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 端口 {LocalPorts.Socks}/{LocalPorts.Http}）");
+        // ★ 2026-10-23 无感切换：内核只监听内部端口，用户端口交给 PortRelay 转发。
+        //   这样切换节点时只需改 Relay 的后端指针，用户端口不变、系统代理不用改、老连接不断。
+        EnsureRelays();
+        LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 内核端口 {LocalPorts.CoreSocks}/{LocalPorts.CoreHttp} · 用户端口 {LocalPorts.Socks}/{LocalPorts.Http} 由中继转发）");
 
         // 系统代理：非 TUN 时连上就自动写入 Windows。
         //   Enable()，开关的两种状态落到同一结果，纯属误导）。因此这里不再有任何开关判断，
@@ -900,12 +935,12 @@ public static class ConnectionService
             if (useSingBox)
             {
                 return AppState.State.UseTun
-                    ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.Socks, LocalPorts.Http,
+                    ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         "global", false, false, false, false, null, "error", dns)
-                    : SingBoxConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
+                    : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                         "global", false, false, false, false, null, "error", dns);
             }
-            return XrayConfigBuilder.Build(node, LocalPorts.Socks, LocalPorts.Http,
+            return XrayConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                 "global", false, false, false, false, null, "error", dns);
         }
         catch (Exception ex)
@@ -941,6 +976,8 @@ public static class ConnectionService
         try { _coreRestartCts?.Cancel(); } catch { }
 
         try { SystemProxy.Disable(); } catch { }
+        // 用户端口先摘掉中继，再停内核 —— 否则会出现「端口还在监听但后端已死」的窗口。
+        StopRelays();
 
         //   旧实现只调 _xray.Stop()（丢弃 WaitForExit 返回值），内核若没死透，
         //   neo-tun 网卡与 auto_route 写入的路由会留在系统里 —— 用户看到的就是
@@ -1589,7 +1626,7 @@ public static class ConnectionService
             //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
             //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。
             if (SystemProxy.CleanupOrphaned(
-                    LocalPorts.Socks, LocalPorts.Http,
+                    LocalPorts.CoreSocks, LocalPorts.CoreHttp,
                     10808, 10809))
             {
                 LogBus.App("检测到上次异常退出残留的系统代理（端口无监听），已自动清理恢复网络", "Warning");
@@ -1630,7 +1667,10 @@ public static class ConnectionService
     {
         (LocalPorts.Socks, !PortFree(LocalPorts.Socks)),
         (LocalPorts.Http, !PortFree(LocalPorts.Http)),
-        (LocalPorts.StatsApi, !PortFree(LocalPorts.StatsApi)),
+        // 2026-10-23 无感切换：内核现在监听 CoreSocks/CoreHttp，这两个也必须空闲。
+        (LocalPorts.CoreSocks, !PortFree(LocalPorts.CoreSocks)),
+        (LocalPorts.CoreHttp, !PortFree(LocalPorts.CoreHttp)),
+        (LocalPorts.CoreStatsApi, !PortFree(LocalPorts.CoreStatsApi)),
         (LocalPorts.ClashApi, !PortFree(LocalPorts.ClashApi)),
     };
 

@@ -18,8 +18,26 @@ public static class LocalPorts
 
     public static int Socks { get; private set; } = DefaultSocks;
     public static int Http { get; private set; } = DefaultHttp;
+
+    /// <summary>
+    /// 内核实际监听的端口（2026-10-23 无感切换）：用户端口交给 PortRelay，
+    /// 内核只监听 +100 的内部端口，切换节点时只改 Relay 的后端指针。
+    /// </summary>
+    public static int CoreSocks => Socks + 100;
+    public static int CoreHttp => Http + 100;
+
+    /// <summary>热备内核（无感切换的备用实例）的端口。</summary>
+    public static int StandbySocks => Socks + 110;
+    public static int StandbyHttp => Http + 110;
+
     public static int StatsApi => FixedStatsApi;
     public static int ClashApi => FixedClashApi;
+
+    /// <summary>活跃内核的统计 API 端口（与热备实例区分，避免冲突）。</summary>
+    public static int CoreStatsApi => FixedStatsApi + 100;
+
+    /// <summary>热备内核的统计 API 端口。</summary>
+    public static int StandbyStatsApi => FixedStatsApi + 101;
 
     /// <summary>校验并应用；返回错误文案（null = 成功）。</summary>
     public static string? TryApply(int socks, int http)

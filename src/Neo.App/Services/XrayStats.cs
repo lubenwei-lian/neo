@@ -30,7 +30,7 @@ public static class XrayStats
             using var p = Process.Start(new ProcessStartInfo
             {
                 FileName = exe,
-                ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.LocalPorts.StatsApi}" },
+                ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.LocalPorts.CoreStatsApi}" },
                 RedirectStandardOutput = true,
                 // 必须重定向 stderr 并异步读空：不重定向时子进程继承的是 GUI 进程（WinExe）的
                 // 无效 stderr 句柄，内核一写告警就可能失败/阻塞；重定向了却不读，管道写满同样卡住。
