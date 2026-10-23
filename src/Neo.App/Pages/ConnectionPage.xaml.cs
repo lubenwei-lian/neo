@@ -188,8 +188,10 @@ public sealed partial class ConnectionPage : UserControl
         if (_lastSnap is { } prev)
         {
             double dt = Math.Max((DateTime.Now - _lastSnapAt).TotalSeconds, 0.001);
-            upBps = (long)Math.Max(0, cur.Uplink - prev.Uplink) / Math.Max(1, (long)dt);
-            downBps = (long)Math.Max(0, cur.Downlink - prev.Downlink) / Math.Max(1, (long)dt);
+            // P2-4（审计）：原来除以 Math.Max(1, (long)dt) —— 采样抖动到 1.4 秒时会被当成 1 秒，
+            // 速度高估约 40%。改为按真实浮点间隔算，并对极小间隔设下限避免除爆。
+            upBps = (long)(Math.Max(0, cur.Uplink - prev.Uplink) / Math.Max(0.2, dt));
+            downBps = (long)(Math.Max(0, cur.Downlink - prev.Downlink) / Math.Max(0.2, dt));
             if (downBps > _peakDownBps) _peakDownBps = downBps;
 
             // 数据入库与"看不看得见"解耦：窗口最小化到托盘 / 窗口在后台 / 切到别的页面时，

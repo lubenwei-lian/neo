@@ -20,7 +20,9 @@ public sealed class PortRelay : IDisposable
 {
     private readonly int _listenPort;
     private readonly Action<int>? _onBackendFail;
-    private readonly CancellationTokenSource _cts = new();
+    // P2-1（审计）：不能 readonly —— Stop() 会 Cancel 它，若同一实例再 Start()，
+    // AcceptLoopAsync 拿到的是已取消的 token，端口在监听但永不接受连接。
+    private CancellationTokenSource _cts = new();
     private TcpListener? _listener;
     private volatile int _backendPort;
     private volatile bool _running;
@@ -47,6 +49,13 @@ public sealed class PortRelay : IDisposable
     public void Start()
     {
         if (_running) return;
+        // P2-1：上一次 Stop() 已经 Cancel 过 _cts，这里必须换一个新的，
+        // 否则新循环立刻读到取消状态退出（表现为「端口在监听、连上就卡死」）。
+        if (_cts.IsCancellationRequested)
+        {
+            try { _cts.Dispose(); } catch { }
+            _cts = new CancellationTokenSource();
+        }
         _listener = new TcpListener(IPAddress.Loopback, _listenPort);
         _listener.Start(512);
         _running = true;

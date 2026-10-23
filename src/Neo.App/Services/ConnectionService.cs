@@ -32,17 +32,36 @@ public static class ConnectionService
         if (_relaySocks == null || _relaySocks.ListenPort != LocalPorts.Socks)
         {
             try { _relaySocks?.Dispose(); } catch { }
-            _relaySocks = new PortRelay(LocalPorts.Socks, LocalPorts.CoreSocks);
+            _relaySocks = new PortRelay(LocalPorts.Socks, LocalPorts.CoreSocks, OnRelayBackendFail);
         }
         if (_relayHttp == null || _relayHttp.ListenPort != LocalPorts.Http)
         {
             try { _relayHttp?.Dispose(); } catch { }
-            _relayHttp = new PortRelay(LocalPorts.Http, LocalPorts.CoreHttp);
+            _relayHttp = new PortRelay(LocalPorts.Http, LocalPorts.CoreHttp, OnRelayBackendFail);
         }
         if (!_relaySocks.IsRunning) _relaySocks.Start();
         if (!_relayHttp.IsRunning) _relayHttp.Start();
         _relaySocks.SwitchBackend(LocalPorts.CoreSocks);
         _relayHttp.SwitchBackend(LocalPorts.CoreHttp);
+    }
+
+    private static DateTime _relayFailWarnAt;
+
+    /// <summary>
+    /// P2-2（审计）：中继后端连不上 = 当前内核已经不可用。原实现 only 注释说「交给上层处理」，
+    /// 但回调从未接线，连接被静默关闭、日志全绿，用户只觉得「端口能连但请求全失败」。
+    /// 这里限流记 Warning，给排障留痕（真正的恢复仍由内核重启/故障转移负责）。
+    /// </summary>
+    private static void OnRelayBackendFail(int port)
+    {
+        try
+        {
+            var now = DateTime.Now;
+            if ((now - _relayFailWarnAt).TotalSeconds < 10) return;
+            _relayFailWarnAt = now;
+            LogBus.App($"端口中继：后端 {port} 连不上（内核可能已退出），请求已直接失败；等待自动恢复或手动重连", "Warning");
+        }
+        catch { }
     }
 
     /// <summary>停掉用户端口中继（断开连接时调用；下次连接会重建以适配端口变更）。</summary>
@@ -78,7 +97,9 @@ public static class ConnectionService
     private static int _selfCheckSwitchCount;
 
     /// 本轮会话已经试过的节点键（避免自检在两个坏节点之间来回切）。
-    private static readonly HashSet<string> _selfCheckTried = new(StringComparer.Ordinal);
+    // P2-7（审计）：这个集合被 UI 线程（ConnectAsync 里 Clear）和自检后台线程（Add）同时读写，
+    // HashSet 无锁并发可能抛 InvalidOperationException 或破坏内部结构。换 ConcurrentDictionary。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _selfCheckTried = new(StringComparer.Ordinal);
 
     /// 当前 ConnectAsync 是否由「自检自动切换」发起（该新会话不再自检，保证一轮最多切 1 次）。
     private static bool _selfCheckSwitching;
@@ -1125,6 +1146,10 @@ public static class ConnectionService
             _retiringCore = prev;
             _ = Task.Run(async () =>
             {
+                // P2-6（审计）：切换瞬间可能有一条连接已经 accept、但还没记进旧后端的计数，
+                // 退役循环第一轮就会看到 0 并立刻停旧内核，那条请求随之失败。
+                // 先等 2 秒让在途连接落账，再开始判断。
+                try { await Task.Delay(2000); } catch { }
                 var deadline = DateTime.Now.AddMinutes(5);
                 while (DateTime.Now < deadline)
                 {
@@ -2069,7 +2094,7 @@ public static class ConnectionService
         {
             var key = AppState.NodeKey(n);
             return !string.Equals(key, curKey, StringComparison.Ordinal)
-                   && !_selfCheckTried.Contains(key);
+                   && !_selfCheckTried.ContainsKey(key);
         });
         if (cand == null)
         {
@@ -2084,7 +2109,7 @@ public static class ConnectionService
         if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
 
         // 记下当前节点已试过，并计入本轮切换次数（最多 2 次，见方法开头）。
-        _selfCheckTried.Add(AppState.NodeKey(cur));
+        _selfCheckTried.TryAdd(AppState.NodeKey(cur), 0);
         _selfCheckSwitchCount++;
         LogBus.App($"连接后自检：正在自动切换到同地区节点「{cand.Name}」（{cand.RealDelay} ms）", "Warning");
         _selfCheckSwitching = true;
@@ -2421,7 +2446,7 @@ public static class ConnectionService
 
                 await Task.Delay(retryDelay, cts.Token);
                 if (cts.IsCancellationRequested || IsConnected) return;
-                if (ReferenceEquals(_coreRestartCts, cts)) _coreRestartCts = null;
+                if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
 
                 var (rok, rerr) = await ConnectAsync(node);
                 if (rok) { _earlyCrashCount = 0; LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
@@ -2452,7 +2477,7 @@ public static class ConnectionService
             if (cts.IsCancellationRequested || IsConnected) return;   // 用户已手动连上或已断开
 
             // 交接给 ConnectAsync：它内部会调 Disconnect()，若 _coreRestartCts 仍指向本 cts 会被误取消
-            if (ReferenceEquals(_coreRestartCts, cts)) _coreRestartCts = null;
+            if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
 
             var (ok, err) = await ConnectAsync(node);
             if (ok) { LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
@@ -2465,7 +2490,7 @@ public static class ConnectionService
         }
         finally
         {
-            if (ReferenceEquals(_coreRestartCts, cts)) _coreRestartCts = null;
+            if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
             _coreRestartInProgress = false;
         }
     }

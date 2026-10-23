@@ -306,11 +306,20 @@ public sealed partial class MainWindow : Window
 
         if (args.DidPresenterChange)
         {
-            // 记住「这次是不是最大化退出」：下次启动按同样状态出现（用户要求默认最大化）。
+            // 2026-10-23 修复「窗口位置一直是歪的」：
+            // 原实现只要是 presenter 变化就记录 —— 包括**最小化**。用户点一次标题栏最小化，
+            // StartMaximized 就被写成 false，下次启动变成普通窗口（用旧坐标 0,0 + 1920x1032，
+            // 看起来就是「歪的」）。现在只在「最大化 / 还原」之间切换时记录，最小化不动记忆。
             try
             {
-                AppState.State.StartMaximized = AppWindow.Presenter is OverlappedPresenter op
-                                                && op.State == OverlappedPresenterState.Maximized;
+                if (AppWindow.Presenter is OverlappedPresenter op)
+                {
+                    if (op.State == OverlappedPresenterState.Maximized)
+                        AppState.State.StartMaximized = true;
+                    else if (op.State == OverlappedPresenterState.Restored)
+                        AppState.State.StartMaximized = false;
+                    // Minimized：保持原记忆不变
+                }
             }
             catch { }
         }
@@ -397,15 +406,21 @@ public sealed partial class MainWindow : Window
             // 最大化时不要把「铺满屏幕的边界」写成还原态，否则用户点还原会得到一个和屏幕
             // 一样大的窗口（等于还原无效）。只记状态，边界沿用上次还原态。
             var maximized = false;
+            var minimized = false;
             try
             {
-                maximized = AppWindow.Presenter is OverlappedPresenter op
-                            && op.State == OverlappedPresenterState.Maximized;
+                if (AppWindow.Presenter is OverlappedPresenter op)
+                {
+                    maximized = op.State == OverlappedPresenterState.Maximized;
+                    minimized = op.State == OverlappedPresenterState.Minimized;
+                }
             }
             catch { }
-            AppState.State.StartMaximized = maximized;
+            // 2026-10-23：最小化到托盘时窗口状态是 Minimized，此时既不是最大化也不该当作「还原」，
+            // 不要覆盖用户之前的选择（否则托盘退出后下次启动就丢了最大化）。
+            if (!minimized) AppState.State.StartMaximized = maximized;
 
-            if (!maximized)
+            if (!maximized && !minimized)
             {
                 var p = AppWindow.Position;
                 var s = AppWindow.Size;
@@ -433,6 +448,10 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            // 2026-10-23：以最大化启动时不要先套用「上次还原时的坐标/尺寸」——
+            // 那会让窗口先出现在旧位置（用户能看到跳变，看起来就是「歪的」）。
+            if (_startMaximized) return;
+
             var st = AppState.State;
 
             // 目标显示器的工作区（含任务栏尺寸扣除）。用窗口中心点所在屏幕，

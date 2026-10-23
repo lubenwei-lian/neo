@@ -80,7 +80,9 @@ public static class ShareLinkParser
             Cipher = string.IsNullOrEmpty(S("scy")) ? "auto" : S("scy"),
             Network = string.IsNullOrEmpty(S("net")) ? "tcp" : S("net").ToLowerInvariant(),
         };
-        node.Port = int.TryParse(S("port"), out var p) ? p : 0;
+        // P2-5（审计）：端口必须落在 1–65535。原实现只 TryParse，70000 这类坏数据会被判成
+        // 「有效节点」写进配置，内核启动失败后用户完全不知道是订阅数据的问题。
+        node.Port = int.TryParse(S("port"), out var p) && p is > 0 and <= 65535 ? p : 0;
 
         if (string.Equals(S("tls"), "tls", StringComparison.OrdinalIgnoreCase)) node.Security = "tls";
         node.Sni = OrNull(S("sni")) ?? OrNull(S("peer"));

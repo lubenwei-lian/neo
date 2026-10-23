@@ -236,7 +236,9 @@ public sealed class NodeItem
         ? Extras.TryGetValue("yaml_path", out var y) && !string.IsNullOrWhiteSpace(y) && File.Exists(y)
         : IsCustomConfig
         ? Extras.TryGetValue("config_path", out var cp) && !string.IsNullOrWhiteSpace(cp) && File.Exists(cp)
-        : !string.IsNullOrWhiteSpace(Server) && Port > 0;
+        // P2-5（审计）：补端口上界。订阅里出现 70000 这类越界端口时，原实现判「有效」并写进配置，
+        // 内核启动失败后用户根本看不出是坏数据，坏节点还会占列表、进测速与故障转移候选。
+        : !string.IsNullOrWhiteSpace(Server) && Port is > 0 and <= 65535;
 
     public override string ToString() =>
         $"[{Protocol}] {Name} @ {Server}:{Port} (net={Network}, sec={Security})";
