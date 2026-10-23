@@ -907,6 +907,16 @@ public sealed partial class NodesPage : UserControl
             ? $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 可用性复核通过）"
             : $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 仅按延迟）");
         UpdateFooter();
+
+        // 2026-10-24 审查 P2-2：自动优选原先只改「选中项」，已连接时用户仍在旧节点上跑。
+        //   已连接且实际出口不是 best 时，走无感切换（失败内部会回退普通重连）。
+        var live = ConnectionService.ConnectedNode;
+        if (ConnectionService.IsConnected && live != null
+            && !string.Equals(AppState.NodeKey(live), AppState.NodeKey(best), StringComparison.Ordinal))
+        {
+            _ = ConnectionService.SwitchNodeFastAsync(best);
+            LogBus.App($"真连测速：当前已连接，正在无感切换到「{best.Name}」", "Debug");
+        }
     }
 
     /// <summary>
