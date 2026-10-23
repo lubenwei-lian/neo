@@ -10,7 +10,10 @@ namespace Neo.App.Services;
 public static class DelayCache
 {
     private static readonly object _lock = new();
-    private static readonly Dictionary<string, int> _map = new();
+    // 2026-10-24 审查 P2-1：缓存加 TTL。之前只按「本次进程会话」存，但用户可能几小时前测的
+    //   延迟一直显示成当前值（节点已变慢/换 IP 也不刷新）→ 30 分钟后不再回填，显示为「未测速」。
+    private static readonly Dictionary<string, (int Ms, DateTime At)> _map = new();
+    private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(30);
 
     private static string FilePath => Path.Combine(NeoPaths.DataDir, "delays.json");
 
@@ -26,12 +29,12 @@ public static class DelayCache
         if (n.RealDelay != 0) return;
         lock (_lock)
         {
-            if (_map.TryGetValue(KeyOf(n), out var ms)) n.RealDelay = ms;
+            if (_map.TryGetValue(KeyOf(n), out var e) && DateTime.Now - e.At <= Ttl) n.RealDelay = e.Ms;
         }
     }
 
     public static void Set(NodeItem n, int ms)
     {
-        lock (_lock) { _map[KeyOf(n)] = ms; }
+        lock (_lock) { _map[KeyOf(n)] = (ms, DateTime.Now); }
     }
 }
