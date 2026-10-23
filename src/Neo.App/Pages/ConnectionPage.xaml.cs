@@ -30,13 +30,17 @@ public sealed partial class ConnectionPage : UserControl
     private Neo.Core.Models.NodeItem? _lastConnectedNodeSeen;
     /// <summary>切换提示开始显示的时间（用于保证最短可见时长）。</summary>
     private DateTime _switchHintShownAt;
+    // 2026-10-24 审查 P2-11：每次显示提示自增。延迟隐藏前比对，避免上一次的隐藏任务
+    //   清掉下一次刚显示的提示（连续两次切换时）。
+    private int _switchHintGeneration;
 
-    private async Task HideSwitchHintAsync(int delayMs)
+    private async Task HideSwitchHintAsync(int delayMs, int generation)
     {
         try
         {
             if (delayMs > 0) await Task.Delay(delayMs);
             if (App.IsShuttingDown) return;
+            if (generation != _switchHintGeneration) return;
             RingSwitchHint.Text = "";
             RingSwitchHint.Opacity = 0;
         }
@@ -114,6 +118,7 @@ public sealed partial class ConnectionPage : UserControl
             {
                 if (!string.IsNullOrEmpty(msg))
                 {
+                    _switchHintGeneration++;
                     _switchHintShownAt = DateTime.Now;
                     RingSwitchHint.Text = msg;
                     RingSwitchHint.Opacity = 0.9;
@@ -124,7 +129,7 @@ public sealed partial class ConnectionPage : UserControl
                     // 强制至少显示 1.2 秒，之后淡出。
                     var shown = (DateTime.Now - _switchHintShownAt).TotalMilliseconds;
                     var delay = (int)Math.Max(0, 1200 - shown);
-                    _ = HideSwitchHintAsync(delay);
+                    _ = HideSwitchHintAsync(delay, _switchHintGeneration);
                 }
             }
             catch { }

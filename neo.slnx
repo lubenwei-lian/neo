@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Neo.App/Neo.App.csproj" />
+    <Project Path="src/Neo.Cli/Neo.Cli.csproj" />
+    <Project Path="src/Neo.Core/Neo.Core.csproj" />
+  </Folder>
+</Solution>
