@@ -21,6 +21,9 @@ public static class FailoverService
     private static bool _reportedForeignProxy;
     private static DateTime _lastSwitchAt = DateTime.MinValue;
     private static DateTime _lastGiveUpAt = DateTime.MinValue;
+    // 2026-10-24 审查 P1-4：全候选失败后的重试间隔。原来 300 秒，TUN 用户可能断网整整 5 分钟；
+    //   缩短到 60 秒（TUN 场景还会先尝试把原节点连回来，见 FailoverAsync 末尾）。
+    private const int GiveUpRetrySeconds = 60;
 
     public static Action<Action>? RunOnUi;
 
@@ -285,7 +288,7 @@ public static class FailoverService
         if (!AppState.State.FailoverEnabled) { _failStreak = 0; return; }
         // 2026-10-23：120s → 60s。切换后新节点若立刻也不稳，用户原先要干等 2 分钟才允许再切。
         if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 60) return;
-        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < 300) return;
+        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
 
         // 自动修复系统代理：
         //   · 只在「已连接 + 非 TUN + 设置里开关打开」时检查；
@@ -355,7 +358,7 @@ public static class FailoverService
     {
         // 从未放弃过（MinValue）→ 说明是用户主动断开/尚未连接，不能擅自连回去。
         if (_lastGiveUpAt == DateTime.MinValue) return;
-        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < 300) return;
+        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
         if (!AppState.State.FailoverEnabled) return;
 
         var node = AppState.CurrentNode;
@@ -364,7 +367,7 @@ public static class FailoverService
         // 先刷新时间戳，避免并发的即时复查/定时循环同时发起重连；
         // 失败路径保持「再等 5 分钟」的语义。
         _lastGiveUpAt = DateTime.Now;
-        LogBus.App($"故障转移已放弃满 5 分钟，正在重新连接节点「{node.Name}」…", "Warning");
+        LogBus.App($"故障转移已放弃满 {GiveUpRetrySeconds} 秒，正在重新连接节点「{node.Name}」…", "Warning");
 
         bool ok;
         string? err;
@@ -610,7 +613,19 @@ public static class FailoverService
                 LogBus.App("故障转移：先断开失联节点（TUN 模式避免测试流量绕行），随后直接实测候选", "Warning");
                 try { await RunOnUiAsync(() => ConnectionService.Disconnect("故障转移触发断开")); }
                 catch (Exception ex) { LogBus.App($"故障转移：断开时异常（忽略继续）：[{ex.GetType().Name}] {ex.Message}", "Warning"); }
-                try { await Task.Delay(2500, ct); } catch (OperationCanceledException) { }
+                // 2026-10-24 审查 P1-4：TUN 拆除是后台任务（Disconnect 立即返回），只等固定 2.5 秒
+                //   可能在网卡/路由还在时测候选，3 个候选会被残留 TUN 路由全部判死。
+                //   这里等拆除任务结束（最多 12 秒），再做候选探测。
+                try
+                {
+                    var teardown = ConnectionService.LastTunTeardown;
+                    if (teardown != null && !teardown.IsCompleted)
+                        await teardown.WaitAsync(TimeSpan.FromSeconds(12), ct);
+                    else
+                        await Task.Delay(2500, ct);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (TimeoutException) { LogBus.App("故障转移：TUN 拆除超时，仍按直连网络测候选", "Warning"); }
             }
 
             var current = AppState.CurrentNode;
@@ -690,10 +705,31 @@ public static class FailoverService
                 return;
             }
 
+            // 2026-10-24 审查 P1-4：TUN 场景此时网络是断的（上面主动 Disconnect 了），
+            //   不能干等下一轮 —— 先把原节点连回来恢复网络，下一轮探活再继续找备选。
+            if (disconnectedForTunTest && current != null)
+            {
+                try
+                {
+                    var (rok, rerr) = await RunOnUiAsync(() => ConnectionService.ConnectAsync(current, force: true));
+                    if (rok)
+                    {
+                        LogBus.App("故障转移：备选节点均不可用，已先连回原节点（网络恢复）", "Warning");
+                        IncidentLog.Record("failover", "备选均不可用，已连回原节点", current.Name);
+                        return;
+                    }
+                    LogBus.App($"故障转移：连回原节点也失败：{rerr}", "Error");
+                }
+                catch (Exception ex)
+                {
+                    LogBus.App($"故障转移：连回原节点异常：[{ex.GetType().Name}] {ex.Message}", "Warning");
+                }
+            }
+
             _lastGiveUpAt = DateTime.Now;
-            LogBus.App("当前节点失联，未找到可用备用节点（5 分钟后将重试连接当前节点）", "Error");
-            IncidentLog.Record("failover", "当前节点失联且无可用备选（5 分钟后重试）");
-            Switched?.Invoke("节点失联，暂无可用备用节点（将每 5 分钟重试）");
+            LogBus.App($"当前节点失联，未找到可用备用节点（{GiveUpRetrySeconds} 秒后将重试连接当前节点）", "Error");
+            IncidentLog.Record("failover", $"当前节点失联且无可用备选（{GiveUpRetrySeconds} 秒后重试）");
+            Switched?.Invoke($"节点失联，暂无可用备用节点（将每 {GiveUpRetrySeconds} 秒重试）");
         }
         catch (OperationCanceledException) when (!loopCt.IsCancellationRequested)
         {

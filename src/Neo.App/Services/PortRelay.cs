@@ -19,6 +19,7 @@ namespace Neo.App.Services;
 public sealed class PortRelay : IDisposable
 {
     private readonly int _listenPort;
+    private readonly IPAddress _listenAddress;
     private readonly Action<int>? _onBackendFail;
     // P2-1（审计）：不能 readonly —— Stop() 会 Cancel 它，若同一实例再 Start()，
     // AcceptLoopAsync 拿到的是已取消的 token，端口在监听但永不接受连接。
@@ -30,14 +31,17 @@ public sealed class PortRelay : IDisposable
     /// <summary>按后端端口统计的活跃连接数（用于「等旧内核的连接全部结束再退役」）。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> _activeByBackend = new();
 
-    public PortRelay(int listenPort, int backendPort, Action<int>? onBackendFail = null)
+    /// <param name="listenAddress">监听地址：默认 127.0.0.1；「允许局域网连接」时传 IPAddress.Any。</param>
+    public PortRelay(int listenPort, int backendPort, Action<int>? onBackendFail = null, IPAddress? listenAddress = null)
     {
         _listenPort = listenPort;
         _backendPort = backendPort;
+        _listenAddress = listenAddress ?? IPAddress.Loopback;
         _onBackendFail = onBackendFail;
     }
 
     public int ListenPort => _listenPort;
+    public IPAddress ListenAddress => _listenAddress;
     public int BackendPort => _backendPort;
     public bool IsRunning => _running;
     public long ConnCount => Interlocked.Read(ref _connCount);
@@ -56,7 +60,8 @@ public sealed class PortRelay : IDisposable
             try { _cts.Dispose(); } catch { }
             _cts = new CancellationTokenSource();
         }
-        _listener = new TcpListener(IPAddress.Loopback, _listenPort);
+        // 2026-10-24 审查 P1-5：跟随「允许局域网连接」决定监听回环还是全部网卡。
+        _listener = new TcpListener(_listenAddress, _listenPort);
         _listener.Start(512);
         _running = true;
         _ = AcceptLoopAsync(_cts.Token);

@@ -32,15 +32,21 @@ public static class ConnectionService
     /// <summary>确保用户端口的中继在跑，并把后端指向当前活跃内核。</summary>
     private static void EnsureRelays()
     {
-        if (_relaySocks == null || _relaySocks.ListenPort != LocalPorts.Socks)
+        // 2026-10-24 审查 P1-5：中继监听地址必须跟随「允许局域网连接」。
+        //   原先固定 127.0.0.1，而内核按 AllowLan 绑 0.0.0.0 —— 局域网用户实际连到的是
+        //   无鉴权的内核内部端口（21908/21909），既让功能「看着有、实际不通」，也暴露内部端口。
+        var wantAddress = AppState.State.AllowLan ? System.Net.IPAddress.Any : System.Net.IPAddress.Loopback;
+        if (_relaySocks == null || _relaySocks.ListenPort != LocalPorts.Socks
+            || !_relaySocks.ListenAddress.Equals(wantAddress))
         {
             try { _relaySocks?.Dispose(); } catch { }
-            _relaySocks = new PortRelay(LocalPorts.Socks, LocalPorts.CoreSocks, OnRelayBackendFail);
+            _relaySocks = new PortRelay(LocalPorts.Socks, LocalPorts.CoreSocks, OnRelayBackendFail, wantAddress);
         }
-        if (_relayHttp == null || _relayHttp.ListenPort != LocalPorts.Http)
+        if (_relayHttp == null || _relayHttp.ListenPort != LocalPorts.Http
+            || !_relayHttp.ListenAddress.Equals(wantAddress))
         {
             try { _relayHttp?.Dispose(); } catch { }
-            _relayHttp = new PortRelay(LocalPorts.Http, LocalPorts.CoreHttp, OnRelayBackendFail);
+            _relayHttp = new PortRelay(LocalPorts.Http, LocalPorts.CoreHttp, OnRelayBackendFail, wantAddress);
         }
         if (!_relaySocks.IsRunning) _relaySocks.Start();
         if (!_relayHttp.IsRunning) _relayHttp.Start();
@@ -139,6 +145,10 @@ public static class ConnectionService
 
     /// <summary>已完成/进行中的拆除任务，供新会话在启动前等待。</summary>
     private static Task _lastTeardown = Task.CompletedTask;
+
+    /// <summary>2026-10-24 审查 P1-4：最近一次 TUN 拆除任务。故障转移拆 TUN 后要先等它完成再测候选。
+    /// </summary>
+    internal static Task LastTunTeardown => _lastTeardown;
 
     /// <summary>当前是否已有会话操作在进行（供 UI 判断与展示）。</summary>
     public static bool IsSessionBusy => SessionGate.CurrentCount == 0;
