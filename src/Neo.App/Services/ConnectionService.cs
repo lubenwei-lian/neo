@@ -1114,6 +1114,9 @@ public static class ConnectionService
                 while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
             };
             newCore.Start(cfgPath);
+            // 2026-10-24 审查 P2-4：Exited 必须紧接 Start 订阅，避免「进程已退出、事件还没挂」的毫秒级漏事件窗口。
+            var newCoreSelf = newCore;
+            newCoreSelf.Exited += code => OnCoreExited(newCoreSelf, code);
 
             // 等新内核就绪：端口可连 + 进程仍存活（最长 8 秒）
             var ready = false;
@@ -1151,8 +1154,6 @@ public static class ConnectionService
             // 切换：旧内核继续服务已有连接，新连接立刻走新内核
             var prev = _xray;
             _xray = newCore;
-            var coreSelf = _xray;
-            coreSelf.Exited += code => OnCoreExited(coreSelf, code);
             LocalPorts.ActiveSlot = newSlot;
             CoreKind = useSingBox ? "sing-box" : "xray";
             EnsureRelays();
