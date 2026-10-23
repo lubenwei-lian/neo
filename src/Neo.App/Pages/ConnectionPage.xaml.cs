@@ -245,9 +245,12 @@ public sealed partial class ConnectionPage : UserControl
             CoreStateText.Foreground = running ? green : text2;
             CoreDot.Fill = running ? green : text2;
 
-            bool sing = ConnectionService.CoreKind == "sing-box";
+            // 2026-10-24 审查 P2-8：naive 会话的内核是「naive.exe + 前置 sing-box」，
+            //   统计与版本要走 sing-box，标签单独显示 naive。
+            bool naiveKind = ConnectionService.CoreKind == "naive";
+            bool sing = ConnectionService.CoreKind == "sing-box" || naiveKind;
             bool mihomo = ConnectionService.CoreKind == "mihomo";
-            CoreKindText.Text = mihomo ? "mihomo" : (sing ? "sing-box" : "xray");
+            CoreKindText.Text = mihomo ? "mihomo" : (naiveKind ? "naive + sing-box" : (sing ? "sing-box" : "xray"));
             CoreVersionText.Text = mihomo
                 ? (KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "—")
                 : (sing ? (ConnectionService.SingBoxVersion ?? "—") : (ConnectionService.XrayVersion ?? "—"));

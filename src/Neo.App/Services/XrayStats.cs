@@ -46,6 +46,9 @@ public static class XrayStats
             var readTask = p.StandardOutput.ReadToEndAsync();
             // 与 stdout 并行把 stderr 读完丢弃：既防管道写满阻塞，也留作失败诊断。
             var errTask = p.StandardError.ReadToEndAsync();
+            // 2026-10-24 审查 P2-9：stderr 任务在成功路径从不 await，进程释放后可能抛未观察 Task 异常；
+            //   这里挂一个只观察异常的续体，保证任何路径都不会变成 UnobservedTaskException。
+            _ = errTask.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
             if (!readTask.Wait(TimeSpan.FromSeconds(3)))
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
