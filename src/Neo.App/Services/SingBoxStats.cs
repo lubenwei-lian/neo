@@ -10,6 +10,23 @@ public static class SingBoxStats
     public readonly record struct Snapshot(long Uplink, long Downlink, int ActiveConnections);
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
+    // 2026-10-24 审查 P2-9：统计失败原先完全静默（只能靠采样器 30 秒一条「采样为空」），
+    //   无法区分端口/鉴权/协议错误。这里 20 秒限流记 Warning（原因变化时立即记）。
+    private static DateTime _lastWarnAt;
+    private static string? _lastWarnReason;
+
+    private static void WarnRateLimited(string reason)
+    {
+        try
+        {
+            var now = DateTime.Now;
+            if ((now - _lastWarnAt).TotalSeconds < 20 && string.Equals(reason, _lastWarnReason, StringComparison.Ordinal)) return;
+            _lastWarnAt = now;
+            _lastWarnReason = reason;
+            LogBus.App($"统计接口不可用（127.0.0.1:{LocalPorts.CoreClashApi}）：{reason}", "Warning");
+        }
+        catch { }
+    }
 
     public static Snapshot? Query()
     {
@@ -21,7 +38,11 @@ public static class SingBoxStats
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + SingBoxConfigBuilder.ClashApiSecret);
 
             using var resp = Http.Send(req);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                WarnRateLimited("HTTP " + (int)resp.StatusCode);
+                return null;
+            }
 
             using var stream = resp.Content.ReadAsStream();
             using var doc = JsonDocument.Parse(stream);
@@ -36,8 +57,9 @@ public static class SingBoxStats
 
             return new Snapshot(up, down, active);
         }
-        catch
+        catch (Exception ex)
         {
+            WarnRateLimited(ex.GetType().Name + ": " + ex.Message);
             return null;
         }
     }
