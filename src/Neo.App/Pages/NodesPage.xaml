@@ -72,7 +72,7 @@
 
                 <Button x:Name="TcpTestBtn" Style="{StaticResource ToolBtn}" Click="OnTcpTestClick"
                         AutomationProperties.AutomationId="TcpTestBtn"
-                        ToolTipService.ToolTip="TCP 握手延迟：只测到节点服务器的 TCP 握手，不经代理、速度快（UDP 节点跳过）">
+                        ToolTipService.ToolTip="仅 TCP 握手：只测与节点服务器的 TCP 握手，不经代理、速度快（UDP 节点跳过）。对中转/Cloudflare 类节点这个数字只有连通性参考价值——实际代理延迟通常高 2～10 倍，挑节点请看「真连测速」。">
                     <StackPanel Orientation="Horizontal" Spacing="7">
                         <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
                         <TextBlock Text="快速测延迟" VerticalAlignment="Center" />

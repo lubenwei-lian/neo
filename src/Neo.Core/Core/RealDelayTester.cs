@@ -23,6 +23,9 @@ public static class RealDelayTester
     }
     public const int DefaultTimeoutMs = 10000;
 
+    /// <summary>测到不超过这个毫秒数就认为「已经足够快」，不再做第 2/3 次计时（每节点最多 3 次）。</summary>
+    private const int SlowEnoughMs = 1000;
+
     // ★ 2026-10-22 保守模式（用户反馈批量测速会被商家限流）：
     //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去 → 容易被判异常流量。
     //   改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰 BatchStaggerBaseMs ± 抖动。
@@ -31,7 +34,10 @@ public static class RealDelayTester
     //   批量路径再去掉「预热请求」（只发一次计时请求，延迟口径按首字节时间）。
     //   连接数仍受控，预期总耗时降到原来的 1/3–1/4。
     /// <summary>批量真连测速时，同时在跑的节点探测数上限（10，保守但比 4 快）。</summary>
-    private const int BatchMaxConcurrency = 10;
+    //   2026-10-23：10 → 6。10 路并发一起打同一批节点时，节点侧排队与本地带宽竞争会把
+    //   数字放大（实测同一节点 110ms 与 1385ms），排序因此不可信。降到 6 后总耗时可接受
+    //   （68 节点约 30～40s），换来与常见客户端（v2rayN）可比的稳定读数。
+    private const int BatchMaxConcurrency = 6;
 
     /// <summary>相邻两个节点开始探测的基准间隔（毫秒）；实际为 100±30ms，即 70–130ms。</summary>
     private const int BatchStaggerBaseMs = 100;
@@ -161,18 +167,36 @@ public static class RealDelayTester
 
             // 多目标退让：google 204 失败（超时/限速）时再用 cloudflare 204 判一次，
             // 避免「google 抖一下」被当成节点不可用。
+            // ★ 2026-10-23 口径修正（对照 v2rayN 实测）：必须「先预热、再计时，且计时最多 3 次取最小」。
+            //   原因：首包要建 TCP+TLS+WS 隧道，实测冷连接 0.8～5.6s、热连接 0.13～0.21s；
+            //   只测一次等于把建连开销算成"节点延迟"，同一节点会出现 130ms 与 3000ms 两种结果。
+            //   预热成功后计时一次通常就够；慢节点多测两次取最小，避免单次抖动决定排序。
+            var best = int.MaxValue;
             foreach (var url in ProbeUrls)
             {
-                try
-                {
-                    var sw = Stopwatch.StartNew();
-                    using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                    sw.Stop();
-                    var code = (int)resp.StatusCode;
-                    if (code is 200 or 204) return (int)sw.ElapsedMilliseconds;
-                }
+                try { using var warm = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { /* 换下一个目标 */ }
+                catch { /* 预热失败不影响下面的计时尝试 */ }
+
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                        sw.Stop();
+                        var code = (int)resp.StatusCode;
+                        if (code is 200 or 204)
+                        {
+                            var ms = (int)sw.ElapsedMilliseconds;
+                            if (ms < best) best = ms;
+                            if (best <= SlowEnoughMs) return best;   // 已经足够快，不再多测
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch { /* 换下一次尝试 */ }
+                }
+                if (best < int.MaxValue) return best;
             }
             return -1;
         }
@@ -297,7 +321,7 @@ public static class RealDelayTester
         int timeoutMs = DefaultTimeoutMs, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
         bool availabilityRecheck = false,
         Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null,
-        int budgetSeconds = 45)
+        int budgetSeconds = 120)
     {
         var result = new ConcurrentDictionary<NodeItem, int>();
         var valid = nodes.Where(n => n.IsValid).ToList();
@@ -517,15 +541,14 @@ public static class RealDelayTester
 
         if (budgetExpired)
         {
-            // ★ 2026-10-23 总预算耗尽：停止剩余探测后，对所有还没出结果的节点补一次 onResult(-1)，
-            //   保证 UI 不会停在半路（-1 = 超时，上层会据此显示超时并允许下次重测）。
+            // ★ 2026-10-23 总预算耗尽：停止剩余探测后，把还没出结果的节点标记为「未测」(0)。
+            //   原实现补 -1（超时）—— 那会把「没轮到测」伪装成「节点坏了」，用户据此会误删好节点。
             var remaining = valid.Where(n => !reported.ContainsKey(n)).ToList();
-            Log($"真连测速超出 {budgetSeconds}s 预算，剩余 {remaining.Count} 个未测（按超时处理）");
+            Log($"真连测速超出 {budgetSeconds}s 预算，剩余 {remaining.Count} 个未测（保持「未测」，不按超时处理）");
             foreach (var n in remaining)
             {
-                result[n] = -1;
-                reported[n] = 0;
-                onResult?.Invoke(n, -1);
+                result[n] = 0;
+                if (reported.TryAdd(n, 0)) onResult?.Invoke(n, 0);
             }
         }
 
@@ -552,22 +575,34 @@ public static class RealDelayTester
             //   现在：先发一次不计时的预热请求（SocketsHttpHandler 会复用到同一节点的连接），
             //   再计时第二次请求 —— 口径回到「已建连后的 HTTP 往返」，与旧版可比。
             //   代价：每节点多 1 次请求（原来就是这样），总耗时只回升几秒。
+            var best = int.MaxValue;
             foreach (var url in ProbeUrls)
             {
                 try { using var warm = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch { /* 预热失败不影响下面正式计时（可能是目标抖动，换下一个目标） */ }
 
-                try
+                // ★ 2026-10-23 同口径：预热后计时最多 3 次取最小。
+                //   只测一次时，若预热恰好失败/连接被服务端关掉，计时会退化成冷连接
+                //   （实测同一节点 130ms 与 3012ms 并存，排序不可信）。
+                for (var attempt = 0; attempt < 3; attempt++)
                 {
-                    var sw = Stopwatch.StartNew();
-                    using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                    sw.Stop();
-                    var code = (int)resp.StatusCode;
-                    if (code is 200 or 204) return (int)sw.ElapsedMilliseconds;
+                    try
+                    {
+                        var sw = Stopwatch.StartNew();
+                        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                        sw.Stop();
+                        var code = (int)resp.StatusCode;
+                        if (code is 200 or 204)
+                        {
+                            var ms = (int)sw.ElapsedMilliseconds;
+                            if (ms < best) best = ms;
+                            if (best <= SlowEnoughMs) return best;
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch { /* 换下一次尝试 */ }
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { /* 换下一个目标 */ }
             }
             return -1;
         }

@@ -122,7 +122,10 @@ public static class AppState
         /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（TCP 握手风格，快）；
         /// true = 走真实连接（慢但能判断是否真的能访问网站）。
         /// 关闭时节点页隐藏「真连测速」按钮、把「快速测延迟」升为主按钮；卡片主徽标显示 TCP 延迟。
-        public bool RealDelayTestEnabled { get; set; } = false;
+        //   2026-10-23：默认 true。TCP 握手延迟对中转（Cloudflare 等）节点严重失真——
+    //   实测美国节点 TCP 68～112ms、真实代理 280～1200ms，默认按 TCP 排序会把用户
+    //   引到「数字最好看但实际最慢」的节点上。默认用真连，快速测延迟仅作连通性参考。
+    public bool RealDelayTestEnabled { get; set; } = true;
 
         /// <summary>
         /// 「检查预发布内核」：true 时 xray 更新会把 GitHub 上标记为 prerelease 的版本也算进候选。
