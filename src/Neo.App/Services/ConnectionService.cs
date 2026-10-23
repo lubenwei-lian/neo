@@ -976,6 +976,9 @@ public static class ConnectionService
         // 2026-10-23 审计 P1-4：连点两次/两个入口同时触发会并发跑两次切换，在同一槽位端口上打架。
         if (Interlocked.Exchange(ref _switchGate, 1) == 1)
             return (false, "正在切换节点中，请稍候");
+        // 2026-10-23 审计 P1-3：切换期间也置 IsConnecting，让界面/托盘/故障转移的并发入口全部让路
+        //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
+        IsConnecting = true;
         try
         {
         if (!IsConnected || _xray is not { IsRunning: true })
@@ -1144,7 +1147,11 @@ public static class ConnectionService
             return (false, "无感切换失败：" + ex.Message);
         }
         }
-        finally { Interlocked.Exchange(ref _switchGate, 0); }
+        finally
+        {
+            Interlocked.Exchange(ref _switchGate, 0);
+            IsConnecting = false;
+        }
     }
 
     public static void Disconnect(string? reason = null)
@@ -2489,6 +2496,9 @@ public static class ConnectionService
         {
             await Task.Delay(TimeSpan.FromSeconds(WatchdogIntervalSeconds), ct);
             if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
+            // 2026-10-23 审计 P1-5：无感切换/换节点后，旧看门狗必须退出 ——
+            // 否则它仍拿旧 node 触发自动重启，会把用户切回已经换掉的节点。
+            if (!ReferenceEquals(ConnectedNode, node)) return;
             if (_watchdogRestarting) return;   // 已在本看门狗发起的重启流程里
 
             var why = "";

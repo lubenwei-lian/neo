@@ -670,6 +670,12 @@ public static class FailoverService
             IncidentLog.Record("failover", "当前节点失联且无可用备选（5 分钟后重试）");
             Switched?.Invoke("节点失联，暂无可用备用节点（将每 5 分钟重试）");
         }
+        catch (OperationCanceledException) when (!loopCt.IsCancellationRequested)
+        {
+            // 2026-10-23 审计 P1-8：3 分钟独立预算（own）超时抛的 OCE 绝不能冒到 LoopAsync ——
+            // 那里的 catch 会让整个探活循环退出，本会话再也不自动切换。
+            LogBus.App("故障转移：3 分钟预算用尽，已放弃本次（探活循环继续）", "Warning");
+        }
         finally
         {
             _failoverInProgress = false;

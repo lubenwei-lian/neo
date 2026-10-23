@@ -53,8 +53,15 @@ public static class LocalPorts
         if (socks < 1024 || socks > 65535) return "SOCKS 端口需在 1024–65535";
         if (http < 1024 || http > 65535) return "HTTP 端口需在 1024–65535";
         if (socks == http) return "SOCKS 与 HTTP 端口不能相同";
-        if (socks == FixedStatsApi || http == FixedStatsApi || socks == FixedClashApi || http == FixedClashApi)
-            return $"不能使用固定端口 {FixedStatsApi}（统计）/ {FixedClashApi}（Clash API）";
+        // 2026-10-23 审计 P1-7：槽位端口（21910/21911/21821）与 naive 端口也不能被用户端口占用，
+        // 否则连接时 EnsureRelays 会抛 SocketException，留下「内核在跑但未连接」的半状态。
+        var reserved = new[]
+        {
+            FixedStatsApi, FixedStatsApi + 100, FixedStatsApi + 101,
+            FixedClashApi, FixedClashApi + 10, NaiveListen,
+        };
+        if (reserved.Contains(socks) || reserved.Contains(http))
+            return $"不能占用保留端口（统计 {FixedStatsApi}+ / Clash API {FixedClashApi}+ / 槽位 / naive {NaiveListen}）";
         Socks = socks;
         Http = http;
         return null;
