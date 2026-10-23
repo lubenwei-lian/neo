@@ -806,15 +806,19 @@ public sealed partial class ConnectionPage : UserControl
 
         var current = AppState.CurrentNode;
 
+        // 排序/显示与节点卡片同口径（NodeItem.DisplayDelay）：只用 RealDelay 会让「刚测完 TCP 延迟」
+        // 的节点在这里仍显示空白（2026-10-23 用户反馈）。主口径无结果时回退另一口径。
+        var preferReal = AppState.State.RealDelayTestEnabled;
         var ordered = AppState.Nodes
-            .OrderBy(n => n.RealDelay > 0 ? 0 : 1)
-            .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : int.MaxValue)
+            .OrderBy(n => n.DisplayDelay(preferReal) > 0 ? 0 : 1)
+            .ThenBy(n => { var d = n.DisplayDelay(preferReal); return d > 0 ? d : int.MaxValue; })
             .ToList();
 
         foreach (var n in ordered)
         {
-            var lat = n.RealDelay > 0 ? $"{n.RealDelay} ms"
-                : n.RealDelay == -1 ? "超时"
+            var latency = n.DisplayDelay(preferReal);
+            var lat = latency > 0 ? $"{latency} ms"
+                : latency == -1 ? "超时"
                 : "";
             var text = lat.Length > 0 ? $"{n.Name} · {lat}" : n.Name;
             bool isCurrent = current != null
@@ -1267,6 +1271,8 @@ public sealed partial class ConnectionPage : UserControl
             ? AppState.Nodes.FirstOrDefault(n => n.Name == ConnectionService.FixedExitName)
             : null;
         var node = fixedExit ?? connected ?? selected ?? AppState.Nodes.FirstOrDefault();
+        // 统一「显示口径」：与节点卡片一致（真连开关决定主口径，另一口径有值时回退）。
+        var displayDelay = node?.DisplayDelay(AppState.State.RealDelayTestEnabled) ?? 0;
 
         bool hasSub = !string.IsNullOrWhiteSpace(AppState.State.SubscriptionUrl);
         SubBadge.Text = hasSub ? $"{AppState.Nodes.Count} 节点" : "未配置订阅";
@@ -1309,8 +1315,8 @@ public sealed partial class ConnectionPage : UserControl
         if (node != null)
         {
             //   节点名仍由下方节点行 SelNodeName 显示（见本方法后段），信息不丢。
-            HeroLat.Text = node.RealDelay > 0 ? $"{node.RealDelay} ms"
-                : node.RealDelay == -1 ? "超时"
+            HeroLat.Text = displayDelay > 0 ? $"{displayDelay} ms"
+                : displayDelay == -1 ? "超时"
                 : "未测速";
             HeroProto.Text = AppState.ProtocolName(node.Protocol);
             HeroTransport.Text = AppState.TransportName(node);
@@ -1347,10 +1353,10 @@ public sealed partial class ConnectionPage : UserControl
                 ? "已选择「" + selected.Name + "」，点击圆环重连后生效"
                 : node == null
                     ? "去节点页选择一个"
-                    : node.RealDelay > 0
-                        ? $"延迟 {(node.RealDelay <= 800 ? "低" : node.RealDelay <= 2000 ? "中" : "高")}"
-                        : node.RealDelay == -1
-                            ? "真连超时"
+                    : displayDelay > 0
+                        ? $"延迟 {(displayDelay <= 800 ? "低" : displayDelay <= 2000 ? "中" : "高")}"
+                        : displayDelay == -1
+                            ? "延迟超时"
                             : "";
             UpdateStatusRing();
         UpdateCoreCardUi();

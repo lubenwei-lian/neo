@@ -48,7 +48,8 @@ public sealed class NodeTile : INotifyPropertyChanged
 
     public bool IsSelected { get; private set; }
     public bool IsTesting { get; private set; }
-    public int RealValue => Node.RealDelay;
+    /// <summary>排序/过滤用的「显示口径」延迟：与卡片主徽标完全一致（见 NodeItem.DisplayDelay）。</summary>
+    public int RealValue => Node.DisplayDelay(AppState.State.RealDelayTestEnabled);
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -105,7 +106,9 @@ public sealed class NodeTile : INotifyPropertyChanged
         Color fgFallback;
         // 关闭「真连测速」时主徽标显示 TCP 握手延迟（TCP 握手风格）；开启后按现有 RealDelay 语义显示。
         var useReal = AppState.State.RealDelayTestEnabled;
-        var ms = useReal ? Node.RealDelay : Node.TcpDelay;
+        // 主口径还没结果（0=未测）时回退另一口径：hy2/TUIC 没有 TCP 端口（TCP 永远跳过），
+        // 只按开关取值会让「真连已测出」的节点仍显示未测速。
+        var ms = Node.DisplayDelay(useReal);
 
         if (ms > 0)
         {
@@ -120,7 +123,7 @@ public sealed class NodeTile : INotifyPropertyChanged
             fgKey = "NeoRed";
             fgFallback = Color.FromArgb(255, 0xDC, 0x26, 0x26);
         }
-        else if (useReal && ms == RealDelayTester.BatchFailed)
+        else if (ms == RealDelayTester.BatchFailed)
         {
             //   与「超时」区分：显示为「本机失败」并配中性色，避免用户误判成节点问题。
             text = "本机失败";

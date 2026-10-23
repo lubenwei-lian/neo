@@ -95,6 +95,17 @@ public sealed class NodeItem
     /// 最近一次 TCP 握手延迟测试的时间（本地时间）；默认值表示从未测过。
     public DateTime TcpDelayAt { get; set; }
 
+    /// <summary>
+    /// UI 统一口径：按「真连测速」开关选主口径，主口径没有结果（0=未测）时回退到另一口径。
+    /// 为什么必须回退：hy2/TUIC/mKCP 是 UDP 协议、没有 TCP 端口，TcpDelay 永远是 0（跳过）；
+    /// 只按开关取值的话，即使真连测出了延迟，卡片/排序/连接页下拉也全都显示「未测速」
+    /// （2026-10-23 用户反馈：测出来了但界面不显示）。
+    /// </summary>
+    public int DisplayDelay(bool preferReal)
+        => preferReal
+            ? (RealDelay != 0 ? RealDelay : TcpDelay)
+            : (TcpDelay != 0 ? TcpDelay : RealDelay);
+
     // ================= 2026-10-23 第二批：协议能力字段 =================
     // 说明：以下字段全部可空/默认值，旧 state 与旧订阅缓存反序列化后保持原行为。
 

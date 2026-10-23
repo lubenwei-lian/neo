@@ -29,6 +29,7 @@ public sealed partial class NodesPage : UserControl
     /// 显示的是「当前时间」，并非测速时间 —— 界面上的「上次真连测速 HH:mm:ss」因此永远等于现在。
     /// null = 本进程内还没跑过真连测速（节点上的延迟可能来自 DelayCache 缓存）。
     private DateTime? _lastRealTestAt;
+    private DateTime? _lastTcpTestAt;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _resizeTrailTimer;
     // 节点列表筛选：只看可用 / 只看未测 / 限定地区（空 = 全部）
     private bool _onlyAvailable;
@@ -145,8 +146,11 @@ public sealed partial class NodesPage : UserControl
         // 等用户回到节点页时 EnsureTiles 再统一重建。
         if (_tilesReleased && Visibility != Visibility.Visible) return;
 
+        // 排序口径必须与卡片显示一致（NodeItem.DisplayDelay）：关闭真连测速时界面显示的是 TCP，
+        // 若仍按 RealDelay（全 0）排序，就会出现「延迟测完了但顺序没变」（2026-10-23 用户反馈）。
+        var preferReal = AppState.State.RealDelayTestEnabled;
         var nodes = AppState.Nodes
-            .OrderBy(n => n.RealDelay <= 0 ? int.MaxValue : n.RealDelay)
+            .OrderBy(n => { var d = n.DisplayDelay(preferReal); return d <= 0 ? int.MaxValue : d; })
             .ToList();
 
         _tiles = nodes.Select(n => new NodeTile(n)).ToList();
@@ -509,17 +513,60 @@ public sealed partial class NodesPage : UserControl
                     tile.SetTcpResult(kv.Value);
             }
 
-            // 按 TCP 延迟重排卡片：>0 升序，0/-1 统一放最后（999999）。
-            _tiles = _tiles.OrderBy(t => t.Node.TcpDelay > 0 ? t.Node.TcpDelay : 999999).ToList();
+            // ★ 2026-10-23：hy2/TUIC/mKCP 是 UDP 协议、没有 TCP 端口，TcpDelayTester 会直接跳过（0）。
+            //   原实现于是「快速测延迟」永远测不到这些节点（v2rayN 能测是因为它一律走真实代理请求），
+            //   而且界面上没有任何解释。这里对这批节点自动补跑一次真连测速（sing-box 临时实例，
+            //   内部并发上限 4），让一次点击覆盖全部节点；结果写 RealDelay，
+            //   卡片与连接页下拉通过 NodeItem.DisplayDelay 回退显示。
+            var udpNodes = list.Select(t => t.Node)
+                .Where(n => n.IsValid
+                    && !n.IsClashPassthrough && !n.IsCustomConfig && !n.IsNaive
+                    && n.TcpDelay == 0
+                    && (n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                        || (n.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp"))
+                .Distinct()
+                .ToList();
+            var udpDone = 0;
+            if (udpNodes.Count > 0)
+            {
+                FootTime.Text = $"UDP 协议补测真连 0/{udpNodes.Count}…";
+                try
+                {
+                    await RealDelayTester.RealPingBatchAsync(
+                        udpNodes, NeoPaths.RuntimeDir, budgetSeconds: 90,
+                        onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
+                        {
+                            if (App.IsShuttingDown) return;
+                            if (tileByNode.TryGetValue(node, out var tile)) tile.SetResult(ms);
+                            udpDone++;
+                            FootTime.Text = $"UDP 协议补测真连 {udpDone}/{udpNodes.Count}…";
+                        }));
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    LogBus.App($"UDP 协议补测真连失败（不影响其它节点）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+                }
+                LogBus.App($"UDP 协议节点真连补测完成：{udpDone}/{udpNodes.Count}");
+            }
+
+            // 按「当前显示口径」重排卡片：>0 升序，0/-1 统一放最后（999999）。
+            _tiles = _tiles.OrderBy(t => t.RealValue > 0 ? t.RealValue : 999999).ToList();
             ApplyFilter();
 
-            var tested = list.Count(t => t.Node.TcpDelay != 0);
-            var okCount = list.Count(t => t.Node.TcpDelay > 0);
-            FootTime.Text = $"TCP 延迟已测 {tested}/{list.Count}（耗时 {sw.Elapsed.TotalSeconds:F1} s）";
+            var tested = list.Count(t => t.Node.TcpDelay != 0 || t.Node.RealDelay != 0);
+            var okCount = list.Count(t => t.RealValue > 0);
+            var tcpOk = list.Count(t => t.Node.TcpDelay > 0);
+            _lastTcpTestAt = DateTime.Now;
+            FootTime.Text = $"已测 {tested}/{list.Count}（耗时 {sw.Elapsed.TotalSeconds:F1} s）";
             FootAvg.Text = okCount > 0
-                ? $"· 平均 TCP {list.Where(t => t.Node.TcpDelay > 0).Average(t => t.Node.TcpDelay):F0} ms"
+                ? (udpNodes.Count > 0
+                    ? $"· TCP 可连 {tcpOk} · 平均 {list.Where(t => t.RealValue > 0).Average(t => t.RealValue):F0} ms"
+                    : $"· 平均 TCP {list.Where(t => t.Node.TcpDelay > 0).Average(t => t.Node.TcpDelay):F0} ms")
                 : "";
-            LogBus.App($"TCP 延迟测试完成：{tested}/{list.Count} 已测 · {okCount} 可连 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
+            LogBus.App($"延迟测试完成：{tested}/{list.Count} 已测 · {okCount} 可用"
+                + (udpNodes.Count > 0 ? $"（含 UDP 真连补测 {udpDone} 个）" : "")
+                + $" · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
         }
         catch (Exception ex)
         {
@@ -882,19 +929,33 @@ public sealed partial class NodesPage : UserControl
 
     private void UpdateFooter()
     {
-        NodeCountRun.Text = $"共 {AppState.Nodes.Count} 个节点 · 按真连延迟排序";
+        var preferReal = AppState.State.RealDelayTestEnabled;
+        NodeCountRun.Text = preferReal
+            ? $"共 {AppState.Nodes.Count} 个节点 · 按真连延迟排序"
+            : $"共 {AppState.Nodes.Count} 个节点 · 按 TCP 延迟排序";
 
-        var ok = AppState.Nodes.Where(n => n.RealDelay > 0).ToList();
+        var ok = AppState.Nodes.Where(n => n.DisplayDelay(preferReal) > 0).ToList();
         if (ok.Count > 0)
         {
-            FootTime.Text = _lastRealTestAt is { } t
-                ? "上次真连测速 " + t.ToString("HH:mm:ss")
-                : "真连测速时间未知（延迟来自缓存）";
-            FootAvg.Text = $"· 平均真连 {ok.Sum(n => n.RealDelay) / ok.Count} ms";
+            var avg = ok.Average(n => n.DisplayDelay(preferReal));
+            if (preferReal)
+            {
+                FootTime.Text = _lastRealTestAt is { } t
+                    ? "上次真连测速 " + t.ToString("HH:mm:ss")
+                    : "真连测速时间未知（延迟来自缓存）";
+                FootAvg.Text = $"· 平均真连 {avg:F0} ms";
+            }
+            else
+            {
+                FootTime.Text = _lastTcpTestAt is { } t
+                    ? "上次 TCP 测速 " + t.ToString("HH:mm:ss")
+                    : "TCP 测速时间未知（延迟来自缓存）";
+                FootAvg.Text = $"· 平均 TCP {avg:F0} ms";
+            }
         }
         else
         {
-            FootTime.Text = "真连尚未测速";
+            FootTime.Text = preferReal ? "真连尚未测速" : "TCP 尚未测速";
             FootAvg.Text = "";
         }
     }
