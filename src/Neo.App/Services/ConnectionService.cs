@@ -1153,10 +1153,23 @@ public static class ConnectionService
 
             // 切换：旧内核继续服务已有连接，新连接立刻走新内核
             var prev = _xray;
-            _xray = newCore;
-            LocalPorts.ActiveSlot = newSlot;
-            CoreKind = useSingBox ? "sing-box" : "xray";
-            EnsureRelays();
+            var prevKind = CoreKind;
+            // 2026-10-24 审查 P2-4：提交段（改槽位/内核/中继）失败时必须回滚到旧会话，
+            //   否则会留下「_xray 指向新内核、中继还指着旧槽位」的半提交状态。
+            try
+            {
+                _xray = newCore;
+                LocalPorts.ActiveSlot = newSlot;
+                CoreKind = useSingBox ? "sing-box" : "xray";
+                EnsureRelays();
+            }
+            catch
+            {
+                _xray = prev;
+                LocalPorts.ActiveSlot = oldSlot;
+                CoreKind = prevKind;
+                throw;
+            }
             ConnectedNode = node;
             AppState.SetCurrentNode(node);
             ConnectedAt = DateTime.Now;
