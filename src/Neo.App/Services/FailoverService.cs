@@ -251,7 +251,11 @@ public static class FailoverService
         {
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                // 2026-10-23：探活失败后不再干等 30 秒。
+                // 两次失败之间的 30 秒 + 10 秒超时，用户实际要卡 40～50 秒才能等到切换；
+                // 失败一次后 8 秒就复测，真断线时总等待缩到 15～20 秒，误判也能更快被纠正。
+                var wait = _failStreak > 0 ? 8 : 30;
+                await Task.Delay(TimeSpan.FromSeconds(wait), ct);
                 if (ct.IsCancellationRequested) break;
                 //   放弃切换后连接本来就是断的（TUN 模式会先断开再试备选），旧逻辑在这里 break，
                 //   「5 分钟后重试」的承诺永远不会兑现。现在由 CheckOnceAsync 在断开态
@@ -276,7 +280,8 @@ public static class FailoverService
             return;
         }
         if (!AppState.State.FailoverEnabled) { _failStreak = 0; return; }
-        if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 120) return;
+        // 2026-10-23：120s → 60s。切换后新节点若立刻也不稳，用户原先要干等 2 分钟才允许再切。
+        if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 60) return;
         if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < 300) return;
 
         // 自动修复系统代理：
@@ -307,6 +312,12 @@ public static class FailoverService
         }
         catch { }
 
+        // 2026-10-23：探活失败时先看「最近 30 秒有没有真实流量」。
+        //   探活只打 3 个目标（google / cloudflare / telegram），个别站点不可达并不等于节点坏了；
+        //   用户正在刷网页（有明显流量）却被切走，就是「刷着刷着突然断网几秒」的来源之一。
+        //   有流量时把阈值提高到连续 3 次，避免误切；真的断流时仍然 2 次就切。
+        var hadTraffic = SampleUserTraffic();
+
         if (await ProbeAsync(ct))
         {
             _failStreak = 0;
@@ -314,8 +325,13 @@ public static class FailoverService
         }
 
         _failStreak++;
-        LogBus.App($"故障转移探活失败（{_failStreak}/2）", "Warning");
-        IncidentLog.Record("failover", "探活失败（" + _failStreak + "/2）");
+        LogBus.App($"故障转移探活失败（{_failStreak}/{(hadTraffic ? 3 : 2)}）", "Warning");
+        IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + (hadTraffic ? 3 : 2) + "）");
+        if (hadTraffic && _failStreak < 3)
+        {
+            LogBus.App("探活失败但最近 30 秒仍有真实流量，判定为「个别站点不可达」，暂不切换", "Warning");
+            return;
+        }
         if (_failStreak < 2) return;
 
         await FailoverAsync(ct);
@@ -395,6 +411,8 @@ public static class FailoverService
         "https://www.google.com/generate_204",
         "http://cp.cloudflare.com/generate_204",
         "https://api.telegram.org/",
+        // 2026-10-23 追加：明文 HTTP、体积最小，作为「google 系抖动」时的快速交叉印证。
+        "http://www.gstatic.com/generate_204",
     };
 
     // 并行探测：串行会让两个目标的超时叠加（最坏 20s），并行最坏仍是单次超时。
@@ -428,11 +446,13 @@ public static class FailoverService
             {
                 Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
                 UseProxy = true,
-                ConnectTimeout = TimeSpan.FromSeconds(8),
+                // 2026-10-23：8s/10s → 4s/5s。探活是「判断链路是否还活着」，
+                // 超时太长只会让用户多等；真慢到 5 秒还没响应的链路，切走反而更好。
+                ConnectTimeout = TimeSpan.FromSeconds(4),
                 // 不跟随重定向：telegram 根路径就是 302，跟下去会白拉一次请求、拉长探测时间
                 AllowAutoRedirect = false,
             };
-            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
             using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             // 204/200 与 telegram 的 302 都算通，只要拿到有效 HTTP 响应即证明链路可用
             return (int)resp.StatusCode is >= 200 and < 400;
@@ -445,6 +465,38 @@ public static class FailoverService
         {
             return false;
         }
+    }
+
+    private static DateTime _lastTrafficAt = DateTime.MinValue;
+    private static long _lastTrafficBytes;
+
+    /// <summary>
+    /// 采样本轮间隔内的真实流量（xray/sing-box 统计快照差），用来区分
+    /// 「节点真的断了」与「只是探活目标不可达」。阈值 60 KB / 一轮（约 30 秒），
+    /// 空闲待机时通常远低于此，刷网页/看视频时远高于此。
+    /// 首次调用只建立基线，返回 false。
+    /// </summary>
+    private static bool SampleUserTraffic()
+    {
+        try
+        {
+            if (StatsSampler.Latest is not { } snap) return false;
+            var total = snap.Uplink + snap.Downlink;
+            var now = DateTime.Now;
+            if (_lastTrafficAt == DateTime.MinValue)
+            {
+                _lastTrafficAt = now;
+                _lastTrafficBytes = total;
+                return false;
+            }
+            var dt = (now - _lastTrafficAt).TotalSeconds;
+            if (dt < 3) return false;   // 采样间隔太短，差值没意义
+            var delta = total - _lastTrafficBytes;
+            _lastTrafficAt = now;
+            _lastTrafficBytes = total;
+            return delta > 60 * 1024;
+        }
+        catch { return false; }
     }
 
     private static async Task FailoverAsync(CancellationToken loopCt)
@@ -491,7 +543,8 @@ public static class FailoverService
                 int ms;
                 try
                 {
-                    ms = await RealDelayTester.RealPingAsync(cand, NeoPaths.RuntimeDir, ct: ct);
+                    // 候选测试超时 3s：故障转移要快，测不通立刻换下一个（默认 10s 会让切换卡很久）。
+                    ms = await RealDelayTester.RealPingAsync(cand, NeoPaths.RuntimeDir, timeoutMs: 3000, ct: ct);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch { continue; }
