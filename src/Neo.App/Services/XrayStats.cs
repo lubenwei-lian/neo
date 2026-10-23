@@ -25,27 +25,31 @@ public static class XrayStats
         try
         {
             var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
-            if (!File.Exists(exe)) return null;
+            if (!File.Exists(exe)) { Diag("xray.exe 不存在：" + exe); return null; }
 
             using var p = Process.Start(new ProcessStartInfo
             {
                 FileName = exe,
                 ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.LocalPorts.StatsApi}" },
                 RedirectStandardOutput = true,
-                // 刻意不重定向 stderr：重定向了却不读，子进程写满管道缓冲（约 4 KB）后会阻塞，
-                // 而父进程正在等 stdout → 双方互等死锁。本调用只需要 stdout。
-                RedirectStandardError = false,
+                // 必须重定向 stderr 并异步读空：不重定向时子进程继承的是 GUI 进程（WinExe）的
+                // 无效 stderr 句柄，内核一写告警就可能失败/阻塞；重定向了却不读，管道写满同样卡住。
+                // 读到的 stderr 同时留作失败诊断（见 Diag）。
+                RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
-            if (p == null) return null;
+            if (p == null) { Diag("Process.Start 返回 null"); return null; }
 
             //   整个采样线程（以及调用它的后台循环）被永久挂住。
             //   改为异步读 + 3 秒总超时，超时即 Kill 并返回 null。
             var readTask = p.StandardOutput.ReadToEndAsync();
+            // 与 stdout 并行把 stderr 读完丢弃：既防管道写满阻塞，也留作失败诊断。
+            var errTask = p.StandardError.ReadToEndAsync();
             if (!readTask.Wait(TimeSpan.FromSeconds(3)))
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
+                Diag("读 stdout 超时 3 秒（子进程可能卡住）");
                 return null;
             }
 
@@ -55,9 +59,18 @@ public static class XrayStats
             {
                 // 读取失败（进程被杀/管道断开）：同样收尾，避免留下僵尸进程。
                 try { p.Kill(entireProcessTree: true); } catch { }
+                Diag("读 stdout 失败（进程被杀/管道断开）");
                 return null;
             }
             try { p.WaitForExit(2000); } catch { }
+
+            if (string.IsNullOrWhiteSpace(txt))
+            {
+                var err = "";
+                try { if (errTask.Wait(500)) err = errTask.Result; } catch { }
+                Diag($"stdout 为空（exit={(p.HasExited ? p.ExitCode : -1)}，stderr={Clip(err)}）");
+                return null;
+            }
 
             using var doc = JsonDocument.Parse(txt);
             if (!doc.RootElement.TryGetProperty("stat", out var arr)) return null;
@@ -112,10 +125,39 @@ public static class XrayStats
                 _warnedShapeMismatch = true;
                 LogBus.App("流量统计：内核统计数据中没有可识别的代理流量，统计已暂停（请反馈日志）", "Warning");
             }
+            Diag($"无可用统计条目（条目数={arr.GetArrayLength()}，outMatched={outMatched}，inUp={inUp}，inDown={inDown}）");
             return null;
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            Diag($"[{ex.GetType().Name}] {ex.Message}");
+            return null;
+        }
     }
+
+    /// <summary>
+    /// 取数失败诊断（限流 20 秒一条）。
+    /// 为什么需要：取数失败时界面只「保留上一帧」，不写日志的话用户和排障者都看不到原因
+    /// （2026-10-23 上传/下载停在旧值即因此静默失败被掩盖）。
+    /// </summary>
+    private static DateTime _lastDiagAtUtc;
+    private static int _diagCount;
+
+    private static void Diag(string msg)
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastDiagAtUtc).TotalSeconds < 20) return;
+        _lastDiagAtUtc = now;
+        _diagCount++;
+        try { LogBus.App($"流量统计取数失败（第 {_diagCount} 次）：{msg}", "Warning"); } catch { }
+    }
+
+    private static string Clip(string s)
+        => string.IsNullOrEmpty(s)
+            ? "<空>"
+            : (s.Length <= 200
+                ? s.Replace(Environment.NewLine, " ")
+                : s[..200].Replace(Environment.NewLine, " ") + "…");
 
     private static long ReadValue(JsonElement item)
     {

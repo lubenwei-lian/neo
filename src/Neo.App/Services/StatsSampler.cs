@@ -57,6 +57,20 @@ public static class StatsSampler
         Interlocked.Increment(ref _generation);
     }
 
+    private static DateTime _lastNullDiagAtUtc;
+
+    /// <summary>
+    /// 连续取数为空时每 30 秒记一条：界面会停在上一帧，
+    /// 没有这条日志就无法区分「真的没流量」和「统计链路失败」。
+    /// </summary>
+    private static void DiagNull()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastNullDiagAtUtc).TotalSeconds < 30) return;
+        _lastNullDiagAtUtc = now;
+        try { LogBus.App("流量统计：本轮采样为空（界面保留上一帧，具体原因见「流量统计取数失败」日志）", "Warning"); } catch { }
+    }
+
     private static async Task LoopAsync(int generation)
     {
         //   确保「Stop 后旧循环退出、Start 只起一个新循环」。
@@ -79,6 +93,7 @@ public static class StatsSampler
                     //   每秒在 UI 线程调用 UsageTracker.Sample）。搬到后台采样循环后，
                     //   即使用户切到别的页面、页面计时器停掉，流量统计也照常累计。
                     if (snap is { } s) UsageTracker.Sample(s.Uplink, s.Downlink);
+                    else DiagNull();
                 }
                 else
                 {
