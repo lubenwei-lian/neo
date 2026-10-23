@@ -117,8 +117,8 @@
                         
 
                         
-                        <Grid HorizontalAlignment="Center" Margin="0,4,0,4">
-                        <Viewbox x:Name="RingBox" Width="236" Height="236" Stretch="Uniform">
+                        <Grid Margin="0,4,0,4">
+                        <Viewbox x:Name="RingBox" Width="236" Height="236" Stretch="Uniform" HorizontalAlignment="Center">
                         <Grid x:Name="StatusRing" Width="236" Height="236">
                             
                             <Ellipse Width="208" Height="208" Stroke="{ThemeResource NeoTrack}" StrokeThickness="9" />
@@ -183,7 +183,14 @@
                         
                         <Button x:Name="RingHit" Style="{StaticResource RingHitButton}"
                                 Width="236" Height="236" Click="OnRingTapped"
+                                HorizontalAlignment="Center"
                                 AutomationProperties.Name="连接 / 断开" />
+                        <!-- 2026-10-23：无感切换提示放圆环右侧留白，不压住圆环内的状态文字 -->
+                        <TextBlock x:Name="RingSwitchHint" Text="" FontSize="12.5"
+                                   Foreground="{ThemeResource NeoText2}"
+                                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   Margin="0,0,32,0" MaxWidth="260" TextWrapping="Wrap"
+                                   TextAlignment="Right" Opacity="0" IsHitTestVisible="False" />
                         </Grid>
 
                         

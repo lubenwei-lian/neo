@@ -28,6 +28,20 @@ public sealed partial class ConnectionPage : UserControl
     private readonly Microsoft.UI.Xaml.DispatcherTimer _statsTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     /// <summary>上一次刷新时看到的「已连接节点」，用于发现后台无感切换。</summary>
     private Neo.Core.Models.NodeItem? _lastConnectedNodeSeen;
+    /// <summary>切换提示开始显示的时间（用于保证最短可见时长）。</summary>
+    private DateTime _switchHintShownAt;
+
+    private async Task HideSwitchHintAsync(int delayMs)
+    {
+        try
+        {
+            if (delayMs > 0) await Task.Delay(delayMs);
+            if (App.IsShuttingDown) return;
+            RingSwitchHint.Text = "";
+            RingSwitchHint.Opacity = 0;
+        }
+        catch { }
+    }
     private CoreStats.Snapshot? _lastSnap;
     private DateTime _lastSnapAt;
     private long _peakDownBps;
@@ -90,6 +104,31 @@ public sealed partial class ConnectionPage : UserControl
         };
         _statsTimer.Tick += (_, _) => RefreshStats();
         _statsTimer.Start();
+
+        // 2026-10-23：无感切换提示 —— 显示在圆环右侧留白处（用户要求：只显示「正在切换节点…」，
+        // 且不能压住圆环内的状态文字/节点行）。
+        ConnectionService.SwitchProgress += msg => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (App.IsShuttingDown) return;
+            try
+            {
+                if (!string.IsNullOrEmpty(msg))
+                {
+                    _switchHintShownAt = DateTime.Now;
+                    RingSwitchHint.Text = msg;
+                    RingSwitchHint.Opacity = 0.9;
+                }
+                else
+                {
+                    // 实测切换只要 0.6 秒左右：如果立刻清空，提示一闪而过根本看不见。
+                    // 强制至少显示 1.2 秒，之后淡出。
+                    var shown = (DateTime.Now - _switchHintShownAt).TotalMilliseconds;
+                    var delay = (int)Math.Max(0, 1200 - shown);
+                    _ = HideSwitchHintAsync(delay);
+                }
+            }
+            catch { }
+        });
     }
 
     /// 退出时停掉本页所有自己的计时器。

@@ -20,6 +20,12 @@ public static class ConnectionService
     /// <summary>无感切换的互斥门（0 = 空闲，1 = 切换中），防连点并发。</summary>
     private static int _switchGate;
 
+    /// <summary>
+    /// 无感切换进度文本（"正在切换节点…" / ""）。ConnectionPage 订阅后显示在圆环右侧留白处。
+    /// 刻意不走 UserNotice：那条会顶到状态条、字多，用户明确要求「只显示正在切换节点」且不挡文字。
+    /// </summary>
+    public static event Action<string>? SwitchProgress;
+
     /// <summary>确保用户端口的中继在跑，并把后端指向当前活跃内核。</summary>
     private static void EnsureRelays()
     {
@@ -979,6 +985,7 @@ public static class ConnectionService
         // 2026-10-23 审计 P1-3：切换期间也置 IsConnecting，让界面/托盘/故障转移的并发入口全部让路
         //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
         IsConnecting = true;
+        try { SwitchProgress?.Invoke("正在切换节点…"); } catch { }
         try
         {
         if (!IsConnected || _xray is not { IsRunning: true })
@@ -1109,7 +1116,7 @@ public static class ConnectionService
             IsConnected = true;
 
             LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
-            try { UserNotice?.Invoke($"已切换到「{node.Name}」（无感切换，未断网）"); } catch { }
+            // 用户要求：不要长文案。切换结果只写日志，界面只显示圆环旁的「正在切换节点…」。
 
             // 旧内核退役（2026-10-23 下载无感）：不再固定 20 秒 —— 正在下载/看视频的连接全在旧内核上，
             // 到点硬停会把长连接截断。改成「等旧槽位连接数归零」再停，最长 5 分钟兜底。
@@ -1149,6 +1156,7 @@ public static class ConnectionService
         }
         finally
         {
+            try { SwitchProgress?.Invoke(""); } catch { }
             Interlocked.Exchange(ref _switchGate, 0);
             IsConnecting = false;
         }
