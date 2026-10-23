@@ -31,7 +31,9 @@ public static class SingBoxConfigBuilder
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = MapLevel(logLevel), ["timestamp"] = true },
-            ["dns"] = BuildDns(dnsServer),
+            // 2026-10-24 审查 P2-7：非 TUN 会话的 DNS 不经过 sing-box（系统代理模式由系统解析），
+            //   生成 fakeip server/rules 纯属冗余，直接关掉。
+            ["dns"] = BuildDns(dnsServer, useFakeIp: false),
             ["inbounds"] = new JsonArray(
                 BuildSocksInbound(socksPort, allowLan),
                 BuildHttpInbound(httpPort, allowLan)),
@@ -580,7 +582,8 @@ public static class SingBoxConfigBuilder
         var rules = new JsonArray(
             new JsonObject
             {
-                ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".internal", ".localdomain"),
+                // 2026-10-24 审查 P2-7：补 .home/.corp/.intranet，避免 router.home、nas 等内网名落到 fakeip→代理。
+                ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".home", ".corp", ".intranet", ".internal", ".localdomain"),
                 ["server"] = "dns-direct",
             });
 
@@ -595,6 +598,19 @@ public static class SingBoxConfigBuilder
         rules.Add(new JsonObject
         {
             ["domain_suffix"] = new JsonArray(".msftconnecttest.com", ".msftncsi.com"),
+            ["server"] = "dns-direct",
+        });
+
+        // 2026-10-24 审查 P2-7：HTTPS/SVCB 查询不绕代理 DoH（节点慢时浏览器每个域名多等 10 秒）；
+        //   单标签内网主机名（nas、printer）同理，不能落到 final=dns-remote。
+        rules.Add(new JsonObject
+        {
+            ["query_type"] = new JsonArray("HTTPS", "SVCB"),
+            ["server"] = "dns-direct",
+        });
+        rules.Add(new JsonObject
+        {
+            ["domain_regex"] = new JsonArray("^[^.]+$"),
             ["server"] = "dns-direct",
         });
 

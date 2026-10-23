@@ -1750,6 +1750,8 @@ public sealed partial class MainWindow : Window
         try { await FailoverService.StopAsync(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
         try { DisposeTrayIcon(); } catch { }
+        // 2026-10-24 审查 P2-10：托盘退出路径原先不落盘窗口位置/最大化状态，这里补上。
+        try { SaveWindowBounds(); } catch { }
 
         try { Application.Current.Exit(); } catch { }
     }

@@ -1266,12 +1266,25 @@ public static class ConnectionService
                 bool exited = _xray.StopAndVerify();
                 if (!exited)
                 {
-                    LogBus.App("内核未能在超时内退出，正在按进程名兜底清理（TUN 残留会导致路由被继续接管）", "Warning");
+                    // 2026-10-24 审查 P2-13：原日志承诺「正在按进程名兜底清理」，实际并未执行；
+                    //   真正的兜底在下次连接/启动的 CleanupOrphanCores，这里如实说明。
+                    LogBus.App("内核未能在超时内退出（将在下次连接/启动时由孤儿清理兜底；TUN 残留会导致路由被继续接管）", "Warning");
                 }
             }
         }
         catch (Exception ex) { LogBus.Exception("停止内核失败", ex); }
         _xray = null;
+
+        // 2026-10-24 审查 P2-5：退役中的旧内核也要一起停。否则用户在「切换后 5 分钟退役窗口」内
+        //   断开/退出时，旧内核会成孤儿继续占着槽位端口（下次启动报端口被占用）。
+        try
+        {
+            var retiring = _retiringCore;
+            _retiringCore = null;
+            if (retiring != null && !retiring.StopAndVerify())
+                LogBus.App("退役中的旧内核未能在超时内退出（将在下次连接/启动时由孤儿清理兜底）", "Warning");
+        }
+        catch (Exception ex) { LogBus.Exception("停止退役内核失败", ex); }
 
         // naive 辅助进程：必须一起停，否则它会一直占着 socks 入口。
         try
@@ -1466,6 +1479,16 @@ public static class ConnectionService
     ///     失败走 fail-open，且**不写日志**（本方法是高频路径，避免刷屏）。
     public static void CleanupOrphanCores()
     {
+        // 2026-10-24 审查 P2-5：清理上次崩溃/退出遗留的无感切换配置文件（neo-switch-*.json）。
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(NeoPaths.DataDir, "neo-switch-*.json"))
+            {
+                try { File.Delete(f); } catch { }
+            }
+        }
+        catch { }
+
         // ① 定向清理：优先清「我们自己记录着 PID」的那个子进程。
         //    _xray 还活着（IsRunning）说明它就是当前会话的活跃内核，不属于「孤儿」，
         //    因此这里只在它已不在运行、却仍能报出有效 PID 时才动手 —— 那正是
