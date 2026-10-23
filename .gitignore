@@ -45,3 +45,6 @@ doc/*
 tools/ui-tools/
 # 官方内核备份（82MB，不入库）
 doc/内核补丁-20261018/*orig-official*
+
+# 内部验收工具（M2 影子对照；依赖本机 Rust 构建，不随开源仓库发布）
+tools/shadow-compare/
