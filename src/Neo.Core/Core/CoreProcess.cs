@@ -5,6 +5,11 @@ namespace Neo.Core.Core;
 
 public sealed class CoreProcess : IDisposable
 {
+    // 2026-10-24 审查 P2-6：临时测速内核（RealDelayTester，配置名含 neo-realtest）PID 注册表。
+    //   TUN 拆除 / 孤儿清理按名字杀 runtime 下 sing-box 时先跳过这些 PID，避免测速进行中被误杀。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _tempPids = new();
+    public static bool IsTempCorePid(int pid) => pid > 0 && _tempPids.ContainsKey(pid);
+
     private readonly string _exePath;
     private readonly string _workingDir;
     private Process? _process;
@@ -82,6 +87,10 @@ public sealed class CoreProcess : IDisposable
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
         _process = p;
+        if (configPath.IndexOf("neo-realtest", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            try { _tempPids[p.Id] = 1; } catch { }
+        }
     }
 
     public bool WaitForExit(int timeoutMs)
@@ -105,6 +114,8 @@ public sealed class CoreProcess : IDisposable
         var p = _process;
         _process = null;
         if (p == null) return true;
+        int pid = -1;
+        try { pid = p.Id; } catch { }
 
         bool exited = true;
         try
@@ -124,6 +135,7 @@ public sealed class CoreProcess : IDisposable
         catch { exited = false; }
         finally
         {
+            if (pid > 0) _tempPids.TryRemove(pid, out _);
             try { p.Dispose(); } catch { }
         }
         return exited;
@@ -135,6 +147,8 @@ public sealed class CoreProcess : IDisposable
         var p = _process;
         _process = null;
         if (p == null) return;
+        int pid = -1;
+        try { pid = p.Id; } catch { }
 
         try
         {
@@ -147,6 +161,7 @@ public sealed class CoreProcess : IDisposable
         catch { }
         finally
         {
+            if (pid > 0) _tempPids.TryRemove(pid, out _);
             try { p.Dispose(); } catch { }
         }
     }

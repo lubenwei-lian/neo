@@ -1382,6 +1382,8 @@ public static class ConnectionService
                     // 只清属于本程序 runtime 的进程，绝不误杀用户自己的别的 sing-box
                     if (path == null || !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                         continue;
+                    // 2026-10-24 审查 P2-6：正在跑的测速临时内核不杀，否则测速会被打断/写坏节点。
+                    if (CoreProcess.IsTempCorePid(p.Id)) continue;
                     p.Kill(entireProcessTree: true);
                     if (!p.WaitForExit(5000))
                         LogBus.App($"TUN 拆除：sing-box（PID {p.Id}）未能退出，网卡/路由可能残留", "Warning");
@@ -1550,6 +1552,9 @@ public static class ConnectionService
                     // 保护线之一：必须在本程序 runtime 目录下（原样保留，不削弱）
                     if (path == null || !IsUnderRuntimeDir(path))
                         continue;
+
+                    // 2026-10-24 审查 P2-6：跳过正在跑的测速临时内核（neo-realtest）。
+                    if (CoreProcess.IsTempCorePid(p.Id)) continue;
 
                     // 已经按 ① 清掉的不再重复处理
                     if (_xray != null && !_xray.IsRunning && p.Id == _xray.Pid) continue;
