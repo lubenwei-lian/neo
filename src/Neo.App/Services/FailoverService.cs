@@ -640,7 +640,9 @@ public static class FailoverService
                 string? err;
                 try
                 {
-                    (ok, err) = await RunOnUiAsync(() => ConnectionService.ConnectAsync(cand));
+                    // 2026-10-23 无感切换：优先走「新内核先就绪 → 中继切后端」的路径，
+                    // 失败或场景不支持时 SwitchNodeFastAsync 内部自动回退普通重连。
+                    (ok, err) = await RunOnUiAsync(() => ConnectionService.SwitchNodeFastAsync(cand));
                 }
                 catch (Exception ex)
                 {

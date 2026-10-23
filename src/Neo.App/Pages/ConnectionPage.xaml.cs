@@ -502,6 +502,18 @@ public sealed partial class ConnectionPage : UserControl
 
             if (ConnectionService.IsConnected)
             {
+                var sel = AppState.CurrentNode;
+                var conn = ConnectionService.ConnectedNode;
+                // 2026-10-23 无感切换：已连接、但选中的是另一个节点时，点圆环 = 切换到它，
+                // 而不是「先断开再连」（那样会断网 3～4 秒）。选中的就是当前节点时才断开。
+                if (sel != null && (conn == null
+                    || !string.Equals(AppState.NodeKey(sel), AppState.NodeKey(conn), StringComparison.Ordinal)))
+                {
+                    var (swOk, swErr) = await ConnectionService.SwitchNodeFastAsync(sel);
+                    if (!swOk) ConnectionFailed?.Invoke(this, swErr ?? "切换失败");
+                    RefreshConnUi();
+                    return;
+                }
                 ConnectionService.Disconnect("用户点击圆环断开");
                 RefreshConnUi();
                 return;
@@ -843,13 +855,16 @@ public sealed partial class ConnectionPage : UserControl
                     // 无感不等于无声：INFO 日志留一句可读记录，便于用户/排障时确认确实切换过。
                     if (wasConnected)
                     {
-                        LogBus.App($"切换节点：{node.Name}（无感重连）");
-                        var (ok, err) = await ConnectionService.ConnectAsync(node);
+                        // 2026-10-23 无感切换：先在新槽位起好新内核，再把用户端口的中继指过去，
+                        // 老连接继续走旧内核。用户不需要断开、系统代理不变。
+                        LogBus.App($"切换节点：{node.Name}（无感切换）");
+                        var (ok, err) = await ConnectionService.SwitchNodeFastAsync(node);
                         if (!ok)
                         {
                             LogBus.App($"切换节点失败：{node.Name} — {err ?? "未知原因"}", "Warning");
                             ConnectionFailed?.Invoke(this, err ?? "重连失败");
                         }
+                        RefreshConnUi();
                     }
                 },
                 true);

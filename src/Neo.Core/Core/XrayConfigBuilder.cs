@@ -51,7 +51,7 @@ public static class XrayConfigBuilder
     public static string Build(NodeItem node, int socksPort = DefaultSocksPort, int httpPort = DefaultHttpPort,
         string proxyMode = "rule", bool bypassPrivate = true, bool bypassCn = true, bool blockAds = true,
         bool allowLan = false, IReadOnlyList<RouteRule>? customRules = null, string logLevel = "warning",
-        string dnsServer = "223.5.5.5")
+        string dnsServer = "223.5.5.5", int? statsPort = null)
     {
         if (!node.IsValid) throw new ArgumentException("节点无效（缺地址或端口）");
         if (socksPort == httpPort) throw new ArgumentException("socks 与 http 端口不能相同（xray 无混合入站）");
@@ -91,7 +91,7 @@ public static class XrayConfigBuilder
                 new JsonObject
                 {
                     ["listen"] = "127.0.0.1",
-                    ["port"] = CoreStatsPort,
+                    ["port"] = statsPort ?? CoreStatsPort,
                     ["protocol"] = "dokodemo-door",
                     ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
                     ["tag"] = "api-in",
@@ -254,7 +254,7 @@ public static class XrayConfigBuilder
         int socksPort = DefaultSocksPort, int httpPort = DefaultHttpPort,
         string proxyMode = "rule", bool bypassPrivate = true, bool bypassCn = true, bool blockAds = true,
         bool allowLan = false, IReadOnlyList<RouteRule>? customRules = null, string logLevel = "warning",
-        string dnsServer = "223.5.5.5", string strategy = "leastLoad")
+        string dnsServer = "223.5.5.5", string strategy = "leastLoad", int? statsPort = null)
     {
         var entries = entryNodes.Where(n => n.IsValid).ToList();
         if (!CanBeFixedExit(exitNode))
@@ -350,7 +350,7 @@ public static class XrayConfigBuilder
                 new JsonObject
                 {
                     ["listen"] = "127.0.0.1",
-                    ["port"] = CoreStatsPort,
+                    ["port"] = statsPort ?? CoreStatsPort,
                     ["protocol"] = "dokodemo-door",
                     ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
                     ["tag"] = "api-in",

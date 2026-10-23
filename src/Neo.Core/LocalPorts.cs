@@ -20,24 +20,25 @@ public static class LocalPorts
     public static int Http { get; private set; } = DefaultHttp;
 
     /// <summary>
-    /// 内核实际监听的端口（2026-10-23 无感切换）：用户端口交给 PortRelay，
-    /// 内核只监听 +100 的内部端口，切换节点时只改 Relay 的后端指针。
+    /// 当前活跃内核所在槽位（0/1）。无感切换时两个槽位交替使用：
+    /// 新内核先在另一个槽位启动并验证就绪，再把中继后端指过去，最后延迟停旧内核。
     /// </summary>
-    public static int CoreSocks => Socks + 100;
-    public static int CoreHttp => Http + 100;
+    public static int ActiveSlot { get; set; }
 
-    /// <summary>热备内核（无感切换的备用实例）的端口。</summary>
-    public static int StandbySocks => Socks + 110;
-    public static int StandbyHttp => Http + 110;
+    /// <summary>槽位对应的内核监听端口（0 → +100，1 → +110）。</summary>
+    public static int SlotSocks(int slot) => Socks + (slot == 0 ? 100 : 110);
+    public static int SlotHttp(int slot) => Http + (slot == 0 ? 100 : 110);
+    public static int SlotStats(int slot) => slot == 0 ? FixedStatsApi + 100 : FixedStatsApi + 101;
+
+    /// <summary>当前活跃内核的监听端口（用户端口交给 PortRelay）。</summary>
+    public static int CoreSocks => SlotSocks(ActiveSlot);
+    public static int CoreHttp => SlotHttp(ActiveSlot);
 
     public static int StatsApi => FixedStatsApi;
     public static int ClashApi => FixedClashApi;
 
-    /// <summary>活跃内核的统计 API 端口（与热备实例区分，避免冲突）。</summary>
-    public static int CoreStatsApi => FixedStatsApi + 100;
-
-    /// <summary>热备内核的统计 API 端口。</summary>
-    public static int StandbyStatsApi => FixedStatsApi + 101;
+    /// <summary>活跃内核的统计 API 端口。</summary>
+    public static int CoreStatsApi => SlotStats(ActiveSlot);
 
     /// <summary>校验并应用；返回错误文案（null = 成功）。</summary>
     public static string? TryApply(int socks, int http)

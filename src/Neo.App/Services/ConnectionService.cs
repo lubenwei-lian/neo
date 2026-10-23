@@ -950,6 +950,116 @@ public static class ConnectionService
         }
     }
 
+    /// <summary>
+    /// 无感切换节点（2026-10-23）：先在另一个槽位启动新内核并等它就绪，再把用户端口的中继
+    /// 后端切过去，最后延迟停掉旧内核。
+    ///   · 期间系统代理不变、用户不用断开、已建立的连接继续走旧内核（下载/视频不中断）；
+    ///   · 只对「xray 承载的普通节点 + 非 TUN + 非固定出口」生效；
+    ///     其余（sing-box 节点 / TUN / naive / Clash 直通 / 自定义配置）回退普通连接
+    ///     —— 那些场景会有 3～4 秒断网，但功能正确。
+    /// </summary>
+    public static async Task<(bool Ok, string? Err)> SwitchNodeFastAsync(NodeItem node)
+    {
+        if (!IsConnected || _xray is not { IsRunning: true }
+            || !string.Equals(CoreKind, "xray", StringComparison.OrdinalIgnoreCase))
+        {
+            return await ConnectAsync(node, force: true);
+        }
+        if (AppState.State.UseTun || node.IsNaive || node.IsClashPassthrough || node.IsCustomConfig
+            || AppState.State.FixedExitEnabled)
+        {
+            LogBus.App("节点切换：当前会话不支持无感切换（TUN/特殊节点/固定出口），走普通重连", "Debug");
+            return await ConnectAsync(node, force: true);
+        }
+
+        var useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+            || (node.RequiresSingBox && !node.RequiresXray));
+        if (useSingBox)
+        {
+            LogBus.App("节点切换：目标节点需要 sing-box，走普通重连（无感切换目前只支持 xray 节点）", "Debug");
+            return await ConnectAsync(node, force: true);
+        }
+
+        var oldSlot = LocalPorts.ActiveSlot;
+        var newSlot = 1 - oldSlot;
+        var newSocks = LocalPorts.SlotSocks(newSlot);
+        var newHttp = LocalPorts.SlotHttp(newSlot);
+        var newStats = LocalPorts.SlotStats(newSlot);
+
+        var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
+        CoreProcess? newCore = null;
+        try
+        {
+            var json = XrayConfigBuilder.Build(node, newSocks, newHttp,
+                AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                AppState.State.LogLevel, AppState.State.DnsServer, newStats);
+            await File.WriteAllTextAsync(cfgPath, json);
+
+            var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
+            newCore = new CoreProcess(exe, NeoPaths.RuntimeDir);
+            newCore.LogLine += line =>
+            {
+                LogBus.Core(line);
+                _kernelTail.Enqueue(line);
+                while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
+            };
+            newCore.Start(cfgPath);
+
+            // 等新内核就绪：端口可连 + 进程仍存活（最长 8 秒）
+            var ready = false;
+            for (var i = 0; i < 40 && !ready; i++)
+            {
+                await Task.Delay(200);
+                if (!newCore.IsRunning) break;
+                try
+                {
+                    using var probe = new System.Net.Sockets.TcpClient();
+                    using var cts = new CancellationTokenSource(300);
+                    await probe.ConnectAsync(System.Net.IPAddress.Loopback, newSocks, cts.Token);
+                    ready = true;
+                }
+                catch { }
+            }
+            if (!ready || !newCore.IsRunning)
+            {
+                try { newCore.Stop(); } catch { }
+                LogBus.App("无感切换失败：新内核未能就绪，保持当前节点不变", "Warning");
+                IncidentLog.Record("failover", "无感切换失败（新内核未就绪），保持原节点");
+                return (false, "新内核未能就绪，已保持当前节点");
+            }
+
+            // 切换：旧内核继续服务已有连接，新连接立刻走新内核
+            var prev = _xray;
+            _xray = newCore;
+            _xray.Exited += code => OnCoreExited(code);
+            LocalPorts.ActiveSlot = newSlot;
+            EnsureRelays();
+            ConnectedNode = node;
+            AppState.SetCurrentNode(node);
+            ConnectedAt = DateTime.Now;
+            IsConnected = true;
+
+            LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
+            try { UserNotice?.Invoke($"已切换到「{node.Name}」（无感切换，未断网）"); } catch { }
+
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(20000); } catch { }
+                try { prev?.Stop(); } catch { }
+                try { File.Delete(cfgPath); } catch { }
+            });
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            try { newCore?.Stop(); } catch { }
+            try { File.Delete(cfgPath); } catch { }
+            LogBus.Exception("无感切换失败", ex);
+            return (false, "无感切换失败：" + ex.Message);
+        }
+    }
+
     public static void Disconnect(string? reason = null)
     {
         // 断开 / 切换会话：取消尚未完成的连接后自检。
