@@ -115,6 +115,11 @@ public sealed class PortRelay : IDisposable
                 var up = PumpAsync(client.GetStream(), backend.GetStream(), ct);
                 var down = PumpAsync(backend.GetStream(), client.GetStream(), ct);
                 await Task.WhenAny(up, down).ConfigureAwait(false);
+                // 2026-10-24 审查 P2-12：一个方向结束后，另一方向可能还有未读数据（半关闭场景：
+                //   FTP、部分游戏/长轮询）。原实现立即 Dispose 会截断；这里给另一方向最多 5 秒
+                //   把剩余数据吐完再收尾，超时则按原行为关闭。
+                try { await Task.WhenAll(up, down).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+                catch { }
             }
             finally
             {
