@@ -434,8 +434,11 @@ public static class ConnectionService
             {
                 // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
                 var apiPort = LocalPorts.ClashApi;
+                // 2026-10-23 无感切换：mihomo 也必须监听内核内部端口。
+                //   之前这里传的是用户端口（21808/21809），与 PortRelay 抢同一个监听端口，
+                //   表现为 mihomo 会话端口被占、中继也没起到转发作用。
                 var yaml = MihomoConfigBuilder.Build(node,
-                    LocalPorts.Http, LocalPorts.Socks,
+                    LocalPorts.CoreHttp, LocalPorts.CoreSocks,
                     apiPort, AppState.State.LogLevel);
                 mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
                 Directory.CreateDirectory(mihomoDataDir);
