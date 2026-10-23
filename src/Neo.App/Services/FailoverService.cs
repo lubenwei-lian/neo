@@ -326,15 +326,20 @@ public static class FailoverService
             return;
         }
 
+        // 2026-10-24：阈值 2→3 / 3→4。
+        //   实测一天切了 75 次节点（探活失败 1/2 共 37 次、2/2 共 12 次），
+        //   2 连败就切太敏感：探活只打 3 个目标，个别目标抖动就会触发断流式切换，
+        //   用户体感就是「刷着刷着卡一下」。放宽到 3/4 连败，误切大幅减少，真实断流仍会切（多等一个 8s 周期）。
+        var threshold = hadTraffic ? 4 : 3;
         _failStreak++;
-        LogBus.App($"故障转移探活失败（{_failStreak}/{(hadTraffic ? 3 : 2)}）", "Warning");
-        IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + (hadTraffic ? 3 : 2) + "）");
-        if (hadTraffic && _failStreak < 3)
+        LogBus.App($"故障转移探活失败（{_failStreak}/{threshold}）", "Warning");
+        IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + threshold + "）");
+        if (hadTraffic && _failStreak < threshold)
         {
             LogBus.App("探活失败但最近 30 秒仍有真实流量，判定为「个别站点不可达」，暂不切换", "Warning");
             return;
         }
-        if (_failStreak < 2) return;
+        if (_failStreak < threshold) return;
 
         await FailoverAsync(ct);
     }

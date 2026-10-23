@@ -111,7 +111,7 @@ public static class SingBoxConfigBuilder
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error", ["timestamp"] = false },
-            ["dns"] = BuildDns("223.5.5.5", includeRuleSet: false),
+            ["dns"] = BuildDns("223.5.5.5", includeRuleSet: false, useFakeIp: false),
             ["inbounds"] = new JsonArray(new JsonObject
             {
                 ["type"] = "socks",
@@ -485,7 +485,7 @@ public static class SingBoxConfigBuilder
     //     （TUN / hy2 / tuic 路径整份配置起不来）；
     //   · DoT/DoH 的 path 是独立字段；
     //   · server 是域名时必须配 domain_resolver，指向一个 IP 型引导解析器（udp），否则同样 FATAL。
-    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true)
+    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true, bool useFakeIp = true)
     {
         var dns = XrayConfigBuilder.NormalizeDnsServer(dnsServer);
 
@@ -518,6 +518,26 @@ public static class SingBoxConfigBuilder
         // 域名解析服务器自身也要靠一个解析器引导：用纯 IP + udp，避免循环依赖；
         // 放在 servers 最前面（与探针 fix1 的顺序一致）。
         var servers = new JsonArray();
+
+        // 2026-10-24 性能修复（对照 0.2.1 实测）：
+        //   0.2.1 用 xray 的 domainStrategy=AsIs —— 域名不本地解析、直接交给代理；
+        //   0.2.4 之后改成「所有国外域名走 8.8.8.8 DoH（detour=proxy）」，
+        //   每个新域名先绕代理做一次 DoH，超时就是 10 秒（日志实锤 dns: exchange failed ... context deadline exceeded）。
+        //   现在改成 fakeip：A/AAAA 由本地立即应答，连接时按域名交给代理（等价 AsIs 的体感），
+        //   其它查询类型（HTTPS/SVCB 等）仍走 dns-remote。
+        JsonObject? fakeIp = null;
+        if (useFakeIp)
+        {
+            fakeIp = new JsonObject
+            {
+                ["type"] = "fakeip",
+                ["tag"] = "dns-fakeip",
+                ["inet4_range"] = "198.18.0.0/15",
+                ["inet6_range"] = "fc00::/18",
+            };
+            servers.Add(fakeIp);
+        }
+
         JsonObject? bootstrap = null;
         if (!IsIpLiteral(host))
         {
@@ -550,8 +570,17 @@ public static class SingBoxConfigBuilder
         }
         servers.Add(remote);
 
+        // sing-box 1.14 的 DNS 规则走新动作模型：
+        //   - 用响应匹配字段（ip_is_private 等）必须先有 evaluate 动作，否则
+        //     FATAL "response-based matching requires a preceding evaluate action"
+        //   - 不开 match_response 又报 "require match_response to be enabled"
+        //   两边都不好伺候，这里改用域名后缀等价表达「私网域名走直连解析」。
         var rules = new JsonArray(
-            new JsonObject { ["ip_is_private"] = true, ["server"] = "dns-direct" });
+            new JsonObject
+            {
+                ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".internal", ".localdomain"),
+                ["server"] = "dns-direct",
+            });
 
         //   测速用的 BuildTest 不定义 route.rule_set；若这里仍引用，内核会在
         //   initialize dns router 阶段报 "rule-set not found: geosite-cn" 并 FATAL 退出 ——
@@ -566,6 +595,11 @@ public static class SingBoxConfigBuilder
             ["domain_suffix"] = new JsonArray(".msftconnecttest.com", ".msftncsi.com"),
             ["server"] = "dns-direct",
         });
+
+        // 其余 A/AAAA 查询交给 fakeip（本地立即应答，零代理往返）。
+        // 放在 direct 规则之后：国内域名先命中上面的 dns-direct，不会吃到 fakeip。
+        if (fakeIp != null)
+            rules.Add(new JsonObject { ["query_type"] = new JsonArray("A", "AAAA"), ["server"] = "dns-fakeip" });
 
         return new JsonObject
         {

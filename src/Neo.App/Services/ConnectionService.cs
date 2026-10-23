@@ -1614,15 +1614,15 @@ public static class ConnectionService
         {
             foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
+                // 2026-10-24：这两条 Debug 日志原本每 20 秒（健康检查周期）刷一次，
+                //   一天 940KB 日志里大头就是它。判定逻辑保留，只去掉周期性日志噪音。
                 if (string.Equals(ni.Name, "neo-tun", StringComparison.OrdinalIgnoreCase))
                 {
-                    LogBus.App($"TUN 残留判定：网卡 [{ni.Name}] / [{ni.Description}]", "Debug");
                     return true;
                 }
                 // 网卡描述名也认：部分系统上 Name 是「本地连接* 12」，Description 才带 neo-tun。
                 if ((ni.Description ?? "").Contains("neo-tun", StringComparison.OrdinalIgnoreCase))
                 {
-                    LogBus.App($"TUN 残留判定：描述 [{ni.Name}] / [{ni.Description}]", "Debug");
                     return true;
                 }
             }
