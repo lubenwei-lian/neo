@@ -191,7 +191,9 @@ public sealed class NodeTile : INotifyPropertyChanged
     /// 回填批量测速结果（线程安全由调用方保证在 UI 线程调用）
     public void SetResult(int ms)
     {
-        Node.RealDelay = ms;
+        // 2026-10-24 审查 P2-1：BatchFailed（本机测速失败，-2）不应写成节点超时，
+        //   否则会把「本机临时失败」显示成「节点不可用」并影响排序/自动选择；保持未测速（0）待重测。
+        Node.RealDelay = ms > 0 ? ms : (ms == -1 ? -1 : 0);
         DelayCache.Set(Node, ms);
         RefreshDelay();
         //   必须与 -1（节点真的超时）在日志里区分，否则无法事后归因。
