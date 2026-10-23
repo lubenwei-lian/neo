@@ -68,6 +68,20 @@ public static class GeoDataUpdater
                 var len = new FileInfo(downloadPath).Length;
                 if (len < t.MinBytes) { fails.Add($"{t.Display}：体积异常（{len} 字节 < {t.MinBytes}）"); continue; }
 
+                // 2026-10-24 审查 P1-6：上游 sing-geosite/sing-geoip 的 .srs 是精简版（geosite-cn 仅约 9,302 条，
+                //   比随包全量少约 10 万个后缀）。用户点一次「更新分流数据」不能把全量清单换回精简版，
+                //   否则 TUN 下大量国内域名会改走代理（表现为国内站变慢/流量暴涨）。
+                if (t.RelativePath.EndsWith(".srs", StringComparison.OrdinalIgnoreCase) && File.Exists(target))
+                {
+                    long existingLen = 0;
+                    try { existingLen = new FileInfo(target).Length; } catch { }
+                    if (existingLen > 0 && len * 2 < existingLen)
+                    {
+                        fails.Add($"{t.Display}：上游是精简规则集（{len} 字节，本地全量 {existingLen} 字节），已保留本地全量版本");
+                        continue;
+                    }
+                }
+
                 // 校验：数据文件没有官方哈希；只做「不是网页」的粗检，避免把错误页当数据。
                 var head = new byte[4];
                 await using (var fs = new FileStream(downloadPath, FileMode.Open, FileAccess.Read, FileShare.Read))

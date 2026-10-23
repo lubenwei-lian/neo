@@ -62,6 +62,18 @@ public static class LocalPorts
         };
         if (reserved.Contains(socks) || reserved.Contains(http))
             return $"不能占用保留端口（统计 {FixedStatsApi}+ / Clash API {FixedClashApi}+ / 槽位 / naive {NaiveListen}）";
+        // 2026-10-24 审查 P1-2：还要校验槽位派生端口（socks/http ±100/110）。
+        //   否则用户把 HTTP 设成 21908 这类值时，内核/中继会抢同一端口，连接时抛 SocketException，
+        //   留下「内核在跑但未连接」的半启动态。
+        if (socks + 110 > 65535 || http + 110 > 65535)
+            return "端口过大：槽位派生端口（+110）超出 65535";
+        var derived = new[] { socks + 100, socks + 110, http + 100, http + 110 };
+        if (derived.Contains(socks) || derived.Contains(http))
+            return "用户端口不能与槽位派生端口（本身 +100/+110）重叠";
+        if (derived.Any(d => reserved.Contains(d)))
+            return "端口会与槽位统计/Clash 保留端口冲突（socks/http +100/+110）";
+        if (derived.Distinct().Count() != derived.Length)
+            return "SOCKS/HTTP 端口的槽位派生值互相冲突（两个端口相差 10/100/110 会被拒绝）";
         Socks = socks;
         Http = http;
         return null;

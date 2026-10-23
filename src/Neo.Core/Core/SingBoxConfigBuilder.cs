@@ -92,7 +92,8 @@ public static class SingBoxConfigBuilder
         return new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = MapLevel(logLevel), ["timestamp"] = true },
-            ["dns"] = BuildDns(dnsServer),
+            // 2026-10-24 审查 P1-8：TUN inbound 只配置了 IPv4 地址/路由，不要让 DNS 下发 fake IPv6。
+            ["dns"] = BuildDns(dnsServer, ipv6FakeIp: false),
             ["inbounds"] = new JsonArray(
                 tun,
                 BuildSocksInbound(socksPort, allowLan),
@@ -485,7 +486,7 @@ public static class SingBoxConfigBuilder
     //     （TUN / hy2 / tuic 路径整份配置起不来）；
     //   · DoT/DoH 的 path 是独立字段；
     //   · server 是域名时必须配 domain_resolver，指向一个 IP 型引导解析器（udp），否则同样 FATAL。
-    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true, bool useFakeIp = true)
+    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true, bool useFakeIp = true, bool ipv6FakeIp = true)
     {
         var dns = XrayConfigBuilder.NormalizeDnsServer(dnsServer);
 
@@ -533,8 +534,9 @@ public static class SingBoxConfigBuilder
                 ["type"] = "fakeip",
                 ["tag"] = "dns-fakeip",
                 ["inet4_range"] = "198.18.0.0/15",
-                ["inet6_range"] = "fc00::/18",
             };
+            // 2026-10-24 审查 P1-8：TUN 没有 IPv6 接管能力时不下发 fake AAAA，避免 happy-eyeballs 先试 IPv6 失败。
+            if (ipv6FakeIp) fakeIp["inet6_range"] = "fc00::/18";
             servers.Add(fakeIp);
         }
 
@@ -599,7 +601,12 @@ public static class SingBoxConfigBuilder
         // 其余 A/AAAA 查询交给 fakeip（本地立即应答，零代理往返）。
         // 放在 direct 规则之后：国内域名先命中上面的 dns-direct，不会吃到 fakeip。
         if (fakeIp != null)
-            rules.Add(new JsonObject { ["query_type"] = new JsonArray("A", "AAAA"), ["server"] = "dns-fakeip" });
+            rules.Add(new JsonObject
+            {
+                // 2026-10-24 审查 P1-8：TUN 只有 IPv4 时只对 A 下发 fakeip，AAAA 交给 final=dns-remote 拿真实地址。
+                ["query_type"] = ipv6FakeIp ? new JsonArray("A", "AAAA") : new JsonArray("A"),
+                ["server"] = "dns-fakeip",
+            });
 
         return new JsonObject
         {

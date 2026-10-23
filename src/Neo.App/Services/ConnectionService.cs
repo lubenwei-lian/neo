@@ -19,6 +19,9 @@ public static class ConnectionService
 
     /// <summary>无感切换的互斥门（0 = 空闲，1 = 切换中），防连点并发。</summary>
     private static int _switchGate;
+    // 2026-10-24 全面审查 P0-1：会话代号。Disconnect 自增；无感切换提交前复核，
+    //   防止「切换期间用户断开 → 切换续体把会话复活成直连态」。
+    private static int _sessionEpoch;
 
     /// <summary>
     /// 无感切换进度文本（"正在切换节点…" / ""）。ConnectionPage 订阅后显示在圆环右侧留白处。
@@ -606,10 +609,10 @@ public static class ConnectionService
                         f.ActualBytes < 0
                             ? $"⚠ 分流清单缺失：{f.File}（{f.Note}）"
                             : $"⚠ 分流清单体量异常：{f.File} 仅 {f.ActualBytes:N0} B（应 ≥ {f.MinimumBytes:N0} B）—— {f.Note}",
-                        "Warn");
+                        "Warning");
                 }
                 if (findings.Count > 0)
-                    LogBus.App("提示：请执行 python tools\\gen-rulesets.py 重新生成全量清单，否则国内直连会退化。", "Warn");
+                    LogBus.App("提示：请执行 python tools\\gen-rulesets.py 重新生成全量清单，否则国内直连会退化。", "Warning");
             }
             catch { }
         }
@@ -1006,6 +1009,8 @@ public static class ConnectionService
         // 2026-10-23 审计 P1-3：切换期间也置 IsConnecting，让界面/托盘/故障转移的并发入口全部让路
         //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
         IsConnecting = true;
+        // 2026-10-24 审查 P0-1：记下会话代号，提交前复核（等待新内核就绪的这几秒里用户可能已断开）。
+        var epoch = Volatile.Read(ref _sessionEpoch);
         try { SwitchProgress?.Invoke("正在切换节点…"); } catch { }
         try
         {
@@ -1123,6 +1128,16 @@ public static class ConnectionService
                 return (false, "新内核未能就绪，已保持当前节点");
             }
 
+            // 2026-10-24 审查 P0-1：新内核就绪后、提交前复核会话代号。
+            //   若用户已断开（SystemProxy 已关、看门狗已取消），继续提交会得到「界面已连接、实际直连」的矛盾状态。
+            if (epoch != Volatile.Read(ref _sessionEpoch) || !IsConnected)
+            {
+                try { newCore.Stop(); } catch { }
+                try { File.Delete(cfgPath); } catch { }
+                LogBus.App("无感切换已取消：会话在切换期间已断开，丢弃新内核", "Warning");
+                return (false, "会话已断开，已取消切换");
+            }
+
             // 切换：旧内核继续服务已有连接，新连接立刻走新内核
             var prev = _xray;
             _xray = newCore;
@@ -1135,6 +1150,12 @@ public static class ConnectionService
             AppState.SetCurrentNode(node);
             ConnectedAt = DateTime.Now;
             IsConnected = true;
+            // 2026-10-24 审查 P1-1：切换后补看门狗与「内核启动时间」。
+            //   旧看门狗会因 ConnectedNode 引用变化自己退出，不补的话新内核只剩 Exited 兜底；
+            //   _lastCoreStartAt 不更新还会让「启动即崩」被误判成「已稳定运行过」。
+            _lastCoreStartAt = DateTime.Now;
+            StartWatchdog(node);
+            NotifyStateChanged();
 
             LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
             // 用户要求：不要长文案。切换结果只写日志，界面只显示圆环旁的「正在切换节点…」。
@@ -1189,6 +1210,12 @@ public static class ConnectionService
 
     public static void Disconnect(string? reason = null)
     {
+        // 2026-10-24 审查 P0-1：自增会话代号，让正在等待新内核的无感切换在提交前发现自己已作废。
+        Interlocked.Increment(ref _sessionEpoch);
+        // 2026-10-24 审查 P1-3：用户主动断开/退出时，取消正在跑的故障转移；
+        //   否则它可能在几秒后通过 SwitchNodeFastAsync->ConnectAsync(force) 把会话自动连回来。
+        if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
+            FailoverService.CancelInFlight();
         // 断开 / 切换会话：取消尚未完成的连接后自检。
         CancelPostConnectSelfCheck();
         CancelWatchdog();

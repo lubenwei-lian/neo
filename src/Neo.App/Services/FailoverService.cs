@@ -13,6 +13,9 @@ public static class FailoverService
     private static CancellationTokenSource? _cts;
     private static Task? _loop;
     private static volatile bool _failoverInProgress;
+    // 2026-10-24 全面审查 P1-3：当前正在跑的故障转移预算 CTS。用户断开/退出时取消它，
+    //   否则 failover 可能在几秒后把会话自动连回来。
+    private static CancellationTokenSource? _inflight;
     private static int _failStreak;
     /// 本次会话是否已经提示过「系统代理被其他程序接管」（避免每 30 秒刷一条）。
     private static bool _reportedForeignProxy;
@@ -583,16 +586,27 @@ public static class FailoverService
         catch { return -1; }
     }
 
+    /// <summary>2026-10-24 审查 P1-3：取消正在进行的故障转移（用户主动断开/退出时调用）。</summary>
+    public static void CancelInFlight()
+    {
+        try { _inflight?.Cancel(); } catch { }
+    }
+
     private static async Task FailoverAsync(CancellationToken loopCt)
     {
-        using var own = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        // 2026-10-24 审查 P1-3：预算 CTS 链到探活循环 token，用户断开时能立刻取消。
+        using var own = CancellationTokenSource.CreateLinkedTokenSource(loopCt);
+        own.CancelAfter(TimeSpan.FromMinutes(3));
+        _inflight = own;
         var ct = own.Token;
         _failoverInProgress = true;
+        var disconnectedForTunTest = false;
 
         try
         {
             if (AppState.State.UseTun && ConnectionService.IsConnected)
             {
+                disconnectedForTunTest = true;
                 LogBus.App("故障转移：先断开失联节点（TUN 模式避免测试流量绕行），随后直接实测候选", "Warning");
                 try { await RunOnUiAsync(() => ConnectionService.Disconnect("故障转移触发断开")); }
                 catch (Exception ex) { LogBus.App($"故障转移：断开时异常（忽略继续）：[{ex.GetType().Name}] {ex.Message}", "Warning"); }
@@ -626,6 +640,12 @@ public static class FailoverService
             foreach (var cand in candidates)
             {
                 ct.ThrowIfCancellationRequested();
+                // 2026-10-24 审查 P1-3：用户中途断开就别再自动连回去（TUN 场景是主动断开测候选，故排除）。
+                if (!disconnectedForTunTest && !ConnectionService.IsConnected)
+                {
+                    LogBus.App("故障转移：会话已被断开，放弃本次切换", "Debug");
+                    return;
+                }
                 if (tried >= 3) break;
                 tried++;
 
@@ -679,11 +699,16 @@ public static class FailoverService
         {
             // 2026-10-23 审计 P1-8：3 分钟独立预算（own）超时抛的 OCE 绝不能冒到 LoopAsync ——
             // 那里的 catch 会让整个探活循环退出，本会话再也不自动切换。
-            LogBus.App("故障转移：3 分钟预算用尽，已放弃本次（探活循环继续）", "Warning");
+            // 2026-10-24 P1-3：用户断开时也会走到这里（own 被取消），按 Debug 记录，避免误报成预算用尽。
+            if (ct.IsCancellationRequested)
+                LogBus.App("故障转移：已被取消（用户断开或退出）", "Debug");
+            else
+                LogBus.App("故障转移：3 分钟预算用尽，已放弃本次（探活循环继续）", "Warning");
         }
         finally
         {
             _failoverInProgress = false;
+            if (ReferenceEquals(_inflight, own)) _inflight = null;
         }
     }
 

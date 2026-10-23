@@ -140,11 +140,12 @@ public static class XrayConfigBuilder
     //   AsIs：带域名的连接完全不做本地解析（域名原样交给代理，由节点侧解析）；
     //   只有本来就是 IP 目标的连接才走 ip 规则（geoip:cn 直连能力保留）。
     //   代价：域名不在 geosite:cn 但托管在国内的站点会走代理（多花一点流量，换来稳定）。
-                //   AsIs 下 geoip:cn 规则对「域名目标」永远不生效，于是 geosite:cn 之外的
-                //   国内站点会全部走代理（实测 realme.com 就是这样，用户感知「国内站很慢」）。
-                //   改成 IPOnDemand 后：命中 geosite:cn 的照旧直连，没命中的按解析出的 CN IP 直连，
-                //   国外域名解析后仍落 balancer 走代理（已实测 google/youtube/chatgpt 不受影响）。
-                // AsIs：不解析域名（见方法头注释「关键修复」），避免被污染 DNS 带偏。
+                //   【已知限制（2026-10-24 审查 P1-7）】AsIs 下 geoip:cn 规则对「域名目标」不生效：
+                //   带域名的目标不做本地解析，IP 类规则不参与匹配。国内直连实际只靠 geosite:cn 一张静态表，
+                //   表外的新站/长尾站/国内 CDN 域名会走代理（实测 realme.com 就是例子）。
+                //   曾试过 IPOnDemand 让 geoip:cn 兜底，但会用国内 DNS 解析被墙域名拿到污染地址
+                //   （x.com 等 10–15 秒超时，见上方「关键修复」）→ 这里明确保持 AsIs：稳定 > 覆盖率。
+                //   要提升覆盖率应扩充 geosite-cn 规则集，而不是打开 IP 规则解析。
             ["domainStrategy"] = "AsIs",
                 ["rules"] = BuildRoutingRules(proxyMode, bypassPrivate, bypassCn, blockAds, customRules),
             },
