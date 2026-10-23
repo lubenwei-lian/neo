@@ -131,6 +131,24 @@
                             />
                         </Grid>
                     </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="自动故障转移" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="当前节点连续失联时自动切换到可用节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchFailover" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnFailoverToggled" />
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="自动修复系统代理" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="系统代理被别的程序关掉时自动恢复；如果被改成别的代理则不覆盖" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <ToggleSwitch x:Name="SwitchAutoRepairProxy" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAutoRepairProxyToggled" />
+                    </Grid>
                 </StackPanel>
             </ui:CoolGlassCard>
 
@@ -198,7 +216,8 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBox x:Name="PortSocksBox" Text="21808" Width="92" BorderThickness="0" Background="Transparent"
+                            <TextBox x:Name="PortSocksBox" Text="21808" MinWidth="0" BorderThickness="0" Background="Transparent"
+                                     HorizontalAlignment="Stretch" VerticalContentAlignment="Center"
                                      Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
                                      Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
                                      AutomationProperties.AutomationId="PortSocksBox" />
@@ -222,7 +241,8 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBox x:Name="PortHttpBox" Text="21809" Width="92" BorderThickness="0" Background="Transparent"
+                            <TextBox x:Name="PortHttpBox" Text="21809" MinWidth="0" BorderThickness="0" Background="Transparent"
+                                     HorizontalAlignment="Stretch" VerticalContentAlignment="Center"
                                      Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
                                      Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
                                      AutomationProperties.AutomationId="PortHttpBox" />
@@ -360,24 +380,6 @@
                         <Button x:Name="BtnCoreMap" Style="{StaticResource GhostSm}" Click="OnCoreMapClick" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <TextBlock Text="配置" FontSize="11.5" />
                         </Button>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="自动故障转移" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="当前节点连续失联时自动切换到可用节点" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="SwitchFailover" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnFailoverToggled" />
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="自动修复系统代理" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock Text="系统代理被别的程序关掉时自动恢复；如果被改成别的代理则不覆盖" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
-                        </StackPanel>
-                        <ToggleSwitch x:Name="SwitchAutoRepairProxy" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAutoRepairProxyToggled" />
                     </Grid>
                     <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
 

@@ -316,11 +316,13 @@ public static class FailoverService
         //   探活只打 3 个目标（google / cloudflare / telegram），个别站点不可达并不等于节点坏了；
         //   用户正在刷网页（有明显流量）却被切走，就是「刷着刷着突然断网几秒」的来源之一。
         //   有流量时把阈值提高到连续 3 次，避免误切；真的断流时仍然 2 次就切。
-        var hadTraffic = SampleUserTraffic();
+        var recentBytes = TakeTrafficDelta();
+        var hadTraffic = recentBytes > 60 * 1024;
 
         if (await ProbeAsync(ct))
         {
             _failStreak = 0;
+            await MaybeCheckThroughputAsync(recentBytes, ct);
             return;
         }
 
@@ -472,31 +474,108 @@ public static class FailoverService
 
     /// <summary>
     /// 采样本轮间隔内的真实流量（xray/sing-box 统计快照差），用来区分
-    /// 「节点真的断了」与「只是探活目标不可达」。阈值 60 KB / 一轮（约 30 秒），
-    /// 空闲待机时通常远低于此，刷网页/看视频时远高于此。
-    /// 首次调用只建立基线，返回 false。
+    /// 「节点真的断了」与「只是探活目标不可达」，以及判断用户是否正在用网。
+    /// 首次调用只建立基线，返回 -1（无数据）。
     /// </summary>
-    private static bool SampleUserTraffic()
+    private static long TakeTrafficDelta()
     {
         try
         {
-            if (StatsSampler.Latest is not { } snap) return false;
+            if (StatsSampler.Latest is not { } snap) return -1;
             var total = snap.Uplink + snap.Downlink;
             var now = DateTime.Now;
             if (_lastTrafficAt == DateTime.MinValue)
             {
                 _lastTrafficAt = now;
                 _lastTrafficBytes = total;
-                return false;
+                return -1;
             }
             var dt = (now - _lastTrafficAt).TotalSeconds;
-            if (dt < 3) return false;   // 采样间隔太短，差值没意义
+            if (dt < 3) return -1;   // 采样间隔太短，差值没意义
             var delta = total - _lastTrafficBytes;
             _lastTrafficAt = now;
             _lastTrafficBytes = total;
-            return delta > 60 * 1024;
+            return delta;
         }
-        catch { return false; }
+        catch { return -1; }
+    }
+
+    /// <summary>吞吐抽检计数（每 10 轮探活做一次，约 5 分钟）。</summary>
+    private static int _probeTick;
+    private static int _slowThroughputStreak;
+
+    /// <summary>
+    /// 定期「塞一点流量」测真实吞吐：探活只能证明节点还能转发，证明不了「有带宽」。
+    /// 实测存在「延迟 114ms 但只有几十 KB/s」的节点，浏览网页表现为「能打开但一直转圈」。
+    /// 判据：128 KB 下载平均吞吐 &lt; 30 KB/s 连续 2 次 → 判定节点劣化并触发切换。
+    /// 时机：每 10 轮探活（约 5 分钟）一次；若本轮用户流量 &gt; 300 KB（正在用网），
+    /// 跳过 —— 那时测到的是共享带宽，会误判。
+    /// </summary>
+    private static async Task MaybeCheckThroughputAsync(long recentBytes, CancellationToken ct)
+    {
+        if (++_probeTick < 10) return;
+        if (_probeTick % 10 != 0) return;
+        if (recentBytes > 300 * 1024)
+        {
+            LogBus.App("吞吐抽检：用户正在使用网络，跳过本轮（避免共享带宽干扰判断）", "Debug");
+            return;
+        }
+
+        var bps = await MeasureThroughputAsync(ct);
+        if (bps < 0) return;   // 测量失败：探活已经判过，不重复叠加
+        var kb = bps / 1024.0;
+        if (bps < 30 * 1024)
+        {
+            _slowThroughputStreak++;
+            LogBus.App($"吞吐抽检：{kb:F0} KB/s（低于 30 KB/s，{_slowThroughputStreak}/2）", "Warning");
+            if (_slowThroughputStreak >= 2)
+            {
+                _slowThroughputStreak = 0;
+                LogBus.App("吞吐抽检：节点持续低吞吐，触发故障转移", "Warning");
+                IncidentLog.Record("failover", "吞吐抽检判定节点低吞吐", $"{kb:F0} KB/s");
+                await FailoverAsync(ct);
+            }
+        }
+        else
+        {
+            _slowThroughputStreak = 0;
+            LogBus.App($"吞吐抽检：{kb:F0} KB/s（正常）", "Debug");
+        }
+    }
+
+    /// <summary>经本地 socks 端口下载 128 KB 测真实吞吐（B/s）；失败返回 -1。</summary>
+    private static async Task<double> MeasureThroughputAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var handler = new SocketsHttpHandler
+            {
+                Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
+                UseProxy = true,
+                ConnectTimeout = TimeSpan.FromSeconds(4),
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
+            using var resp = await http.GetAsync(
+                "https://speed.cloudflare.com/__down?bytes=131072",
+                HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!resp.IsSuccessStatusCode) return -1;
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long total = 0;
+            var buf = new byte[16 * 1024];
+            await using var s = await resp.Content.ReadAsStreamAsync(ct);
+            while (sw.ElapsedMilliseconds < 8000)
+            {
+                var n = await s.ReadAsync(buf, ct);
+                if (n <= 0) break;
+                total += n;
+            }
+            sw.Stop();
+            if (total == 0) return -1;
+            return total / Math.Max(0.001, sw.Elapsed.TotalSeconds);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return -1; }
     }
 
     private static async Task FailoverAsync(CancellationToken loopCt)
@@ -522,12 +601,17 @@ public static class FailoverService
             //   表现为「能开网页但速度连 1MB/s 都上不去」。故障转移原先只按延迟排序，
             //   hy2 节点延迟好看（UDP 握手快）就容易被选中，用户于是长期跑在限速的 UDP 上。
             //   这里把 UDP 类节点排到 TCP 类节点之后，仅在没有任何可用 TCP 节点时才会退给它。
+            // 2026-10-23：同地区优先 —— 用户手动选的地区通常有理由（要某个出口国家），
+            // 切到别的地区虽然能用，但出口 IP 变了，用户会察觉「怎么跳去美国了」。
+            var currentRegion = NodeGrouper.RegionOf(current?.Name ?? "");
             var candidates = AppState.Nodes
                 .Where(n => !SameNode(n, current))
                 // ★ 2026-10-23 第二批：TUN 模式下跳过 xray 专有能力节点（mKCP/xhttp/VLESS 加密/pqv/vcn）。
                 //   这些节点在 TUN 下会被 ConnectionService 直接拒绝，留在候选里只会白白消耗 3 次尝试机会。
                 .Where(n => !(AppState.State.UseTun && n.RequiresXray))
-                .OrderBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC or NodeProtocol.AnyTls ? 1 : 0)
+                .OrderBy(n => !string.IsNullOrEmpty(currentRegion)
+                              && string.Equals(NodeGrouper.RegionOf(n.Name), currentRegion, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC or NodeProtocol.AnyTls ? 1 : 0)
                 .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : (n.RealDelay == 0 ? 100_000 : 200_000))
                 .ToList();
 
