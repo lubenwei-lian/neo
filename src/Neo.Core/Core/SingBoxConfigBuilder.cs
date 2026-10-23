@@ -94,8 +94,9 @@ public static class SingBoxConfigBuilder
         return new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = MapLevel(logLevel), ["timestamp"] = true },
-            // 2026-10-24 审查 P1-8：TUN inbound 只配置了 IPv4 地址/路由，不要让 DNS 下发 fake IPv6。
-            ["dns"] = BuildDns(dnsServer, ipv6FakeIp: false),
+            // 2026-10-24 审查 P1-8：TUN inbound 只配置了 IPv4 地址/路由，不要让 DNS 下发 fake IPv6，
+            //   同时把 AAAA 统一回 NODATA（见 BuildDns 的 ipv4OnlyTun 分支），应用不再等真实 IPv6。
+            ["dns"] = BuildDns(dnsServer, ipv6FakeIp: false, ipv4OnlyTun: true),
             ["inbounds"] = new JsonArray(
                 tun,
                 BuildSocksInbound(socksPort, allowLan),
@@ -488,7 +489,7 @@ public static class SingBoxConfigBuilder
     //     （TUN / hy2 / tuic 路径整份配置起不来）；
     //   · DoT/DoH 的 path 是独立字段；
     //   · server 是域名时必须配 domain_resolver，指向一个 IP 型引导解析器（udp），否则同样 FATAL。
-    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true, bool useFakeIp = true, bool ipv6FakeIp = true)
+    private static JsonObject BuildDns(string dnsServer, bool includeRuleSet = true, bool useFakeIp = true, bool ipv6FakeIp = true, bool ipv4OnlyTun = false)
     {
         var dns = XrayConfigBuilder.NormalizeDnsServer(dnsServer);
 
@@ -579,13 +580,27 @@ public static class SingBoxConfigBuilder
         //     FATAL "response-based matching requires a preceding evaluate action"
         //   - 不开 match_response 又报 "require match_response to be enabled"
         //   两边都不好伺候，这里改用域名后缀等价表达「私网域名走直连解析」。
-        var rules = new JsonArray(
-            new JsonObject
+        var rules = new JsonArray();
+
+        // 2026-10-24 审查 P1-8 剩余项：TUN 只有 IPv4 地址/路由时，AAAA 一律回 NODATA（NOERROR + 空答案）。
+        //   之前 AAAA 落到 final=dns-remote：经代理 DoH 拿回真实 IPv6（实测 1.66 秒、8 条 AAAA），
+        //   但 TUN 没有 IPv6 接管能力 → happy-eyeballs 先试 IPv6 必然失败，首包被拖慢
+        //   （审查报告里 Steam 直连 IPv6 探测 8 个地址 40 秒超时即此类）。回 NODATA 让应用立即回落 IPv4。
+        //   必须放最前面：否则内网后缀/geosite 的 AAAA 仍会绕回真实 IPv6。
+        if (ipv4OnlyTun)
+            rules.Add(new JsonObject
             {
-                // 2026-10-24 审查 P2-7：补 .home/.corp/.intranet，避免 router.home、nas 等内网名落到 fakeip→代理。
-                ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".home", ".corp", ".intranet", ".internal", ".localdomain"),
-                ["server"] = "dns-direct",
+                ["query_type"] = new JsonArray("AAAA"),
+                ["action"] = "predefined",
+                ["rcode"] = "NOERROR",
             });
+
+        rules.Add(new JsonObject
+        {
+            // 2026-10-24 审查 P2-7：补 .home/.corp/.intranet，避免 router.home、nas 等内网名落到 fakeip→代理。
+            ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".home", ".corp", ".intranet", ".internal", ".localdomain"),
+            ["server"] = "dns-direct",
+        });
 
         //   测速用的 BuildTest 不定义 route.rule_set；若这里仍引用，内核会在
         //   initialize dns router 阶段报 "rule-set not found: geosite-cn" 并 FATAL 退出 ——
@@ -619,7 +634,7 @@ public static class SingBoxConfigBuilder
         if (fakeIp != null)
             rules.Add(new JsonObject
             {
-                // 2026-10-24 审查 P1-8：TUN 只有 IPv4 时只对 A 下发 fakeip，AAAA 交给 final=dns-remote 拿真实地址。
+                // 2026-10-24 审查 P1-8：TUN 只有 IPv4 时只对 A 下发 fakeip；AAAA 已被前面的 ipv4OnlyTun 规则拦成 NODATA。
                 ["query_type"] = ipv6FakeIp ? new JsonArray("A", "AAAA") : new JsonArray("A"),
                 ["server"] = "dns-fakeip",
             });
