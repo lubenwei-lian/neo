@@ -38,7 +38,13 @@ function Check([string]$name, [bool]$ok, [string]$detail = "") {
     else { Write-Host "  FAIL  $name $detail"; $script:fail++ }
 }
 function Wait-Setup([string]$setup, [string[]]$setupArgs) {
-    $p = Start-Process -FilePath $setup -ArgumentList $setupArgs -PassThru
+    # 2026-10-24 修复：Start-Process 不会为含空格的参数自动加引号。
+    #   "/DIR=E:\Program Files\neo" 会被拆成 "/DIR=E:\Program" + "Files\neo" 两个参数，
+    #   安装器于是装到了 E:\Program（实测过）。这里统一给含空格的参数补外层引号。
+    $quoted = @($setupArgs | ForEach-Object {
+        if ($_ -match '\s' -and -not $_.StartsWith('"')) { '"' + $_ + '"' } else { $_ }
+    })
+    $p = Start-Process -FilePath $setup -ArgumentList $quoted -PassThru
     if (-not $p.WaitForExit(420000)) { try { $p.Kill() } catch { } ; throw "安装/卸载超时：$setup" }
     return $p.ExitCode
 }
@@ -66,6 +72,7 @@ Get-Process neo -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $must = @('neo.exe', 'app\neo.exe', 'app\runtime\xray.exe', 'app\runtime\sing-box.exe',
+          'app\runtime\neo-cli.exe',
           'app\runtime\geoip.dat', 'app\runtime\geosite.dat', 'app\runtime\Country.mmdb',
           'app\runtime\rule-sets\geosite-cn.srs', 'build-info.json')
 foreach ($rel in $must) { Check "存在 $rel" (Test-Path (Join-Path $target $rel)) }
