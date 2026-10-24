@@ -1,0 +1,8 @@
+/target/
+/data/
+*.log
+
+# 内部资料与参考实现（不随公开仓库发布）
+/docs/
+/planning/
+/reference/

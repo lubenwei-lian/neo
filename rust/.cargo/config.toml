@@ -1,0 +1,6 @@
+[build]
+# 编译产物固定在工程内
+target-dir = "target"
+
+[net]
+retry = 3

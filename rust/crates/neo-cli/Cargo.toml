@@ -1,0 +1,17 @@
+[package]
+name = "neo-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "neo Rust 命令行工具"
+
+[[bin]]
+name = "neo-cli"
+path = "src/main.rs"
+
+[dependencies]
+neo-core = { path = "../neo-core" }
+serde_json.workspace = true
+tokio.workspace = true

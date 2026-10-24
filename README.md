@@ -41,3 +41,8 @@ dotnet build src/Neo.App/Neo.App.csproj -c Release -p:Platform=x64
 - **sing-box**：官方发行版（GPL-3.0），运行时从本项目发布通道更新。
 
 本仓库自有代码采用 MIT 许可证（见 [LICENSE](LICENSE)）；第三方组件与内核许可证见 [NOTICE](NOTICE)。
+## 源码结构
+
+- src/ : WinUI 3 主程序（C#）
+- rust/ : Rust 核心（neo-core / neo-cli / neo-jni）
+- installer/、tools/ : 打包与维护脚本

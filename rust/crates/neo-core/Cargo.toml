@@ -1,0 +1,19 @@
+[package]
+name = "neo-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "neo Rust 核心库：节点模型、分享链接解析、TCP 延迟测试"
+
+[lib]
+name = "neo_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+tokio.workspace = true
+minreq.workspace = true
