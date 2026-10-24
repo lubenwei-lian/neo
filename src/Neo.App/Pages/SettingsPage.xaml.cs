@@ -589,6 +589,17 @@ public sealed partial class SettingsPage : UserControl
         _ = ConnectionService.ReloadForSettingsAsync();
     }
 
+    private void OnUseRustToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        AppState.State.UseRustConfig = SwitchUseRust.IsOn;
+        AppState.Save();
+        LogBus.App(SwitchUseRust.IsOn
+            ? "已开启「用 Rust 生成配置」（M2 阶段 2，下次连接生效；失败自动回退 C#）"
+            : "已关闭「用 Rust 生成配置」，恢复 C# 构建器");
+        _ = ConnectionService.ReloadForSettingsAsync();
+    }
+
     private void RefreshGameDirectSummary()
     {
         var custom = AppState.State.GameDirectProcesses
@@ -1342,6 +1353,7 @@ public sealed partial class SettingsPage : UserControl
         st.ProxyMode = "rule";
         st.BypassPrivate = true; st.BypassCn = true; st.BlockAds = true; st.AllowLan = false;
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
+        st.UseRustConfig = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
         st.FailoverEnabled = true;
         st.AutoRepairSystemProxy = true; st.AutoRestartCore = true;
@@ -1381,6 +1393,7 @@ public sealed partial class SettingsPage : UserControl
         SwitchBypass.IsOn = AppState.State.BypassCn;
         SwitchLan.IsOn = AppState.State.AllowLan;
         SwitchGameDirect.IsOn = AppState.State.GameDirectEnabled;
+        SwitchUseRust.IsOn = AppState.State.UseRustConfig;
         RefreshGameDirectSummary();
         _syncing = false;
 

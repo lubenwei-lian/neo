@@ -593,6 +593,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -704,6 +705,15 @@
                             </Grid>
                         </Border>
 
+                        <Border Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0">
+                            <Grid MinHeight="44" Padding="0,9">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="用 Rust 生成配置（实验）" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                                    <TextBlock Text="M2 阶段 2：sing-box 配置改由 Rust 生成；失败自动回退 C#（下次连接生效）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="SwitchUseRust" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnUseRustToggled" />
+                            </Grid>
+                        </Border>
 
                     </Grid>
                 </StackPanel>

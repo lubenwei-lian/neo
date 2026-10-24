@@ -296,6 +296,7 @@ $required = @(
     @{ Rel = 'app\Neo.Core.dll'; Desc = 'Neo.Core 程序集' },
     @{ Rel = 'app\runtime\xray.exe'; Desc = 'xray 内核'; MinBytes = 30MB },
     @{ Rel = 'app\runtime\sing-box.exe'; Desc = 'sing-box 内核'; MinBytes = 60MB },
+    @{ Rel = 'app\runtime\neo-cli.exe'; Desc = 'Rust 配置生成 CLI（M2 阶段 2）'; MinBytes = 500KB },
     @{ Rel = 'app\runtime\geoip.dat'; Desc = 'geoip 数据' },
     @{ Rel = 'app\runtime\geosite.dat'; Desc = 'geosite 数据' },
     @{ Rel = 'app\runtime\wintun.dll'; Desc = 'wintun 驱动库' },
@@ -334,7 +335,7 @@ $leftGitkeep = @(Get-ChildItem $out -File -Recurse -Force -Filter '.gitkeep' -Er
 if ($leftGitkeep.Count -gt 0) { throw ('[neo-publish] 发布目录里还有 ' + $leftGitkeep.Count + ' 个 .gitkeep（第一个：' + $leftGitkeep[0].FullName + '）') }
 
 Write-Host '[neo-publish] step 9: write SHA256SUMS.txt'
-$hashRels = @('neo.exe', 'app\neo.exe', 'app\runtime\xray.exe', 'app\runtime\sing-box.exe')
+$hashRels = @('neo.exe', 'app\neo.exe', 'app\runtime\xray.exe', 'app\runtime\sing-box.exe', 'app\runtime\neo-cli.exe')
 $hashLines = @()
 foreach ($rel in $hashRels) {
     $full = Join-Path $out $rel

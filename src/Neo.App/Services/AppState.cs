@@ -77,6 +77,12 @@ public static class AppState
 
         public bool UseTun { get; set; } = false;
 
+        /// <summary>
+        /// M2 阶段 2（实验，2026-10-24）：sing-box 配置改由 Rust neo-cli 生成；缺 exe/超时/预检失败
+        /// 一律自动回退 C# 构建，不影响连接。默认关。
+        /// </summary>
+        public bool UseRustConfig { get; set; } = false;
+
         public int WinX { get; set; } = int.MinValue;
         public int WinY { get; set; } = int.MinValue;
         public int WinW { get; set; } = 1280;

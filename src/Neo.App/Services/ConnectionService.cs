@@ -603,12 +603,32 @@ public static class ConnectionService
         }
         else
         {
+            var rustConfigUsed = false;
+            if (useSingBox && !useNaive && !useCustom && !useMihomo && AppState.State.UseRustConfig)
+            {
+                // M2 阶段 2：设置开启时优先用 Rust 生成的配置；bridge 内部已做 sing-box check，
+                //   任何失败（缺 exe / 超时 / check 失败）都返回 null，这里回退 C# 原配置。
+                var rustJson = await RustConfigBridge.TryBuildAsync(node, useTun);
+                if (!string.IsNullOrEmpty(rustJson))
+                {
+                    json = rustJson;
+                    rustConfigUsed = true;
+                }
+                else
+                {
+                    LogBus.App("Rust 配置生成失败，本次已回退 C# 配置（连接不受影响）", "Warning");
+                }
+            }
             json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
+            if (rustConfigUsed)
+                LogBus.App($"本次连接使用 Rust 生成的配置（M2 阶段 2）：{node.Name} · TUN={(useTun ? "开" : "关")}");
         }
 
         // 2026-10-24 M2 阶段 1（只读影子模式）：sing-box 会话把「最终配置」交给 Rust 侧 neo-cli
         //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。
-        if (useSingBox && !useNaive && !useCustom && !useMihomo && !string.IsNullOrEmpty(json))
+        //   阶段 2 开关开启后实际配置已由 Rust 生成，影子对比没有意义，跳过（避免重复起进程）。
+        if (useSingBox && !useNaive && !useCustom && !useMihomo
+            && !AppState.State.UseRustConfig && !string.IsNullOrEmpty(json))
             ConfigShadow.QueueIfAvailable(json, node, useTun);
 
         // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
