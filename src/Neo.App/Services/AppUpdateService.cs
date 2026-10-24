@@ -13,7 +13,7 @@ namespace Neo.App.Services;
 public static class AppUpdateService
 {
     public const string RepoOwner = "lubenwei-lian";
-    public const string RepoName = "neo-desktop-release";
+    public const string RepoName = "neo";
 
     public static string CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";

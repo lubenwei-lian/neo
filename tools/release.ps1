@@ -77,7 +77,7 @@ function Find-Iscc {
 }
 
 $ver = Get-ReleaseVersion
-if (-not $Tag) { $Tag = "desktop-$ver" }
+if (-not $Tag) { $Tag = "v$ver" }
 $publishScript = Join-Path $PSScriptRoot 'publish.ps1'
 $issPath = Join-Path $root 'installer\neo.iss'
 $outDir = Join-Path $root 'dist\publish'
@@ -181,7 +181,7 @@ Step '  可选：dist\publish\SHA256SUMS.txt（含安装包行，供人工/CI �
 
 Step ''
 Step '===== gh release create 命令模板（仅打印，不执行） ====='
-$ghCmd = ('gh release create {0} --repo lubenwei-lian/neo-desktop-release --title "neo {1} 电脑版" --notes-file <发布说明.md> "dist\installer\{2}" "dist\installer\{2}.sha256" "dist\build-info.json"' -f $Tag, $ver, $setupName)
+$ghCmd = ('gh release create {0} --repo lubenwei-lian/neo --title "neo Windows {1}" --notes-file <发布说明.md> "dist\installer\{2}" "dist\installer\{2}.sha256" "dist\build-info.json"' -f $Tag, $ver, $setupName)
 Step $ghCmd
 Step ''
 Step '确认无误后自行执行上面的 gh 命令；本脚本不会上传任何东西。'
