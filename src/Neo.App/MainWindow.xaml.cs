@@ -25,7 +25,7 @@ public sealed partial class MainWindow : Window
     /// 用户才能「跟着元素走」（Fluent motion 的 Connected 原则）。
     private int _navDir = 1;
 
-    private static readonly string[] _navOrder = { "conn", "nodes", "subs", "settings", "rule", "log" };
+    private static readonly string[] _navOrder = { "conn", "nodes", "subs", "sublog", "settings", "rule", "log" };
 
     /// 上一次做「切入动效」的那个页面元素。
     ///   否则它停在半路（偏移 20px、透明度 0.4）——用户再切回来看到的就是一页残缺界面。
@@ -81,6 +81,7 @@ public sealed partial class MainWindow : Window
             (NavConn, "conn"),
             (NavNodes, "nodes"),
             (NavSubs, "subs"),
+            (NavSubLog, "sublog"),
             (NavSettings, "settings"),
             (NavRule, "rule"),
             (NavLog, "log"),
@@ -969,11 +970,13 @@ public sealed partial class MainWindow : Window
     private SettingsPage? _pageSettings;
     private RulePage? _pageRule;
     private LogPage? _pageLog;
+    private SubLogPage? _pageSubLog;
 
     private FrameworkElement EnsurePage(string key) => key switch
     {
         "nodes" => EnsureNodesPage(),
         "subs" => EnsureSubsPage(),
+        "sublog" => EnsureSubLogPage(),
         "settings" => EnsureSettingsPage(),
         "rule" => EnsureRulePage(),
         "log" => EnsureLogPage(),
@@ -984,6 +987,7 @@ public sealed partial class MainWindow : Window
     {
         "nodes" => _pageNodes,
         "subs" => _pageSubs,
+        "sublog" => _pageSubLog,
         "settings" => _pageSettings,
         "rule" => _pageRule,
         "log" => _pageLog,
@@ -1018,6 +1022,15 @@ public sealed partial class MainWindow : Window
         var p = new SubsPage { Visibility = Visibility.Collapsed };
         PageHost.Children.Add(p);
         _pageSubs = p;
+        return p;
+    }
+
+    private SubLogPage EnsureSubLogPage()
+    {
+        if (_pageSubLog != null) return _pageSubLog;
+        var p = new SubLogPage { Visibility = Visibility.Collapsed };
+        PageHost.Children.Add(p);
+        _pageSubLog = p;
         return p;
     }
 
@@ -1061,7 +1074,7 @@ public sealed partial class MainWindow : Window
     {
         try { _pageIdleTimer?.Stop(); } catch { }
         try { LogBus.App($"内存优化：开始释放空闲页面（force={force}，当前页={_currentPage}）", "Debug"); } catch { }
-        foreach (var key in new[] { "nodes", "subs", "settings", "rule", "log" })
+        foreach (var key in new[] { "nodes", "subs", "sublog", "settings", "rule", "log" })
         {
             if (key == _currentPage)
             {
@@ -1090,6 +1103,7 @@ public sealed partial class MainWindow : Window
             {
                 case "nodes": _pageNodes?.Release(); break;
                 case "subs": _pageSubs?.Release(); break;
+                case "sublog": _pageSubLog?.Release(); break;
                 case "settings": _pageSettings?.Release(); break;
                 case "rule": _pageRule?.Release(); break;
                 case "log": _pageLog?.Release(); break;
@@ -1109,6 +1123,7 @@ public sealed partial class MainWindow : Window
         {
             case "nodes": _pageNodes = null; break;
             case "subs": _pageSubs = null; break;
+            case "sublog": _pageSubLog = null; break;
             case "settings": _pageSettings = null; break;
             case "rule": _pageRule = null; break;
             case "log": _pageLog = null; break;
@@ -1118,7 +1133,7 @@ public sealed partial class MainWindow : Window
     private void OnNavClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button b && b.Tag is string key &&
-            key is "conn" or "nodes" or "subs" or "settings" or "rule" or "log")
+            key is "conn" or "nodes" or "subs" or "sublog" or "settings" or "rule" or "log")
         {
             NavigateTo(key);
         }
@@ -1151,6 +1166,7 @@ public sealed partial class MainWindow : Window
             "conn" => "连接",
             "nodes" => "节点",
             "subs" => "订阅",
+            "sublog" => "订阅日志",
             "settings" => "设置",
             "rule" => "规则",
             "log" => "日志",
@@ -1763,6 +1779,7 @@ public sealed partial class MainWindow : Window
         try { _pageConn?.StopTimers(); } catch { }
         try { _pageSubs?.StopTimers(); } catch { }
         try { _pageLog?.StopTimers(); } catch { }
+        try { _pageSubLog?.StopTimers(); } catch { }
         try { _pageNodes?.StopTimers(); } catch { }
         try { _pageRule?.StopTimers(); } catch { }
         try { _pageSettings?.StopTimers(); } catch { }

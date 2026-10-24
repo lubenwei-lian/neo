@@ -4,7 +4,6 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Neo.App.Services;
 using Neo.Core;
@@ -39,9 +38,9 @@ public sealed partial class LogPage : UserControl
     }
 
 
-    private void OnLevelTapped(object sender, TappedRoutedEventArgs e)
+    private void OnLevelClick(object sender, RoutedEventArgs e)
     {
-        if (sender is Grid { Tag: string tag })
+        if (sender is Button { Tag: string tag })
         {
             _level = tag;
             UpdateChips();
@@ -49,7 +48,7 @@ public sealed partial class LogPage : UserControl
         }
     }
 
-    private void OnAutoScrollTapped(object sender, TappedRoutedEventArgs e)
+    private void OnAutoScrollClick(object sender, RoutedEventArgs e)
     {
         _autoScroll = !_autoScroll;
         UpdateChips();
@@ -173,21 +172,21 @@ public sealed partial class LogPage : UserControl
 
     private void UpdateChips()
     {
-        Apply(ChipAllBg, ChipAllText, _level == "All");
-        Apply(ChipDebugBg, ChipDebugText, _level == "Debug");
-        Apply(ChipInfoBg, ChipInfoText, _level == "Info");
-        Apply(ChipWarnBg, ChipWarnText, _level == "Warning");
-        Apply(ChipErrorBg, ChipErrorText, _level == "Error");
-        Apply(ChipScrollBg, ChipScrollText, _autoScroll);
+        Apply(ChipAll, _level == "All");
+        Apply(ChipDebug, _level == "Debug");
+        Apply(ChipInfo, _level == "Info");
+        Apply(ChipWarn, _level == "Warning");
+        Apply(ChipError, _level == "Error");
+        Apply(ChipScroll, _autoScroll);
     }
 
-    private static void Apply(Border bg, TextBlock text, bool on)
+    private static void Apply(Button chip, bool on)
     {
         var accent = ThemeUtil.Get("NeoAccent", Color.FromArgb(255, 0x25, 0x63, 0xEB));
         var onText = ThemeUtil.Get("NeoOnAccent", Colors.White);
         var text2 = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        bg.Background = on ? accent : new SolidColorBrush(Colors.Transparent);
-        text.Foreground = on ? onText : text2;
-        text.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+        chip.Background = on ? accent : new SolidColorBrush(Colors.Transparent);
+        chip.Foreground = on ? onText : text2;
+        chip.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
     }
 }

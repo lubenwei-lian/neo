@@ -185,7 +185,7 @@
                                 Width="236" Height="236" Click="OnRingTapped"
                                 HorizontalAlignment="Center"
                                 AutomationProperties.Name="连接 / 断开" />
-                        <!-- 2026-10-23：无感切换提示放圆环右侧留白，不压住圆环内的状态文字 -->
+                        
                         <TextBlock x:Name="RingSwitchHint" Text="" FontSize="12.5"
                                    Foreground="{ThemeResource NeoText2}"
                                    HorizontalAlignment="Right" VerticalAlignment="Center"

@@ -6,6 +6,21 @@
     xmlns:svc="using:Neo.App.Services">
 
     <UserControl.Resources>
+        <!-- 胶囊按钮：固定高度 + 内容垂直居中，避免按文字行高自适应时文字贴底/被裁切。 -->
+        <Style x:Key="ChipButton" TargetType="Button">
+            <Setter Property="Height" Value="26" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{ThemeResource NeoText2}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
         <Style x:Key="GhostSm" TargetType="Button">
             <Setter Property="Height" Value="30" />
             <Setter Property="Padding" Value="11,0" />
@@ -35,33 +50,22 @@
                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <Border CornerRadius="9" Background="{ThemeResource NeoGlass}" BorderBrush="{ThemeResource NeoGlassBorder}" BorderThickness="1" Padding="3">
                         <StackPanel Orientation="Horizontal" Spacing="3">
-                            <Grid Background="Transparent" Tapped="OnLevelTapped" Tag="All">
-                                <Border x:Name="ChipAllBg" CornerRadius="7" Background="{ThemeResource NeoAccent}" />
-                                <TextBlock x:Name="ChipAllText" Text="全部" FontSize="11.5" FontWeight="SemiBold" Foreground="White" Margin="10,5" />
-                            </Grid>
-                            <Grid Background="Transparent" Tapped="OnLevelTapped" Tag="Debug">
-                                <Border x:Name="ChipDebugBg" CornerRadius="7" Background="Transparent" />
-                                <TextBlock x:Name="ChipDebugText" Text="调试" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="10,5" />
-                            </Grid>
-                            <Grid Background="Transparent" Tapped="OnLevelTapped" Tag="Info">
-                                <Border x:Name="ChipInfoBg" CornerRadius="7" Background="Transparent" />
-                                <TextBlock x:Name="ChipInfoText" Text="信息" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="10,5" />
-                            </Grid>
-                            <Grid Background="Transparent" Tapped="OnLevelTapped" Tag="Warning">
-                                <Border x:Name="ChipWarnBg" CornerRadius="7" Background="Transparent" />
-                                <TextBlock x:Name="ChipWarnText" Text="警告" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="10,5" />
-                            </Grid>
-                            <Grid Background="Transparent" Tapped="OnLevelTapped" Tag="Error">
-                                <Border x:Name="ChipErrorBg" CornerRadius="7" Background="Transparent" />
-                                <TextBlock x:Name="ChipErrorText" Text="错误" FontSize="11.5" Foreground="{ThemeResource NeoText2}" Margin="10,5" />
-                            </Grid>
+                            <Button x:Name="ChipAll" Style="{StaticResource ChipButton}" Tag="All" Click="OnLevelClick"
+                                    Content="全部" Background="{ThemeResource NeoAccent}" Foreground="White" />
+                            <Button x:Name="ChipDebug" Style="{StaticResource ChipButton}" Tag="Debug" Click="OnLevelClick"
+                                    Content="调试" />
+                            <Button x:Name="ChipInfo" Style="{StaticResource ChipButton}" Tag="Info" Click="OnLevelClick"
+                                    Content="信息" />
+                            <Button x:Name="ChipWarn" Style="{StaticResource ChipButton}" Tag="Warning" Click="OnLevelClick"
+                                    Content="警告" />
+                            <Button x:Name="ChipError" Style="{StaticResource ChipButton}" Tag="Error" Click="OnLevelClick"
+                                    Content="错误" />
                         </StackPanel>
                     </Border>
 
-                    <Grid Background="Transparent" Tapped="OnAutoScrollTapped">
-                        <Border x:Name="ChipScrollBg" CornerRadius="7" Background="{ThemeResource NeoAccent}" />
-                        <TextBlock x:Name="ChipScrollText" Text="自动滚动" FontSize="11.5" FontWeight="SemiBold" Foreground="White" Margin="10,5" />
-                    </Grid>
+                    <Button x:Name="ChipScroll" Style="{StaticResource ChipButton}" Click="OnAutoScrollClick"
+                            Content="自动滚动" Background="{ThemeResource NeoAccent}" Foreground="White"
+                            VerticalAlignment="Center" />
 
                     <Button Style="{StaticResource GhostSm}" Click="OnClearClick">
                         <TextBlock Text="清空" FontSize="11.5" />

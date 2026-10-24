@@ -139,6 +139,21 @@
                                 </Grid>
                             </Grid>
                             <Grid>
+                                <Button x:Name="NavSubLog" Tag="sublog" Style="{StaticResource NavItemButton}" Click="OnNavClick" AutomationProperties.Name="订阅日志" />
+                                <Grid IsHitTestVisible="False" Margin="10,9,10,9" HorizontalAlignment="Stretch">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+                                        <TextBlock Text="&#xE81C;" Style="{StaticResource Glyph}" FontSize="15" />
+                                        <TextBlock Text="订阅日志" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="链路" FontSize="10" VerticalAlignment="Center"
+                                               Foreground="{ThemeResource NeoText3}" />
+                                </Grid>
+                            </Grid>
+                            <Grid>
                                 <Button x:Name="NavSettings" Tag="settings" Style="{StaticResource NavItemButton}" Click="OnNavClick" AutomationProperties.Name="设置" />
                                 <Grid IsHitTestVisible="False" Margin="10,9,10,9" HorizontalAlignment="Stretch">
                                     <Grid.ColumnDefinitions>

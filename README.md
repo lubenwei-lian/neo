@@ -1,17 +1,19 @@
 # neo
 
-Windows 上的代理客户端：主内核 xray，TUN 用自编译 sing-box，支持多节点并发加速。
+Windows 代理客户端（WinUI 3）。内置 xray 与 sing-box 双内核：系统代理走 xray，TUN 走 sing-box；支持订阅导入、规则分流、故障转移与内核更新。
 
 ## 功能
 
-- 订阅导入与节点管理（VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC）
-- 规则分流、全局代理、TUN 模式（全局接管）
-- 多节点并发：同一地区节点按实测吞吐分配流量（快节点多吃、慢节点也出力）
-- 实时流量图、连接详情、自动故障转移、内核一键更新（带 SHA-256 校验）
+- 订阅导入与节点管理：VMess / VLESS / Trojan / Shadowsocks / Hysteria2 / TUIC / AnyTLS / SOCKS5 / WireGuard；Clash 订阅与自定义 xray / sing-box 配置直通
+- 连接模式：系统代理、TUN 全局接管
+- 规则分流：绕过局域网/大陆、广告拦截、自定义规则
+- 节点测速（真实延迟 / TCP 握手）、故障转移、流量统计
+- 内核检查与更新（SHA-256 校验、失败回滚）、可选 mihomo / naive 内核按需下载
+- 托盘常驻、开机自启、安全模式
 
 ## 下载
 
-去 [Releases](https://github.com/lubenwei-lian/neo-desktop-release/releases) 下载 `neo-setup-*.exe`。
+见 [Releases](https://github.com/lubenwei-lian/neo-desktop-release/releases)。
 
 ## 构建
 
@@ -29,17 +31,13 @@ dotnet build src/Neo.App/Neo.App.csproj -c Release -p:Platform=x64
 |---|---|
 | `src/Neo.App` | WinUI 3 界面与服务 |
 | `src/Neo.Core` | 内核配置生成、订阅解析、测速等 |
-| `tools/` | 打包、启动器、内核构建脚本 |
+| `src/Neo.Cli` | 命令行工具 |
+| `tools/` | 打包、启动器、分流数据生成 |
 | `installer/` | Inno Setup 安装脚本 |
-| `doc/内核补丁-20261018/` | 自编译 sing-box 的补丁与构建说明 |
 
-## 内核
+## 内核与许可
 
-- **xray**：官方发布版（MPL-2.0），运行时从官方 release 更新。
-- **sing-box**：自编译版（GPL-3.0），在官方 1.14.2 基础上加入 balancer 出站，用于 TUN 多节点并发。
-  补丁与构建方式见 `doc/内核补丁-20261018/`，构建脚本 `tools/build-singbox.ps1`。
+- **xray**：官方发行版（MPL-2.0），运行时从官方发布更新。
+- **sing-box**：官方发行版（GPL-3.0），运行时从本项目发布通道更新。
 
-## 许可
-
-本仓库自有代码采用 MIT 许可证（见 [LICENSE](LICENSE)）。
-第三方组件与内核的许可证见 [NOTICE](NOTICE)。
+本仓库自有代码采用 MIT 许可证（见 [LICENSE](LICENSE)）；第三方组件与内核许可证见 [NOTICE](NOTICE)。

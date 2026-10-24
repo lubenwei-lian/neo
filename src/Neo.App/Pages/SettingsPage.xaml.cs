@@ -594,7 +594,7 @@ public sealed partial class SettingsPage : UserControl
         AppState.State.UseRustConfig = SwitchUseRust.IsOn;
         AppState.Save();
         LogBus.App(SwitchUseRust.IsOn
-            ? "已开启「用 Rust 生成配置」（M2 阶段 2，下次连接生效；失败自动回退 C#）"
+            ? "已开启「用 Rust 生成配置」（下次连接生效；失败自动回退 C#）"
             : "已关闭「用 Rust 生成配置」，恢复 C# 构建器");
         _ = ConnectionService.ReloadForSettingsAsync();
     }
@@ -1428,7 +1428,11 @@ public sealed partial class SettingsPage : UserControl
         SingBoxVersionHint.Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
 
         // mihomo（第三内核）：只展示安装状态/版本，不参与拨号。
-        MihomoVersionHint.Text = KernelCatalog.IsInstalled(CoreEngine.Mihomo)
+        var mihomoInstalled = KernelCatalog.IsInstalled(CoreEngine.Mihomo);
+        MihomoVersionText.Text = mihomoInstalled
+            ? (KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "版本未知")
+            : "未安装";
+        MihomoVersionHint.Text = mihomoInstalled
             ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Mihomo)}"
             : "可选内核 · 未安装（按需下载）";
 

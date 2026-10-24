@@ -173,9 +173,7 @@
                         </Border>
                     </Grid>
 
-                    <!-- ★ 2026-10-23：内核/数据下载的**页内进度条**（不再用弹窗）。
-                         用户反馈「更新时没有进度、会误导」→ 所有下载任务的百分比、速度、已下载量
-                         直接显示在这里；取消按钮 = 暂停并保留断点（下次更新续传）。 -->
+                    
                     <StackPanel x:Name="KernelTaskPanel" Visibility="Collapsed" Margin="0,2,0,8" Spacing="6">
                         <Grid>
                             <TextBlock
@@ -321,6 +319,17 @@
                             <TextBlock x:Name="MihomoVersionHint" Text="可选内核 · 未安装（按需下载）" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Border MinWidth="96" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0">
+                                <TextBlock
+                                    x:Name="MihomoVersionText"
+                                    Text="—"
+                                    FontSize="11.5"
+                                    FontFamily="{StaticResource NeoMonoFont}"
+                                    Foreground="{ThemeResource NeoText1}"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Center"
+                                />
+                            </Border>
                             <Button x:Name="BtnCheckMihomoUpdate" Style="{StaticResource GhostSm}" Click="OnCheckMihomoUpdateClick">
                                 <TextBlock Text="检查更新" FontSize="11.5" />
                             </Button>
@@ -709,7 +718,7 @@
                             <Grid MinHeight="44" Padding="0,9">
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="用 Rust 生成配置（实验）" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                                    <TextBlock Text="M2 阶段 2：sing-box 配置改由 Rust 生成；失败自动回退 C#（下次连接生效）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                                    <TextBlock Text="sing-box 配置改由 Rust 生成（实验）；失败自动回退 C#（下次连接生效）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
                                 </StackPanel>
                                 <ToggleSwitch x:Name="SwitchUseRust" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnUseRustToggled" />
                             </Grid>

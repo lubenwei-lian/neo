@@ -602,7 +602,7 @@ public static class ConnectionService
             }
             json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
             if (rustConfigUsed)
-                LogBus.App($"本次连接使用 Rust 生成的配置（M2 阶段 2）：{node.Name} · TUN={(useTun ? "开" : "关")}");
+                LogBus.App($"本次连接使用 Rust 生成的配置：{node.Name} · TUN={(useTun ? "开" : "关")}");
         }
 
         //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。

@@ -11,7 +11,7 @@ namespace Neo.App.Services;
 public sealed record XrayRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string? Sha256 = null);
 
 /// sing-box 内核发布。通道 = **上游官方 SagerNet/sing-box 稳定版**（releases/latest）。
-///   电脑版只用官方发行版；手机版的自编译内核与本项目无关。
+///   Windows 版只用官方发行版；Android 版的自编译内核与本项目无关。
 ///   官方资产形如 `sing-box-1.14.3-windows-amd64.zip`（zip 内含 sing-box.exe + libcronet.dll + LICENSE），
 ///   上游不提供 .sha256：安装做「可解压 + 内含 exe + version 版本串自校验」，sha256 仅记录追溯，不作为放行条件。
 public sealed record SingBoxRelease(string Version, string Tag, string DownloadUrl, long SizeBytes, bool Prerelease, string AssetName = "", string? Sha256 = null);
@@ -26,7 +26,7 @@ public static class UpdateChecker
     private const string XrayOwner = "XTLS";
     private const string XrayRepo = "Xray-core";
 
-    /// <summary>sing-box 上游官方发布仓库（电脑版内核只走官方稳定通道）。</summary>
+    /// <summary>sing-box 上游官方发布仓库（Windows 版内核只走官方稳定通道）。</summary>
     private const string SingBoxOwner = "SagerNet";
     private const string SingBoxRepo = "sing-box";
 
@@ -178,7 +178,7 @@ public static class UpdateChecker
         if (rel == null)
             return (false,
                 $"检查 sing-box 内核更新失败：{_lastSingBoxFetchIssue ?? "网络不可达"}。\n\n" +
-                "说明：电脑版使用上游官方 SagerNet/sing-box **稳定版**（releases/latest），" +
+                "说明：Windows 版使用上游官方 SagerNet/sing-box **稳定版**（releases/latest），" +
                 "只从 Windows amd64 资产更新；若上游该版本没有 windows-amd64 资产，或当前网络不可达，请稍后再试。",
                 null);
 

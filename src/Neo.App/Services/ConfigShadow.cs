@@ -34,7 +34,7 @@ public static class ConfigShadow
             if (!File.Exists(cli))
             {
                 if (Interlocked.Exchange(ref _missingCliWarned, 1) == 0)
-                    LogBus.App("配置影子模式（M2 阶段1）：未找到 neo-cli.exe，跳过 Rust 对照（不影响连接）", "Debug");
+                    LogBus.App("配置影子模式：未找到 neo-cli.exe，跳过 Rust 对照（不影响连接）", "Debug");
                 return;
             }
             var sequence = Interlocked.Increment(ref _sequence);
@@ -95,11 +95,11 @@ public static class ConfigShadow
 
             if (blocking.Count == 0)
             {
-                TryLog($"配置影子模式（M2 阶段1）：与 Rust 一致（字段差异 0；仅已知 inbounds 差异 {known} 项）· {node.Name} · TUN={(tun ? "开" : "关")}", "Debug");
+                TryLog($"配置影子模式：与 Rust 一致（字段差异 0；仅已知 inbounds 差异 {known} 项）· {node.Name} · TUN={(tun ? "开" : "关")}", "Debug");
             }
             else
             {
-                TryLog($"配置影子模式（M2 阶段1）：发现 {blocking.Count} 项 C#/Rust 差异 · {node.Name} · 首项：{Shorten(blocking[0], 200)}", "Warning");
+                TryLog($"配置影子模式：发现 {blocking.Count} 项 C#/Rust 差异 · {node.Name} · 首项：{Shorten(blocking[0], 200)}", "Warning");
             }
             AppendReport(node, tun, blocking, known, diffs, sequence);
         }

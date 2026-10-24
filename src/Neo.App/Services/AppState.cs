@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Neo.Core;
@@ -643,8 +644,9 @@ public static class AppState
     ///   server=127.0.0.1:6666，名字里写「使用的设备过多 / 请去官网获取新订阅链接」。
     /// 如果照常写进缓存，就会把用户原来能用的 68 个节点覆盖成 3 个本机假节点 —— 直接连不上。
     /// 因此这里必须识别并拒绝覆盖，提示用户去商家处理。
-    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes, string? rawText = null)
+    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes, string? rawText, out string? detail)
     {
+        detail = "否";
         try
         {
             var rust = Neo.Core.Bridge.RustCoreBridge.TryDetectPlaceholder(rawText ?? "", nodes);
@@ -652,6 +654,7 @@ public static class AppState
             {
                 if (rust.Placeholder)
                 {
+                    detail = "是（" + (string.IsNullOrWhiteSpace(rust.Reason) ? "Rust 判定" : rust.Reason) + "）";
                     LogBus.App($"订阅占位判定（Rust）：{rust.Reason}", "Debug");
                     return true;
                 }
@@ -671,10 +674,36 @@ public static class AppState
         {
             if (n.Server is "127.0.0.1" or "::1" or "localhost") local++;
             foreach (var h in hints)
-                if ((n.Name ?? "").Contains(h, StringComparison.Ordinal)) return true;
+                if ((n.Name ?? "").Contains(h, StringComparison.Ordinal))
+                {
+                    detail = "是（节点名包含商家提示）";
+                    return true;
+                }
         }
+        if (local == physical.Count) detail = "是（节点全部指向本机）";
         return local == physical.Count;
     }
+
+    /// <summary>从拉取失败原因里区分 HTTP 状态与「解析失败」两类，供订阅日志展示。</summary>
+    private static (string Http, string? ParseError) ClassifyFetchFailure(string? error)
+    {
+        var text = (error ?? "").Trim();
+        var m = System.Text.RegularExpressions.Regex.Match(text, @"\bHTTP\s+(\d{3})\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success) return (m.Groups[1].Value, null);
+        if (LooksLikeParseFailure(text)) return ("2xx", text);
+        return ("—", null);
+    }
+
+    private static bool LooksLikeParseFailure(string text)
+        => text.Contains("未解析", StringComparison.Ordinal)
+        || text.Contains("解析", StringComparison.Ordinal)
+        || text.Contains("格式", StringComparison.Ordinal)
+        || text.Contains("网页", StringComparison.Ordinal)
+        || text.Contains("SIP008", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("Clash", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("WireGuard", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("订阅内容为空", StringComparison.Ordinal);
 
     private const string ProviderPlaceholderMessage =
         "订阅返回的是商家占位节点（常见原因：设备数量超限 / 订阅链接被重置）。已保留原有节点；请到商家官网获取新订阅链接，或释放其他设备的占用后重试。";
@@ -704,14 +733,21 @@ public static class AppState
 
         foreach (var sub in enabled)
         {
+            var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "全部刷新");
+            var sw = Stopwatch.StartNew();
             var r = await SubscriptionFetcher.FetchAsync(sub.Url);
+            sw.Stop();
+
             if (r.Success)
             {
-                if (IsProviderPlaceholder(r.Nodes, r.RawText))
+                bool placeholder = IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail);
+                if (placeholder)
                 {
                     LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
                     IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
                     errors.Add($"{sub.Name}：{ProviderPlaceholderMessage}");
+                    SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
+                        placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
                     continue;
                 }
                 cache[sub.Id] = r.RawText ?? "";
@@ -724,11 +760,16 @@ public static class AppState
                 sub.LastFetchUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
                 okCount++;
                 LogBus.App($"订阅 [{sub.Name}] 更新成功 · {r.Nodes.Count} 个节点 · 流量 {sub.TrafficInfo}");
+                SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
+                    placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
             }
             else
             {
+                var (http, parseError) = ClassifyFetchFailure(r.Error);
                 errors.Add($"{sub.Name}：{r.Error}");
                 LogBus.App($"订阅 [{sub.Name}] 更新失败：{r.Error}", "Warning");
+                SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
+                    "未判定", sw.Elapsed.TotalMilliseconds);
             }
         }
 
@@ -752,12 +793,24 @@ public static class AppState
         var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
         if (sub == null) return (false, "订阅不存在");
 
+        var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "单条刷新");
+        var sw = Stopwatch.StartNew();
         var r = await SubscriptionFetcher.FetchAsync(sub.Url);
-        if (!r.Success) return (false, r.Error);
-        if (IsProviderPlaceholder(r.Nodes, r.RawText))
+        sw.Stop();
+
+        if (!r.Success)
+        {
+            var (http, parseError) = ClassifyFetchFailure(r.Error);
+            SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
+                "未判定", sw.Elapsed.TotalMilliseconds);
+            return (false, r.Error);
+        }
+        if (IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail))
         {
             LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
             IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
+            SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
+                placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
             return (false, ProviderPlaceholderMessage);
         }
 
@@ -779,6 +832,8 @@ public static class AppState
         LastFetchLocal = DateTime.Now;
         RebuildNodes();
         NotifySubscriptionUpdatedSafe();
+        SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
+            placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
         return (true, null);
     }
 

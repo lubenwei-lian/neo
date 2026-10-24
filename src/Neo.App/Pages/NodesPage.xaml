@@ -51,8 +51,11 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe Fluent Icons" FontSize="14"
                                Foreground="{ThemeResource NeoText2}" VerticalAlignment="Center" />
+                    <!-- TextBox 默认模板不处理 VerticalContentAlignment：单行文字靠内边距压到竖直中线，
+                         与外层放大镜图标/占位文字对齐。 -->
                     <TextBox x:Name="SearchBox" Grid.Column="1" Height="38" Background="Transparent" BorderThickness="0"
-                             Padding="0" FontSize="12.5" VerticalAlignment="Center" VerticalContentAlignment="Center"
+                             Padding="0,10.5,0,0" FontSize="12.5" FontFamily="{StaticResource NeoFont}"
+                             TextWrapping="NoWrap" VerticalAlignment="Center" VerticalContentAlignment="Center"
                              TextChanged="OnSearchChanged" />
                     <TextBlock x:Name="SearchPlaceholder" Grid.Column="1" Text="搜索节点名称、协议或地区…"
                                FontSize="12.5" Foreground="{ThemeResource NeoText3}" VerticalAlignment="Center"
