@@ -1,7 +1,6 @@
 namespace Neo.Core;
 
 /// <summary>
-/// 本地入站端口的运行期真源（2026-10-23 可配置化）：
 /// 之前全仓直接引用 XrayConfigBuilder.DefaultSocksPort 等常量，用户无法改；现在 UI 可改，
 /// 运行期统一读这里，state.json 持久化后由 AppState.Load 写入。
 /// 约束：socks / http 不能相同，也不能占用统计端口（21810）与 Clash API（21811）。
@@ -53,7 +52,6 @@ public static class LocalPorts
         if (socks < 1024 || socks > 65535) return "SOCKS 端口需在 1024–65535";
         if (http < 1024 || http > 65535) return "HTTP 端口需在 1024–65535";
         if (socks == http) return "SOCKS 与 HTTP 端口不能相同";
-        // 2026-10-23 审计 P1-7：槽位端口（21910/21911/21821）与 naive 端口也不能被用户端口占用，
         // 否则连接时 EnsureRelays 会抛 SocketException，留下「内核在跑但未连接」的半状态。
         var reserved = new[]
         {
@@ -62,7 +60,6 @@ public static class LocalPorts
         };
         if (reserved.Contains(socks) || reserved.Contains(http))
             return $"不能占用保留端口（统计 {FixedStatsApi}+ / Clash API {FixedClashApi}+ / 槽位 / naive {NaiveListen}）";
-        // 2026-10-24 审查 P1-2：还要校验槽位派生端口（socks/http ±100/110）。
         //   否则用户把 HTTP 设成 21908 这类值时，内核/中继会抢同一端口，连接时抛 SocketException，
         //   留下「内核在跑但未连接」的半启动态。
         if (socks + 110 > 65535 || http + 110 > 65535)

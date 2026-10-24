@@ -8,13 +8,11 @@ namespace Neo.App.Services;
 /// 本地端口中继：监听用户配置的 socks/http 端口（21808/21809），把连接转发到
 /// 当前「活跃内核」的内部端口（21908/21909）。
 ///
-/// 为什么需要（2026-10-23 无感切换改造）：
 ///   切换节点原本必须「停旧内核 → 起新内核」，中间 3～4 秒完全断网。
 ///   加了这一层之后，用户端口固定由本类监听，内核端口只是「后端」；
 ///   切换时只改后端指针 —— 新连接立刻走新内核，已建立的连接继续用旧内核直到自然结束，
 ///   旧内核延迟关闭。用户全程不需要重连，也不需要改系统代理。
 ///
-/// 2026-10-24 审查 P1-5 修复：socks 端口同时中继 SOCKS5 UDP ASSOCIATE。
 ///   旧实现只转发 TCP：客户端握手被透传给后端内核，拿到的 BND 是内核自己的回环 UDP 端口。
 ///   后果：① 本机应用「碰巧能用」（直接连 127.0.0.1 的内核端口），但流量绕过了中继；
 ///         ② 「允许局域网连接」时局域网客户端拿到 127.0.0.1，UDP 直接不可用；
@@ -37,7 +35,6 @@ public sealed class PortRelay : IDisposable
     private readonly int _listenPort;
     private readonly IPAddress _listenAddress;
     private readonly Action<int>? _onBackendFail;
-    // P2-1（审计）：不能 readonly —— Stop() 会 Cancel 它，若同一实例再 Start()，
     // AcceptLoopAsync 拿到的是已取消的 token，端口在监听但永不接受连接。
     private CancellationTokenSource _cts = new();
     private TcpListener? _listener;
@@ -47,7 +44,6 @@ public sealed class PortRelay : IDisposable
     /// <summary>按后端端口统计的活跃连接数（用于「等旧内核的连接全部结束再退役」）。</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> _activeByBackend = new();
 
-    // ---- SOCKS5 UDP ASSOCIATE 中继（2026-10-24 P1-5）----
     private readonly object _udpSync = new();
     private Socket? _udpRelay;
     private Task? _udpLoop;
@@ -78,14 +74,12 @@ public sealed class PortRelay : IDisposable
     public void Start()
     {
         if (_running) return;
-        // P2-1：上一次 Stop() 已经 Cancel 过 _cts，这里必须换一个新的，
         // 否则新循环立刻读到取消状态退出（表现为「端口在监听、连上就卡死」）。
         if (_cts.IsCancellationRequested)
         {
             try { _cts.Dispose(); } catch { }
             _cts = new CancellationTokenSource();
         }
-        // 2026-10-24 审查 P1-5：跟随「允许局域网连接」决定监听回环还是全部网卡。
         _listener = new TcpListener(_listenAddress, _listenPort);
         _listener.Start(512);
         _running = true;
@@ -573,7 +567,6 @@ public sealed class PortRelay : IDisposable
             var up = PumpAsync(client.GetStream(), backend.GetStream(), ct);
             var down = PumpAsync(backend.GetStream(), client.GetStream(), ct);
             await Task.WhenAny(up, down).ConfigureAwait(false);
-            // 2026-10-24 审查 P2-12：一个方向结束后，另一方向可能还有未读数据（半关闭场景：
             //   FTP、部分游戏/长轮询）。原实现立即 Dispose 会截断；这里给另一方向最多 5 秒
             //   把剩余数据吐完再收尾，超时则按原行为关闭。
             try { await Task.WhenAll(up, down).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }

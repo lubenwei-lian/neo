@@ -10,14 +10,12 @@ using Neo.Core.Models;
 namespace Neo.App.Services;
 
 /// <summary>
-/// M2 阶段 1「只读影子模式」：每次连接生成 sing-box 配置后，把同一份「节点 + 选项」交给
 /// Rust 版 neo-cli（同目录 neo-cli.exe）再生成一份配置，做字段级 diff，只写日志，**不生效**。
 ///
 /// 目的：用真实订阅/真实设置持续发现 C# 与 Rust 配置生成的漂移；失败不影响连接（全部 try/catch，
 /// 后台任务 15 秒超时）。阶段 2 起 Rust 支持 `inboundsMode=socksHttp`，影子输入也用它，
 /// 因此正常情况下应为 0 字段差异（见 neo-rust/docs/11）。
 ///
-/// 部署前提：把 neo-cli.exe 放到 app\runtime\ 目录（M2 阶段 1 手工放置；阶段 2 再进安装包）。
 /// </summary>
 public static class ConfigShadow
 {

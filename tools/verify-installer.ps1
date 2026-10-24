@@ -38,7 +38,6 @@ function Check([string]$name, [bool]$ok, [string]$detail = "") {
     else { Write-Host "  FAIL  $name $detail"; $script:fail++ }
 }
 function Wait-Setup([string]$setup, [string[]]$setupArgs) {
-    # 2026-10-24 修复：Start-Process 不会为含空格的参数自动加引号。
     #   "/DIR=E:\Program Files\neo" 会被拆成 "/DIR=E:\Program" + "Files\neo" 两个参数，
     #   安装器于是装到了 E:\Program（实测过）。这里统一给含空格的参数补外层引号。
     $quoted = @($setupArgs | ForEach-Object {

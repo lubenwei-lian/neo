@@ -10,7 +10,6 @@ namespace Neo.Core.Core;
 /// 「TCP 握手延迟」快速测速（Tcping）：**不启内核、不发 HTTP**，
 /// 只对节点 (地址, 端口) 做 TcpClient.ConnectAsync 并计时，几秒内可测完全部节点。
 ///
-/// 返回语义（键为本轮传入的 NodeItem）：
 ///   0  = 未测（跳过）：hy2/TUIC 等 UDP 协议没有 TCP 端口；或节点地址/端口无效。
 ///   -1 = 超时 / 连不上 / 域名解析失败 / 总预算耗尽仍未测。
 ///   >0 = 实际 TCP 建连耗时（毫秒，不含 DNS 解析；DNS 在测试前单独预热解析）。
@@ -60,7 +59,6 @@ public static class TcpDelayTester
         foreach (var node in nodes)
         {
             if (node == null) continue;
-            //   ★ 2026-10-23 第二批补 mKCP：mKCP 是 UDP 传输，服务端通常不监听 TCP，
             //   测出来的「超时」不代表节点坏（UDP 类协议本来就没有 TCP 端口）。
             if (!node.IsValid
                 || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC

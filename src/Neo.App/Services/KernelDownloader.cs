@@ -32,7 +32,6 @@ public sealed record DownloadProgress(long Received, long Total, double BytesPer
 
 /// <summary>
 /// 内核/数据文件下载器：**断点续传 + 实时进度 + 哈希校验**。
-/// 为什么需要它（2026-10-23 用户反馈）：
 ///   · 旧实现是 HttpClient.GetByteArrayAsync：下载 20–60 MB 期间**没有任何进度**，
 ///     UI 只能干等，用户会以为卡死/被误导；
 ///   · 没有续传：网络一抖/用户取消就要从头再来；校园网/热点下 32KB/s 时等于永远下不完；

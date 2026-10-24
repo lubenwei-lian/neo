@@ -31,7 +31,6 @@ public static class SingBoxConfigBuilder
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = MapLevel(logLevel), ["timestamp"] = true },
-            // 2026-10-24 审查 P2-7：非 TUN 会话的 DNS 不经过 sing-box（系统代理模式由系统解析），
             //   生成 fakeip server/rules 纯属冗余，直接关掉。
             ["dns"] = BuildDns(dnsServer, useFakeIp: false),
             ["inbounds"] = new JsonArray(
@@ -65,7 +64,6 @@ public static class SingBoxConfigBuilder
         bool bypassCn, bool blockAds, bool allowLan, IReadOnlyList<RouteRule>? customRules, string logLevel, string dnsServer,
         bool gameDirectEnabled, IReadOnlyList<string>? gameDirectProcesses)
     {
-        // 2026-10-22 TUN 性能评估（sing-box 1.14.2/1.14.3 官方文档；稳定优先，本轮未改运行参数）
         //   · stack=mixed：官方表格明确 mixed = system TCP + gvisor UDP，且 gvisor 构建下默认即 mixed；
         //     system 只是把 UDP 也交给系统栈，性能/兼容收益未实测 → 保持 mixed。
         //     https://github.com/SagerNet/sing-box/blob/v1.14.2/docs/configuration/inbound/tun.md#stack
@@ -94,7 +92,6 @@ public static class SingBoxConfigBuilder
         return new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = MapLevel(logLevel), ["timestamp"] = true },
-            // 2026-10-24 审查 P1-8：TUN inbound 只配置了 IPv4 地址/路由，不要让 DNS 下发 fake IPv6，
             //   同时把 AAAA 统一回 NODATA（见 BuildDns 的 ipv4OnlyTun 分支），应用不再等真实 IPv6。
             ["dns"] = BuildDns(dnsServer, ipv6FakeIp: false, ipv4OnlyTun: true),
             ["inbounds"] = new JsonArray(
@@ -237,7 +234,6 @@ public static class SingBoxConfigBuilder
         var o = new JsonObject
         {
             ["tag"] = "proxy",
-            // ★ 2026-10-23 IPv6 方括号：vless/trojan 的 uri.Host 会带 []（.NET 行为），写进 outbound 前统一剥掉。
             //   xray 侧同一问题由 ShareLinkParser/ClashYamlParser 在解析阶段剥（Xray 构建器不在本次写入范围）。
             ["server"] = StripBrackets(n.Server),
             ["server_port"] = n.Port,
@@ -247,7 +243,6 @@ public static class SingBoxConfigBuilder
         switch (n.Protocol)
         {
             case NodeProtocol.VLESS:
-                // ★ 2026-10-23 第二批：sing-box 1.14.3 的 vless 出站没有 encryption 字段
                 //   （实测报错 json: unknown field "encryption"，台账 F1）→ 带 VLESS 后量子加密的节点
                 //   绝不能静默生成一份「不带加密」的 outbound（那样能启动但握手必失败）。
                 if (!string.IsNullOrEmpty(n.VlessEncryption) &&
@@ -283,7 +278,6 @@ public static class SingBoxConfigBuilder
                 o["type"] = "shadowsocks";
                 o["method"] = n.Method ?? "aes-128-gcm";
                 o["password"] = n.Password ?? "";
-                // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：sing-box 1.14 的 shadowsocks 出站支持
                 //   `plugin` / `plugin_opts` 两个字段（SIP003，如 obfs-local / v2ray-plugin / shadow-tls）。
                 //   旧实现把 ss 的 plugin 只塞在 Extras["query"]、全仓无读取方 → 插件节点被静默降级成裸 SS
                 //   （能导入、必连不上）。字段名已按 sing-box 1.14 文档核对（内核文档即此二字段）。
@@ -301,7 +295,6 @@ public static class SingBoxConfigBuilder
                 ApplyTls(o, n, forceTls: true);
                 if (n.Extras.TryGetValue("obfs", out var obfs) && !string.IsNullOrEmpty(obfs))
                 {
-                    // ★ 2026-10-23 第二批：gecko 混淆。
                     //   sing-box 1.14.3 实测支持 obfs.type=gecko + min_packet_size/max_packet_size（台账 F1）；
                     //   旧实现只写 type=obfs 值，从不带分片大小 → 对端按 gecko 校验分片，必连不上。
                     var isGecko = obfs.Equals("gecko", StringComparison.OrdinalIgnoreCase)
@@ -316,7 +309,6 @@ public static class SingBoxConfigBuilder
                     }
                     o["obfs"] = ob;
                 }
-                // ★ 2026-10-23 hy2 端口跳跃（标准写法 host:443,5000-6000）：
                 //   sing-box 1.14 的 hysteria2 出站字段是 `server_ports`（字符串数组），区间写成 "start:end"。
                 //   优先用分享链接解析出的 server_ports；兼容旧的 mport=20000-30000 查询参数写法。
                 var portsRaw = "";
@@ -329,14 +321,12 @@ public static class SingBoxConfigBuilder
                 break;
 
             case NodeProtocol.AnyTls:
-                // ★ 2026-10-23 第二批：anytls 出站（sing-box 1.10+，实测 1.14.3 接受；xray 无此协议）。
                 o["type"] = "anytls";
                 o["password"] = n.Password ?? "";
                 ApplyTls(o, n, forceTls: true);
                 break;
 
             case NodeProtocol.Socks:
-                // ★ 2026-10-23 第二批：socks5 出站（socks:// 分享链接；sing-box 1.14 实测接受）。
                 o["type"] = "socks";
                 if (!string.IsNullOrEmpty(n.Username)) o["username"] = n.Username;
                 if (!string.IsNullOrEmpty(n.Password)) o["password"] = n.Password;
@@ -405,7 +395,6 @@ public static class SingBoxConfigBuilder
             if (arr.Count > 0) tls["alpn"] = arr;
         }
 
-        // ★ 2026-10-23 第二批：ECH（分享链接 ech= / Clash ech-opts）。
         //   sing-box 1.14.3 实测接受 tls.ech = { enabled, config: [PEM 块] }（台账 F1），
         //   PEM 包法按 sing-box 文档的 ECH 格式。
         //   带 "://" 的写法（用 DoH 查 ECH 配置）需要额外的 dns server 配置，本版不支持 → 跳过并维持原行为。
@@ -461,7 +450,6 @@ public static class SingBoxConfigBuilder
                 break;
 
             case "httpupgrade":
-                // ★ 2026-10-23 第二批：HTTPUpgrade 传输（sing-box 实测接受，台账 F1）。
                 var hu = new JsonObject
                 {
                     ["type"] = "httpupgrade",
@@ -474,7 +462,6 @@ public static class SingBoxConfigBuilder
             case "xhttp":
             case "kcp":
             case "mkcp":
-                // ★ 2026-10-23 第二批：这两种传输只有 xray 支持（sing-box 1.14.3 实测：
                 //   transport.type=xhttp → unknown transport type；mKCP 完全没有）。
                 //   必须显式抛错，绝不能静默生成一份「走 tcp」的 outbound —— 那会表现为
                 //   「TUN 下能连上但所有域名超时」，比直接报错难排查得多。
@@ -523,7 +510,6 @@ public static class SingBoxConfigBuilder
         // 放在 servers 最前面（与探针 fix1 的顺序一致）。
         var servers = new JsonArray();
 
-        // 2026-10-24 性能修复（对照 0.2.1 实测）：
         //   0.2.1 用 xray 的 domainStrategy=AsIs —— 域名不本地解析、直接交给代理；
         //   0.2.4 之后改成「所有国外域名走 8.8.8.8 DoH（detour=proxy）」，
         //   每个新域名先绕代理做一次 DoH，超时就是 10 秒（日志实锤 dns: exchange failed ... context deadline exceeded）。
@@ -538,7 +524,6 @@ public static class SingBoxConfigBuilder
                 ["tag"] = "dns-fakeip",
                 ["inet4_range"] = "198.18.0.0/15",
             };
-            // 2026-10-24 审查 P1-8：TUN 没有 IPv6 接管能力时不下发 fake AAAA，避免 happy-eyeballs 先试 IPv6 失败。
             if (ipv6FakeIp) fakeIp["inet6_range"] = "fc00::/18";
             servers.Add(fakeIp);
         }
@@ -582,10 +567,8 @@ public static class SingBoxConfigBuilder
         //   两边都不好伺候，这里改用域名后缀等价表达「私网域名走直连解析」。
         var rules = new JsonArray();
 
-        // 2026-10-24 审查 P1-8 剩余项：TUN 只有 IPv4 地址/路由时，AAAA 一律回 NODATA（NOERROR + 空答案）。
         //   之前 AAAA 落到 final=dns-remote：经代理 DoH 拿回真实 IPv6（实测 1.66 秒、8 条 AAAA），
         //   但 TUN 没有 IPv6 接管能力 → happy-eyeballs 先试 IPv6 必然失败，首包被拖慢
-        //   （审查报告里 Steam 直连 IPv6 探测 8 个地址 40 秒超时即此类）。回 NODATA 让应用立即回落 IPv4。
         //   必须放最前面：否则内网后缀/geosite 的 AAAA 仍会绕回真实 IPv6。
         if (ipv4OnlyTun)
             rules.Add(new JsonObject
@@ -597,7 +580,6 @@ public static class SingBoxConfigBuilder
 
         rules.Add(new JsonObject
         {
-            // 2026-10-24 审查 P2-7：补 .home/.corp/.intranet，避免 router.home、nas 等内网名落到 fakeip→代理。
             ["domain_suffix"] = new JsonArray(".local", ".lan", ".home.arpa", ".home", ".corp", ".intranet", ".internal", ".localdomain"),
             ["server"] = "dns-direct",
         });
@@ -616,7 +598,6 @@ public static class SingBoxConfigBuilder
             ["server"] = "dns-direct",
         });
 
-        // 2026-10-24 审查 P2-7：HTTPS/SVCB 查询不绕代理 DoH（节点慢时浏览器每个域名多等 10 秒）；
         //   单标签内网主机名（nas、printer）同理，不能落到 final=dns-remote。
         rules.Add(new JsonObject
         {
@@ -634,7 +615,6 @@ public static class SingBoxConfigBuilder
         if (fakeIp != null)
             rules.Add(new JsonObject
             {
-                // 2026-10-24 审查 P1-8：TUN 只有 IPv4 时只对 A 下发 fakeip；AAAA 已被前面的 ipv4OnlyTun 规则拦成 NODATA。
                 ["query_type"] = ipv6FakeIp ? new JsonArray("A", "AAAA") : new JsonArray("A"),
                 ["server"] = "dns-fakeip",
             });

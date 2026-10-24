@@ -99,14 +99,12 @@ public sealed class NodeItem
     /// UI 统一口径：按「真连测速」开关选主口径，主口径没有结果（0=未测）时回退到另一口径。
     /// 为什么必须回退：hy2/TUIC/mKCP 是 UDP 协议、没有 TCP 端口，TcpDelay 永远是 0（跳过）；
     /// 只按开关取值的话，即使真连测出了延迟，卡片/排序/连接页下拉也全都显示「未测速」
-    /// （2026-10-23 用户反馈：测出来了但界面不显示）。
     /// </summary>
     public int DisplayDelay(bool preferReal)
         => preferReal
             ? (RealDelay != 0 ? RealDelay : TcpDelay)
             : (TcpDelay != 0 ? TcpDelay : RealDelay);
 
-    // ================= 2026-10-23 第二批：协议能力字段 =================
     // 说明：以下字段全部可空/默认值，旧 state 与旧订阅缓存反序列化后保持原行为。
 
     /// <summary>socks5 用户名（仅 NodeProtocol.Socks 使用；也可用于其它需要认证的协议）。</summary>
@@ -236,7 +234,6 @@ public sealed class NodeItem
         ? Extras.TryGetValue("yaml_path", out var y) && !string.IsNullOrWhiteSpace(y) && File.Exists(y)
         : IsCustomConfig
         ? Extras.TryGetValue("config_path", out var cp) && !string.IsNullOrWhiteSpace(cp) && File.Exists(cp)
-        // P2-5（审计）：补端口上界。订阅里出现 70000 这类越界端口时，原实现判「有效」并写进配置，
         // 内核启动失败后用户根本看不出是坏数据，坏节点还会占列表、进测速与故障转移候选。
         : !string.IsNullOrWhiteSpace(Server) && Port is > 0 and <= 65535;
 

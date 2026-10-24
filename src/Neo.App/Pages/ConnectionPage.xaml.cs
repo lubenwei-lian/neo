@@ -30,7 +30,6 @@ public sealed partial class ConnectionPage : UserControl
     private Neo.Core.Models.NodeItem? _lastConnectedNodeSeen;
     /// <summary>切换提示开始显示的时间（用于保证最短可见时长）。</summary>
     private DateTime _switchHintShownAt;
-    // 2026-10-24 审查 P2-11：每次显示提示自增。延迟隐藏前比对，避免上一次的隐藏任务
     //   清掉下一次刚显示的提示（连续两次切换时）。
     private int _switchHintGeneration;
 
@@ -109,7 +108,6 @@ public sealed partial class ConnectionPage : UserControl
         _statsTimer.Tick += (_, _) => RefreshStats();
         _statsTimer.Start();
 
-        // 2026-10-23：无感切换提示 —— 显示在圆环右侧留白处（用户要求：只显示「正在切换节点…」，
         // 且不能压住圆环内的状态文字/节点行）。
         ConnectionService.SwitchProgress += msg => DispatcherQueue.TryEnqueue(() =>
         {
@@ -173,7 +171,6 @@ public sealed partial class ConnectionPage : UserControl
             return;
         }
 
-        // 2026-10-23 无感切换：内核在后台换掉了（节点变了），但没有任何点击/导航事件，
         // 界面必须自己发现「已连接节点变了」并刷新 —— 否则圆环还显示旧节点名。
         var nowConnected = ConnectionService.ConnectedNode;
         if (!ReferenceEquals(_lastConnectedNodeSeen, nowConnected))
@@ -193,7 +190,6 @@ public sealed partial class ConnectionPage : UserControl
         if (_lastSnap is { } prev)
         {
             double dt = Math.Max((DateTime.Now - _lastSnapAt).TotalSeconds, 0.001);
-            // P2-4（审计）：原来除以 Math.Max(1, (long)dt) —— 采样抖动到 1.4 秒时会被当成 1 秒，
             // 速度高估约 40%。改为按真实浮点间隔算，并对极小间隔设下限避免除爆。
             upBps = (long)(Math.Max(0, cur.Uplink - prev.Uplink) / Math.Max(0.2, dt));
             downBps = (long)(Math.Max(0, cur.Downlink - prev.Downlink) / Math.Max(0.2, dt));
@@ -250,7 +246,6 @@ public sealed partial class ConnectionPage : UserControl
             CoreStateText.Foreground = running ? green : text2;
             CoreDot.Fill = running ? green : text2;
 
-            // 2026-10-24 审查 P2-8：naive 会话的内核是「naive.exe + 前置 sing-box」，
             //   统计与版本要走 sing-box，标签单独显示 naive。
             bool naiveKind = ConnectionService.CoreKind == "naive";
             bool sing = ConnectionService.CoreKind == "sing-box" || naiveKind;
@@ -564,7 +559,6 @@ public sealed partial class ConnectionPage : UserControl
             {
                 var sel = AppState.CurrentNode;
                 var conn = ConnectionService.ConnectedNode;
-                // 2026-10-23 无感切换：已连接、但选中的是另一个节点时，点圆环 = 切换到它，
                 // 而不是「先断开再连」（那样会断网 3～4 秒）。选中的就是当前节点时才断开。
                 if (sel != null && (conn == null
                     || !string.Equals(AppState.NodeKey(sel), AppState.NodeKey(conn), StringComparison.Ordinal)))
@@ -879,7 +873,6 @@ public sealed partial class ConnectionPage : UserControl
         var current = AppState.CurrentNode;
 
         // 排序/显示与节点卡片同口径（NodeItem.DisplayDelay）：只用 RealDelay 会让「刚测完 TCP 延迟」
-        // 的节点在这里仍显示空白（2026-10-23 用户反馈）。主口径无结果时回退另一口径。
         var preferReal = AppState.State.RealDelayTestEnabled;
         var ordered = AppState.Nodes
             .OrderBy(n => n.DisplayDelay(preferReal) > 0 ? 0 : 1)
@@ -915,7 +908,6 @@ public sealed partial class ConnectionPage : UserControl
                     // 无感不等于无声：INFO 日志留一句可读记录，便于用户/排障时确认确实切换过。
                     if (wasConnected)
                     {
-                        // 2026-10-23 无感切换：先在新槽位起好新内核，再把用户端口的中继指过去，
                         // 老连接继续走旧内核。用户不需要断开、系统代理不变。
                         LogBus.App($"切换节点：{node.Name}（无感切换）");
                         var (ok, err) = await ConnectionService.SwitchNodeFastAsync(node);
@@ -1330,7 +1322,6 @@ public sealed partial class ConnectionPage : UserControl
         if (_mode != AppState.State.ProxyMode)
             SetMode(AppState.State.ProxyMode);
 
-        // 本地代理地址跟随后端常量（2026-10-23 端口迁移到 21xxx，避免与其它客户端撞端口）。
         try
         {
             LocalProxyAddrText.Text = $"127.0.0.1:{Neo.Core.LocalPorts.Socks}";

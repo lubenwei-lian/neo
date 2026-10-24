@@ -13,7 +13,6 @@ public sealed record GeoTarget(string Display, string Url, string RelativePath, 
 ///   · geoip.dat / geosite.dat 只随内核目录一起发布，内核不更新它就永远停在发布时那一天；
 ///   · 国内直连判定（geosite:cn / geoip:cn）依赖这些文件，数据一旧就会出现
 ///     「该直连的走了代理 / 该走代理的被直连」。
-/// 2026-10-23 改造（用户要求同内核更新）：
 ///   · 复用 <see cref="KernelDownloader"/>：断点续传 + 实时进度（不再是一次性 GetByteArrayAsync）；
 ///   · **允许连接中更新**：下载走本地代理（否则 GitHub 根本不可达）；
 ///   · 目标文件被内核占用（Windows 共享冲突）时，先落 *.pending，下次启动内核前自动替换
@@ -68,7 +67,6 @@ public static class GeoDataUpdater
                 var len = new FileInfo(downloadPath).Length;
                 if (len < t.MinBytes) { fails.Add($"{t.Display}：体积异常（{len} 字节 < {t.MinBytes}）"); continue; }
 
-                // 2026-10-24 审查 P1-6：上游 sing-geosite/sing-geoip 的 .srs 是精简版（geosite-cn 仅约 9,302 条，
                 //   比随包全量少约 10 万个后缀）。用户点一次「更新分流数据」不能把全量清单换回精简版，
                 //   否则 TUN 下大量国内域名会改走代理（表现为国内站变慢/流量暴涨）。
                 if (t.RelativePath.EndsWith(".srs", StringComparison.OrdinalIgnoreCase) && File.Exists(target))

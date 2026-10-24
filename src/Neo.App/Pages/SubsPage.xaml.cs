@@ -17,7 +17,6 @@ namespace Neo.App.Pages;
 
 public sealed partial class SubsPage : UserControl
 {
-    /// 用量与趋势的刷新计时器。原先它 3 秒一次去轮询 StatsSampler 填「本次会话上传 / 下载」；
     /// 那两项已随首页改版移入内核卡，本页改为用它刷新「本周 / 本月 / 总计」与用量趋势。
     /// 现在的 Tick 只读 UsageTracker 的内存态（已加锁的字段读，微秒级）+ 最多 176 个格子的
     /// 样式比较，**不再起 xray 子进程**，因此不存在原先注释里担心的 UI 线程冻结问题。

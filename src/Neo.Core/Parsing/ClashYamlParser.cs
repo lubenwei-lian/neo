@@ -90,7 +90,6 @@ public static class ClashYamlParser
         }
         else if (val.Length >= 2 && val[0] == '{' && val[^1] == '}')
         {
-            // ★ 2026-10-23 第二批：嵌套 flow mapping（xhttp-opts: {path: /x, host: h, mode: stream-one}）
             //   旧实现把整段当字符串存，Map() 永远取不到 ⇒ xhttp-opts / h2-opts / http-opts / ech-opts 全丢。
             var child = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             FillFlowMapping(val, child);
@@ -236,7 +235,6 @@ public static class ClashYamlParser
         var node = new NodeItem
         {
             Name = Str(item, "name"),
-            // ★ 2026-10-23 IPv6 方括号：Clash 的 server 也可能写成 "[2001:db8::1]"；
             //   解析阶段统一剥掉，xray 与 sing-box 两条路径都受益（Xray 构建器不在本次写入范围）。
             Server = StripBrackets(Str(item, "server")),
             Port = Int(item, "port"),
@@ -255,7 +253,6 @@ public static class ClashYamlParser
                 node.Protocol = NodeProtocol.Shadowsocks;
                 node.Method = Str(item, "cipher");
                 node.Password = Str(item, "password");
-                // ★ 2026-10-23 ss-plugin：Clash 的 ss 条目用 plugin / plugin-opts(map) 描述 SIP003；
                 //   与分享链接一样落到 NodeItem.Plugin/PluginOpts，由 SingBoxConfigBuilder 写进 outbound。
                 node.Plugin = StrOrNull(item, "plugin");
                 node.PluginOpts = PluginOptsToString(item);
@@ -282,7 +279,6 @@ public static class ClashYamlParser
                     node.ShortId = Str(ro, "short-id");
                     node.Fingerprint = Str(item, "client-fingerprint");
                 }
-                // ★ 2026-10-23 第二批：Clash Meta 的 vless 后量子加密（部分面板会写 encryption: mlkem... 或 mlkem768x25519plus...）
                 var encC = Str(item, "encryption");
                 if (encC.Length > 0 && !encC.Equals("none", StringComparison.OrdinalIgnoreCase) && !encC.Equals("false", StringComparison.OrdinalIgnoreCase))
                     node.VlessEncryption = encC;
@@ -308,7 +304,6 @@ public static class ClashYamlParser
 
             case "socks5":
             case "socks":
-                // ★ 2026-10-23 第二批：Clash 的 socks5 条目（整份 YAML 交给内核的原生做法不用，坚持拆成节点）。
                 node.Protocol = NodeProtocol.Socks;
                 node.Username = StrOrNull(item, "username");
                 node.Password = StrOrNull(item, "password") ?? "";
@@ -366,7 +361,6 @@ public static class ClashYamlParser
         var grpc = Map(item, "grpc-opts");
         if (grpc != null) node.ServiceName = Str(grpc, "grpc-service-name");
 
-        // ★ 2026-10-23 第二批：更多 Clash 传输/安全扩展（此前只有 ws/grpc，其余项全丢）：
         //   · h2-opts（network: h2）→ network=h2 + host/path（xray 26 已移除 h2，自动改走 sing-box）
         //   · http-opts（network: http）→ host/path
         //   · xhttp-opts（network: xhttp）→ path/host/mode（mihomo 的新传输，xray 支持）

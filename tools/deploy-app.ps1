@@ -1,6 +1,5 @@
 # 部署 neo 到安装目录（只覆盖「托管程序集 + XAML 产物」）
 #
-# 背景（2026-10-23 事故）：用 dotnet build 的全量输出 robocopy 覆盖安装目录，把
 # neo.runtimeconfig.json 从「自包含（includedFrameworks）」覆盖成「框架依赖（framework）」，
 # 应用随即启动失败并提示「You must install or update .NET」。
 # 安装目录必须保持 publish 形态：neo.exe / neo.runtimeconfig.json / neo.deps.json /

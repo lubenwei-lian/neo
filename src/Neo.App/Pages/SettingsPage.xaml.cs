@@ -423,7 +423,6 @@ public sealed partial class SettingsPage : UserControl
     private async void OnDownloadUpdateClick(object sender, RoutedEventArgs e)
         => await StartUpdateDownloadAsync();
 
-    /// 2026-10-23：更新包下载改为「页内进度 + 断点续传 + SHA-256」，不再用弹窗；
     /// 下载完成后按钮变成「安装并重启」，再点才进入安装确认（避免下完直接退出）。
     private async Task StartUpdateDownloadAsync()
     {
@@ -723,7 +722,6 @@ public sealed partial class SettingsPage : UserControl
         RuleSetCountText.Text = $"{n} 组已启用";
     }
 
-    // ================= 2026-10-23：内核/数据更新的「页内进度」实现 =================
     // 用户要求：内核更新不要弹窗，改为在 UI 栏显示下载进度；支持断点续传；下载完校验哈希。
     // 所有下载任务的进度统一走 KernelTaskPanel（说明文字 + 百分比/速度 + ProgressBar + 取消）。
 

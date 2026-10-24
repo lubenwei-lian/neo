@@ -198,7 +198,6 @@ public static class UpdateChecker
             rel);
     }
 
-    // ================= 2026-10-23 第三批：mihomo 内核（安装/版本/更新） =================
 
     /// 取 mihomo 最新**稳定版**（releases/latest 天然排除 prerelease）。
     /// 资产固定取 Windows amd64 的 v1 系列：`mihomo-windows-amd64-v1-{tag}.zip`。
@@ -358,7 +357,6 @@ public static class UpdateChecker
     }
 
     /// <summary>
-    /// 下载内核更新包：断点续传 + 实时进度 + SHA-256 校验（2026-10-23 改造）。
     /// expectedSha 为 null 表示上游没给官方哈希（API 被限流且无 sidecar）：此时只记录实际值并如实提示，
     /// 不假装「校验通过」——宁可告诉用户「无官方哈希」，也不做虚假保证。
     /// </summary>
@@ -739,7 +737,6 @@ public static class UpdateChecker
         return 0;
     }
 
-    // ================= 2026-10-23 第十九批：naiveproxy 内核（辅助进程） =================
 
     private const string NaiveOwner = "klzgrad";
     private const string NaiveRepo = "naiveproxy";

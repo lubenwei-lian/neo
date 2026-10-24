@@ -8,7 +8,6 @@ public static class CoreStats
     {
         // mihomo 的 Clash API 与 sing-box 的 clash_api 同协议（/connections、Bearer secret），
         // 端口/密钥也是同一组常量，因此直接复用 SingBoxStats。
-        // 2026-10-24 审查 P2-8：naive 节点实际由前置 sing-box 承载（naive.exe 只是 socks 后端），
         //   统计/连接数必须按 clash_api 口径取，否则永远返回 null、界面冻结在 0。
         if (ConnectionService.CoreKind is "sing-box" or "mihomo" or "naive")
         {

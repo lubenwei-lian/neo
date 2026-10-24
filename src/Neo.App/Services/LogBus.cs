@@ -29,7 +29,6 @@ public sealed class LogEntry
 public static class LogBus
 {
     private const int MaxLines = 4000;
-    // 2026-10-23 用户要求：日志只保留 7 天。
     private const int KeepDays = 7;
 
     /// 单文件过大时记事本/杀软读取会卡死，且写坏一次就丢掉整天日志。
@@ -208,7 +207,6 @@ public static class LogBus
             foreach (var f in Directory.GetFiles(dir, "neo-*.log"))
             {
                 if (!TryParseLogDate(f, out var d)) continue;
-                // 2026-10-24 审查 P2-14：当天文件永远不删（长跑进程跨过 7 天后，当前文件也会
                 //   「超龄」；原实现靠 Windows 文件锁让它删除失败，属于侥幸而非设计）。
                 if (d.Date >= DateTime.Today) continue;
                 if ((DateTime.Now - d).TotalDays > KeepDays)
@@ -268,7 +266,6 @@ public static class LogBus
                 {
                     var fi = new FileInfo(f);
                     if (!fi.Exists) continue;
-                    // 2026-10-24 审查 P2-14：当天的活动日志受保护，配额只从历史文件里回收空间。
                     if (string.Equals(fi.Name, todayFile, StringComparison.OrdinalIgnoreCase)) continue;
                     files.Add((fi, fi.Length));
                     total += fi.Length;

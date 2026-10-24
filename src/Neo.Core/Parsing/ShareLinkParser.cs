@@ -20,7 +20,6 @@ public static class ShareLinkParser
             if (link.StartsWith("hysteria2://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("hy2://", StringComparison.OrdinalIgnoreCase)) return ParseHysteria2(link);
             if (link.StartsWith("tuic://", StringComparison.OrdinalIgnoreCase)) return ParseTuic(link);
-            // ★ 2026-10-23 第二批：anytls / socks5 分享链接。
             //   anytls 只能走 sing-box（xray 26 实测无 anytls 出站）；
             //   socks:// 是常见的分享链接写法，此前 neo 完全不认。
             if (link.StartsWith("anytls://", StringComparison.OrdinalIgnoreCase)) return ParseAnyTls(link);
@@ -80,7 +79,6 @@ public static class ShareLinkParser
             Cipher = string.IsNullOrEmpty(S("scy")) ? "auto" : S("scy"),
             Network = string.IsNullOrEmpty(S("net")) ? "tcp" : S("net").ToLowerInvariant(),
         };
-        // P2-5（审计）：端口必须落在 1–65535。原实现只 TryParse，70000 这类坏数据会被判成
         // 「有效节点」写进配置，内核启动失败后用户完全不知道是订阅数据的问题。
         node.Port = int.TryParse(S("port"), out var p) && p is > 0 and <= 65535 ? p : 0;
 
@@ -111,7 +109,6 @@ public static class ShareLinkParser
         {
             Protocol = NodeProtocol.VLESS,
             Uuid = Uri.UnescapeDataString(uri.UserInfo),
-            // ★ 2026-10-23 IPv6 方括号：.NET 的 uri.Host 对 IPv6 字面量会带 []（实测），
             //   写进 xray/sing-box 的 address/server 前统一剥掉；同时让 EndPoint/NodeKey 口径一致。
             Server = StripBrackets(uri.Host),
             Port = uri.Port,
@@ -129,7 +126,6 @@ public static class ShareLinkParser
         {
             Protocol = NodeProtocol.Trojan,
             Password = Uri.UnescapeDataString(uri.UserInfo),
-            // ★ 2026-10-23 IPv6 方括号：同 vless，解析阶段就去掉 []（xray/sing-box 共用）。
             Server = StripBrackets(uri.Host),
             Port = uri.Port,
             Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
@@ -202,7 +198,6 @@ public static class ShareLinkParser
         };
         if (!string.IsNullOrEmpty(query))
         {
-            // ★ 2026-10-23 ss-plugin 生效（审计 P2-17）：ss:// 里常见写法是
             //   `plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dbing.com`（SIP003）描述插件；
             //   旧实现只把整串 query 塞进 Extras["query"]、全仓无读取方 → 插件节点被当裸 SS（必连不上）。
             //   这里保留原串（兼容旧缓存/排障），并解析出 Plugin/PluginOpts 供 sing-box 出站使用。
@@ -218,7 +213,6 @@ public static class ShareLinkParser
         var (auth, host, portExpr, query, name) = SplitAuthority(body);
         if (host.Length == 0) return null;
 
-        // ★ 2026-10-23 hy2 端口跳跃（常见标准写法）：
         //   hysteria2://auth@host:443,5000-6000/?...
         //   旧实现用 int.TryParse 解析端口 → "443,5000-6000" → 0 → 整条节点被丢；
         //   省略端口（默认 443）也会被丢。这里归一化成 sing-box 的 server_ports 写法
@@ -238,7 +232,6 @@ public static class ShareLinkParser
         };
         if (portSpec.Length > 0) node.Extras["server_ports"] = portSpec;
         node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure"));
-        // ★ 2026-10-23 第二批：hy2 的 pinSHA256 / ech 此前只进 Extras：pin 从来没被读取（1.14 无该字段，走 insecure 兜底），
         //   ech 也没写进 sing-box 的 tls.ech。现在 pin 落 CertSha256（排障/未来内核支持），ech 落 EchConfigList。
         node.CertSha256 = OrNull(G(q, "pinSHA256")) ?? node.CertSha256;
         node.EchConfigList = OrNull(G(q, "ech")) ?? node.EchConfigList;
@@ -250,7 +243,6 @@ public static class ShareLinkParser
         Copy(node, q, "up");
         Copy(node, q, "down");
 
-        // ★ 2026-10-23 第二批：gecko 混淆。
         //   链接写法 obfs=gecko&obfs-password=...&minPacketSize=512&maxPacketSize=1200；
         //   sing-box 1.14.3 实测支持 obfs.type=gecko + min/max_packet_size（见台账 F1），
         //   旧实现只把 obfs 值原样写入 → 没带分片参数，对端按 salamander 处理，直接连不上。
@@ -513,7 +505,6 @@ public static class ShareLinkParser
         node.ServiceName = OrNull(G("serviceName"));
         node.HeaderType = OrNull(G("headerType"));
 
-        // ★ 2026-10-23 第二批：分享链接里这些参数此前全被丢进 Extras（全仓无读取方）→
         //   节点能导入但连不上/连上走错传输。现在逐个落到 NodeItem 的强类型字段，
         //   由 xray / sing-box 生成器消费。字段名与分享链接标准参数名一致。
         //   · encryption：VLESS 后量子加密串（空或 none = 不加密；xray 26 对公网明文 vless 直接拒绝启动）
@@ -542,7 +533,6 @@ public static class ShareLinkParser
                 break;
         }
 
-        // ★ 2026-10-23 insecure 别名：分享链接同时存在 insecure=1 与 allowInsecure=1 两种写法，
         //   旧实现只认后者 → insecure=1 被静默忽略（证书校验没跳过，节点连不上）。两者任一为真即视为跳过校验。
         node.AllowInsecure = ParseBool(G("allowInsecure")) || ParseBool(G("insecure"));
 
@@ -565,7 +555,6 @@ public static class ShareLinkParser
                 case "headertype":
                 case "allowinsecure":
                 case "insecure":
-                // 2026-10-23 第二批：已落到强类型字段的参数不再重复进 Extras（避免双份真相）
                 case "encryption":
                 case "pqv":
                 case "ech":

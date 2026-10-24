@@ -10,7 +10,6 @@ using Neo.Core.Models;
 namespace Neo.App.Services;
 
 /// <summary>
-/// M2 阶段 2「CLI 旁路」：设置开启后，sing-box 会话的配置改由 Rust 版 neo-cli 生成。
 ///
 /// 安全边界（缺一不可）：
 ///   1. 只处理 sing-box 且非 naive/自定义/mihomo 的会话（由调用方判断）；

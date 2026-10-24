@@ -19,7 +19,6 @@ public static class ConnectionService
 
     /// <summary>无感切换的互斥门（0 = 空闲，1 = 切换中），防连点并发。</summary>
     private static int _switchGate;
-    // 2026-10-24 全面审查 P0-1：会话代号。Disconnect 自增；无感切换提交前复核，
     //   防止「切换期间用户断开 → 切换续体把会话复活成直连态」。
     private static int _sessionEpoch;
 
@@ -32,7 +31,6 @@ public static class ConnectionService
     /// <summary>确保用户端口的中继在跑，并把后端指向当前活跃内核。</summary>
     private static void EnsureRelays()
     {
-        // 2026-10-24 审查 P1-5：中继监听地址必须跟随「允许局域网连接」。
         //   原先固定 127.0.0.1，而内核按 AllowLan 绑 0.0.0.0 —— 局域网用户实际连到的是
         //   无鉴权的内核内部端口（21908/21909），既让功能「看着有、实际不通」，也暴露内部端口。
         var wantAddress = AppState.State.AllowLan ? System.Net.IPAddress.Any : System.Net.IPAddress.Loopback;
@@ -57,7 +55,6 @@ public static class ConnectionService
     private static DateTime _relayFailWarnAt;
 
     /// <summary>
-    /// P2-2（审计）：中继后端连不上 = 当前内核已经不可用。原实现 only 注释说「交给上层处理」，
     /// 但回调从未接线，连接被静默关闭、日志全绿，用户只觉得「端口能连但请求全失败」。
     /// 这里限流记 Warning，给排障留痕（真正的恢复仍由内核重启/故障转移负责）。
     /// </summary>
@@ -94,7 +91,6 @@ public static class ConnectionService
     /// 「上次崩溃留下的残留」——那只会出现在进程启动后的第一次连接。
     private static bool _tunPreStartGuardDone;
 
-    /// 本次会话是否以 TUN 模式启动（用于断开时决定是否清理网卡与路由）。
     ///   若断开时不显式清理，内核进程即便退出，网卡与路由也可能残留，
     ///   导致流量仍被接管 —— 用户报的「TUN 打开就关闭不掉」。
     private static bool _tunSessionActive;
@@ -102,11 +98,8 @@ public static class ConnectionService
     /// 连接后自检的取消源：断开 / 切换会话 / 内核退出时取消。
     private static CancellationTokenSource? _selfCheckCts;
 
-    /// 本轮会话已自动切换过几次（最多 2 次：一个坏节点可能是偶然，两次都坏就停手）。
     private static int _selfCheckSwitchCount;
 
-    /// 本轮会话已经试过的节点键（避免自检在两个坏节点之间来回切）。
-    // P2-7（审计）：这个集合被 UI 线程（ConnectAsync 里 Clear）和自检后台线程（Add）同时读写，
     // HashSet 无锁并发可能抛 InvalidOperationException 或破坏内部结构。换 ConcurrentDictionary。
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _selfCheckTried = new(StringComparer.Ordinal);
 
@@ -146,7 +139,6 @@ public static class ConnectionService
     /// <summary>已完成/进行中的拆除任务，供新会话在启动前等待。</summary>
     private static Task _lastTeardown = Task.CompletedTask;
 
-    /// <summary>2026-10-24 审查 P1-4：最近一次 TUN 拆除任务。故障转移拆 TUN 后要先等它完成再测候选。
     /// </summary>
     internal static Task LastTunTeardown => _lastTeardown;
 
@@ -161,7 +153,6 @@ public static class ConnectionService
 
     public static string CoreKind { get; private set; } = "xray";
 
-    /// 固定出口是否生效（本次会话）。生效时出口固定为单一节点，其它节点只作入口。
     public static bool FixedExitActive { get; private set; }
 
     /// 当前会话是否由 TUN 接管（系统代理不生效，故障转移自愈逻辑据此跳过）。
@@ -229,7 +220,6 @@ public static class ConnectionService
     /// 需要直接告诉用户的兜底事件（内核看门狗进安全模式等）。
     /// 与 LogLine 的区别：LogLine 是日志流（用户不看日志就永远不知道），本事件由 MainWindow
     /// 转成状态条 + 托盘气泡 —— 因为内核异常时窗口常常在托盘里，只有气泡才看得见。
-    /// 2026-10-23 第二批新增（F9）。
     /// </summary>
     public static event Action<string>? UserNotice;
 
@@ -303,7 +293,6 @@ public static class ConnectionService
 
         bool useTun = AppState.State.UseTun;
 
-        // ★ 2026-10-23：Clash 直通节点（整份 YAML → mihomo）。
         //   限制：暂不支持 TUN（mihomo 的 TUN 需要额外适配本项目的网卡/路由回收逻辑）；
         //   未安装 mihomo 时明确报错并指路，而不是抛一个「内核不存在」。
         bool useMihomo = node.Protocol == NodeProtocol.MihomoConfig;
@@ -321,7 +310,6 @@ public static class ConnectionService
             }
         }
 
-        // ★ 2026-10-23：naiveproxy（两段式：naive.exe 辅助 + sing-box 前置）。
         bool useNaive = node.IsNaive;
         string? naiveConfigPath = null;
         if (useNaive)
@@ -330,14 +318,12 @@ public static class ConnectionService
                 return (false, "naive 节点需要 naive 内核：请到 设置 → 内核 → naive，点「检查更新」按需安装后再连接");
         }
 
-        // ★ 2026-10-23：自定义配置直通（订阅给的是整份 xray/sing-box JSON）。
         //   限制：暂不支持 TUN（不做 tun inbound 注入），固定出口也跳过（会破坏用户自己的路由）。
         bool useCustom = node.IsCustomConfig;
         bool customSingBox = useCustom && string.Equals(node.CustomEngine, "sing-box", StringComparison.OrdinalIgnoreCase);
         string? customConfigPath = null;
         if (useCustom)
         {
-            //   2026-10-23：sing-box 自定义配置现在支持 TUN（注入 tun 入口 + sniff/hijack-dns + 最小 DNS）；
             //   xray 本身没有 tun 入站，仍然明确拒绝。
             if (useTun && !customSingBox)
                 return (false, "自定义 xray 配置不支持 TUN 模式（xray 没有 tun 入站）—— 请关闭 TUN；"
@@ -346,7 +332,6 @@ public static class ConnectionService
                 return (false, "自定义配置文件不存在（可能已被清理），请重新拉取订阅");
         }
 
-        // ★ 2026-10-23 第二批：内核能力判定（NodeItem.RequiresXray / RequiresSingBox，依据见台账 F1 实测）。
         //   TUN 模式固定跑 sing-box，而 mKCP / xhttp / VLESS 后量子加密 / REALITY pqv / vcn 只有 xray 支持。
         //   这类节点在 TUN 下**必须明确拒绝**：静默改走 sing-box 会变成「连上了但所有站点超时」，
         //   比直接提示难排查得多；静默改走系统代理又会让用户以为 TUN 生效（UDP 泄漏）。
@@ -360,7 +345,6 @@ public static class ConnectionService
 
         //   优先级：xray 专有能力（xhttp/kcp/VLESS 加密/pqv/vcn）优先于「明文 vless 需 sing-box」的判定，
         //   否则「明文 vless + xhttp」这类节点会被推给 sing-box，然后因为 xhttp 不支持而直接失败。
-        // ★ 2026-10-23：叠加「协议 → 内核」手动映射（设置→内核→协议指定内核）。
         //   能力不允许时 KernelRouter 返回 Auto（保持自动判定）；TUN 恒 sing-box，映射与 TUN 冲突时忽略并留痕。
         if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray)
             LogBus.App("协议→内核映射要求 xray，但 TUN 模式固定 sing-box，本次忽略该映射", "Warning");
@@ -377,7 +361,6 @@ public static class ConnectionService
         // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
         // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
         NodeItem? fixedExit = null;
-        // 2026-10-23 审计 P1-2：完整连接也会生成 sing-box 配置，clash_api 端口必须跟随当前槽位，
         // 否则 ActiveSlot 变成 1 之后，统计按 21821 取数而内核监听 21811 → 流量统计永久静默失效。
         SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(LocalPorts.ActiveSlot);
 
@@ -483,7 +466,6 @@ public static class ConnectionService
             {
                 // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
                 var apiPort = LocalPorts.CoreClashApi;
-                // 2026-10-23 无感切换：mihomo 也必须监听内核内部端口。
                 //   之前这里传的是用户端口（21808/21809），与 PortRelay 抢同一个监听端口，
                 //   表现为 mihomo 会话端口被占、中继也没起到转发作用。
                 var yaml = MihomoConfigBuilder.Build(node,
@@ -606,7 +588,6 @@ public static class ConnectionService
             var rustConfigUsed = false;
             if (useSingBox && !useNaive && !useCustom && !useMihomo && AppState.State.UseRustConfig)
             {
-                // M2 阶段 2：设置开启时优先用 Rust 生成的配置；bridge 内部已做 sing-box check，
                 //   任何失败（缺 exe / 超时 / check 失败）都返回 null，这里回退 C# 原配置。
                 var rustJson = await RustConfigBridge.TryBuildAsync(node, useTun);
                 if (!string.IsNullOrEmpty(rustJson))
@@ -624,7 +605,6 @@ public static class ConnectionService
                 LogBus.App($"本次连接使用 Rust 生成的配置（M2 阶段 2）：{node.Name} · TUN={(useTun ? "开" : "关")}");
         }
 
-        // 2026-10-24 M2 阶段 1（只读影子模式）：sing-box 会话把「最终配置」交给 Rust 侧 neo-cli
         //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。
         //   阶段 2 开关开启后实际配置已由 Rust 生成，影子对比没有意义，跳过（避免重复起进程）。
         if (useSingBox && !useNaive && !useCustom && !useMihomo
@@ -787,7 +767,6 @@ public static class ConnectionService
             return (false, failMsg);
         }
 
-        // ★ 2026-10-23 无感切换：内核只监听内部端口，用户端口交给 PortRelay 转发。
         //   这样切换节点时只需改 Relay 的后端指针，用户端口不变、系统代理不用改、老连接不断。
         EnsureRelays();
         LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 内核端口 {LocalPorts.CoreSocks}/{LocalPorts.CoreHttp} · 用户端口 {LocalPorts.Socks}/{LocalPorts.Http} 由中继转发）");
@@ -796,7 +775,6 @@ public static class ConnectionService
         //   Enable()，开关的两种状态落到同一结果，纯属误导）。因此这里不再有任何开关判断，
         //   行为与旧版一致：连上即写、断开即清。
         //   TUN 模式走虚拟网卡接管全部流量，不需要也不应该写系统代理。
-        // ★ 2026-10-22 关键修复：系统代理必须指向「HTTP 入站」端口（10809），不是 SOCKS 端口（10808）。
         //   Windows 的 ProxyServer 里裸写 "127.0.0.1:10808" 会被当作 **HTTP 代理**，
         //   于是 Edge / Steam / 其它走 WinINet 的程序把 HTTP CONNECT 发到 socks 监听端口，
         //   直接被拒（实测 curl -x http://127.0.0.1:10808 → 1ms 失败；-x http://127.0.0.1:10809 → 200）。
@@ -808,7 +786,6 @@ public static class ConnectionService
                 $"https=127.0.0.1:{LocalPorts.Http};" +
                 $"socks=127.0.0.1:{LocalPorts.Socks}");
 
-        // 记录本次会话是否用了 TUN：断开时据此决定是否清理 neo-tun 网卡与路由
         // （TUN 打开就"关闭不掉"的修复，见 TeardownTunNetwork 注释）
         _tunSessionActive = useTun;
         //   neo-tun 建立/销毁会触发 NetworkAddressChanged，FailoverService 据此
@@ -1029,7 +1006,6 @@ public static class ConnectionService
     }
 
     /// <summary>
-    /// 无感切换节点（2026-10-23）：先在另一个槽位启动新内核并等它就绪，再把用户端口的中继
     /// 后端切过去，最后延迟停掉旧内核。
     ///   · 期间系统代理不变、用户不用断开、已建立的连接继续走旧内核（下载/视频不中断）；
     ///   · 只对「xray 承载的普通节点 + 非 TUN + 非固定出口」生效；
@@ -1038,13 +1014,10 @@ public static class ConnectionService
     /// </summary>
     public static async Task<(bool Ok, string? Err)> SwitchNodeFastAsync(NodeItem node)
     {
-        // 2026-10-23 审计 P1-4：连点两次/两个入口同时触发会并发跑两次切换，在同一槽位端口上打架。
         if (Interlocked.Exchange(ref _switchGate, 1) == 1)
             return (false, "正在切换节点中，请稍候");
-        // 2026-10-23 审计 P1-3：切换期间也置 IsConnecting，让界面/托盘/故障转移的并发入口全部让路
         //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
         IsConnecting = true;
-        // 2026-10-24 审查 P0-1：记下会话代号，提交前复核（等待新内核就绪的这几秒里用户可能已断开）。
         var epoch = Volatile.Read(ref _sessionEpoch);
         try { SwitchProgress?.Invoke("正在切换节点…"); } catch { }
         try
@@ -1060,7 +1033,6 @@ public static class ConnectionService
             return await ConnectAsync(node, force: true);
         }
 
-        // 2026-10-23：sing-box 节点同样支持无感切换（clash_api 已按槽位分开：21811/21821）。
         var useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
             || (node.RequiresSingBox && !node.RequiresXray));
         var exeName = useSingBox ? "sing-box.exe" : "xray.exe";
@@ -1074,7 +1046,6 @@ public static class ConnectionService
         var oldSlot = LocalPorts.ActiveSlot;
         var newSlot = 1 - oldSlot;
 
-        // 2026-10-23 审计 P0-2：上一轮切换的旧内核可能还在「等连接归零」的退役期，
         // 仍然占着目标槽位端口。不做预检就直接起新内核 → 绑不上端口 → 8 秒后切换失败
         //（表现为「连续切第二次必挂」）。这里先把它强停，等端口释放。
         if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
@@ -1097,7 +1068,6 @@ public static class ConnectionService
         var newHttp = LocalPorts.SlotHttp(newSlot);
         var newStats = LocalPorts.SlotStats(newSlot);
 
-        // 2026-10-23 审计 P1-6：配置放数据目录而不是 %TEMP% —— IsConfirmedOwnCore 靠
         // 命令行里是否含数据目录来认「这是我们的内核」，放 TEMP 会导致崩溃后孤儿内核清不掉、
         // 下次启动一直报「端口被占用」。
         var cfgPath = Path.Combine(NeoPaths.DataDir, $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
@@ -1139,7 +1109,6 @@ public static class ConnectionService
                 while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
             };
             newCore.Start(cfgPath);
-            // 2026-10-24 审查 P2-4：Exited 必须紧接 Start 订阅，避免「进程已退出、事件还没挂」的毫秒级漏事件窗口。
             var newCoreSelf = newCore;
             newCoreSelf.Exited += code => OnCoreExited(newCoreSelf, code);
 
@@ -1166,7 +1135,6 @@ public static class ConnectionService
                 return (false, "新内核未能就绪，已保持当前节点");
             }
 
-            // 2026-10-24 审查 P0-1：新内核就绪后、提交前复核会话代号。
             //   若用户已断开（SystemProxy 已关、看门狗已取消），继续提交会得到「界面已连接、实际直连」的矛盾状态。
             if (epoch != Volatile.Read(ref _sessionEpoch) || !IsConnected)
             {
@@ -1179,7 +1147,6 @@ public static class ConnectionService
             // 切换：旧内核继续服务已有连接，新连接立刻走新内核
             var prev = _xray;
             var prevKind = CoreKind;
-            // 2026-10-24 审查 P2-4：提交段（改槽位/内核/中继）失败时必须回滚到旧会话，
             //   否则会留下「_xray 指向新内核、中继还指着旧槽位」的半提交状态。
             try
             {
@@ -1199,7 +1166,6 @@ public static class ConnectionService
             AppState.SetCurrentNode(node);
             ConnectedAt = DateTime.Now;
             IsConnected = true;
-            // 2026-10-24 审查 P1-1：切换后补看门狗与「内核启动时间」。
             //   旧看门狗会因 ConnectedNode 引用变化自己退出，不补的话新内核只剩 Exited 兜底；
             //   _lastCoreStartAt 不更新还会让「启动即崩」被误判成「已稳定运行过」。
             _lastCoreStartAt = DateTime.Now;
@@ -1209,14 +1175,12 @@ public static class ConnectionService
             LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
             // 用户要求：不要长文案。切换结果只写日志，界面只显示圆环旁的「正在切换节点…」。
 
-            // 旧内核退役（2026-10-23 下载无感）：不再固定 20 秒 —— 正在下载/看视频的连接全在旧内核上，
             // 到点硬停会把长连接截断。改成「等旧槽位连接数归零」再停，最长 5 分钟兜底。
             var oldSocks = LocalPorts.SlotSocks(oldSlot);
             var oldHttp = LocalPorts.SlotHttp(oldSlot);
             _retiringCore = prev;
             _ = Task.Run(async () =>
             {
-                // P2-6（审计）：切换瞬间可能有一条连接已经 accept、但还没记进旧后端的计数，
                 // 退役循环第一轮就会看到 0 并立刻停旧内核，那条请求随之失败。
                 // 先等 2 秒让在途连接落账，再开始判断。
                 try { await Task.Delay(2000); } catch { }
@@ -1259,9 +1223,7 @@ public static class ConnectionService
 
     public static void Disconnect(string? reason = null)
     {
-        // 2026-10-24 审查 P0-1：自增会话代号，让正在等待新内核的无感切换在提交前发现自己已作废。
         Interlocked.Increment(ref _sessionEpoch);
-        // 2026-10-24 审查 P1-3：用户主动断开/退出时，取消正在跑的故障转移；
         //   否则它可能在几秒后通过 SwitchNodeFastAsync->ConnectAsync(force) 把会话自动连回来。
         if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
             FailoverService.CancelInFlight();
@@ -1305,7 +1267,6 @@ public static class ConnectionService
                 bool exited = _xray.StopAndVerify();
                 if (!exited)
                 {
-                    // 2026-10-24 审查 P2-13：原日志承诺「正在按进程名兜底清理」，实际并未执行；
                     //   真正的兜底在下次连接/启动的 CleanupOrphanCores，这里如实说明。
                     LogBus.App("内核未能在超时内退出（将在下次连接/启动时由孤儿清理兜底；TUN 残留会导致路由被继续接管）", "Warning");
                 }
@@ -1314,7 +1275,6 @@ public static class ConnectionService
         catch (Exception ex) { LogBus.Exception("停止内核失败", ex); }
         _xray = null;
 
-        // 2026-10-24 审查 P2-5：退役中的旧内核也要一起停。否则用户在「切换后 5 分钟退役窗口」内
         //   断开/退出时，旧内核会成孤儿继续占着槽位端口（下次启动报端口被占用）。
         try
         {
@@ -1407,7 +1367,6 @@ public static class ConnectionService
                     // 只清属于本程序 runtime 的进程，绝不误杀用户自己的别的 sing-box
                     if (path == null || !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                         continue;
-                    // 2026-10-24 审查 P2-6：正在跑的测速临时内核不杀，否则测速会被打断/写坏节点。
                     if (CoreProcess.IsTempCorePid(p.Id)) continue;
                     p.Kill(entireProcessTree: true);
                     if (!p.WaitForExit(5000))
@@ -1520,7 +1479,6 @@ public static class ConnectionService
     ///     失败走 fail-open，且**不写日志**（本方法是高频路径，避免刷屏）。
     public static void CleanupOrphanCores()
     {
-        // 2026-10-24 审查 P2-5：清理上次崩溃/退出遗留的无感切换配置文件（neo-switch-*.json）。
         try
         {
             foreach (var f in Directory.EnumerateFiles(NeoPaths.DataDir, "neo-switch-*.json"))
@@ -1578,7 +1536,6 @@ public static class ConnectionService
                     if (path == null || !IsUnderRuntimeDir(path))
                         continue;
 
-                    // 2026-10-24 审查 P2-6：跳过正在跑的测速临时内核（neo-realtest）。
                     if (CoreProcess.IsTempCorePid(p.Id)) continue;
 
                     // 已经按 ① 清掉的不再重复处理
@@ -1625,7 +1582,6 @@ public static class ConnectionService
                         LogBus.App("检测到 neo-tun 网卡，但 runtime 下仍有运行中的 sing-box —— 跳过 TUN 残留清理", "Debug");
                         return;
                     }
-                    //   2026-10-23：TUN 网卡「存在」不等于「在劫持流量」。
                     //   残留网卡可能是上次以管理员身份运行 TUN 留下的；普通权限的 neo 根本删不掉它
                     //   （Remove-NetAdapter 需要管理员），旧逻辑于是每次连接都打一条吓人的 WARN +
                     //   白跑一次拆除（实测 12 次重连 = 12 条 WARN）。现在先判是否真的启用：
@@ -1718,7 +1674,6 @@ public static class ConnectionService
         {
             foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
-                // 2026-10-24：这两条 Debug 日志原本每 20 秒（健康检查周期）刷一次，
                 //   一天 940KB 日志里大头就是它。判定逻辑保留，只去掉周期性日志噪音。
                 if (string.Equals(ni.Name, "neo-tun", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1962,11 +1917,9 @@ public static class ConnectionService
     {
         try
         {
-            //   2026-10-23 端口迁移：旧版本默认 10808/10809 写进过用户注册表，
             //   换端口后这些残留不再被认作「neo 端口」→ 必须一并纳入清理名单，
             //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
             //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。
-            // 2026-10-23 审计 P0-1 修复：注册表里写的是**用户端口**（21808/21809，由 PortRelay 监听），
             // 内核端口是 21908/21909。原先这里传内核端口 → PointsToNeoPort 精确比较永不命中 →
             // 清不掉残代理、启动自愈也静默失效（neo 被强杀后 Edge/Steam 全断网）。
             if (SystemProxy.CleanupOrphaned(
@@ -2012,7 +1965,6 @@ public static class ConnectionService
     {
         (LocalPorts.Socks, !PortFree(LocalPorts.Socks)),
         (LocalPorts.Http, !PortFree(LocalPorts.Http)),
-        // 2026-10-23 无感切换：内核现在监听 CoreSocks/CoreHttp，这两个也必须空闲。
         (LocalPorts.CoreSocks, !PortFree(LocalPorts.CoreSocks)),
         (LocalPorts.CoreHttp, !PortFree(LocalPorts.CoreHttp)),
         (LocalPorts.CoreStatsApi, !PortFree(LocalPorts.CoreStatsApi)),
@@ -2186,14 +2138,12 @@ public static class ConnectionService
         var top3 = AppState.Nodes
             .Where(n => n.IsValid && n.RealDelay > 0)
             .Where(n => n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC))
-            // ★ 2026-10-23 第二批：TUN 下跳过 xray 专有能力节点（它们会被 ConnectAsync 直接拒绝）
             .Where(n => !(AppState.State.UseTun && n.RequiresXray))
             .Where(n => string.Equals(NodeGrouper.RegionOf(n.Name), region, StringComparison.Ordinal))
             .OrderBy(n => n.RealDelay)
             .Take(3)
             .ToList();
         var curKey = AppState.NodeKey(cur);
-        // 排除当前节点与本次会话已经试过的节点（否则会在两个坏节点间来回切）。
         var cand = top3.FirstOrDefault(n =>
         {
             var key = AppState.NodeKey(n);
@@ -2208,11 +2158,9 @@ public static class ConnectionService
             return;
         }
 
-        // 切换前再确认一次「还是本次会话」：探测耗时期间可能已被用户/故障转移切走。
         cur = ConnectedNode;
         if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
 
-        // 记下当前节点已试过，并计入本轮切换次数（最多 2 次，见方法开头）。
         _selfCheckTried.TryAdd(AppState.NodeKey(cur), 0);
         _selfCheckSwitchCount++;
         LogBus.App($"连接后自检：正在自动切换到同地区节点「{cand.Name}」（{cand.RealDelay} ms）", "Warning");
@@ -2318,7 +2266,6 @@ public static class ConnectionService
 
     private static void OnCoreExited(CoreProcess? core, int code)
     {
-        // 2026-10-23 审计 P1-1：只处理「当前活跃内核」的退出。
         // 无感切换后旧内核会被延迟退役，它的退出事件不能把新会话拆掉
         //（否则表现为「正用着突然断网」，而且新内核变成没人管的孤儿）。
         if (core != null && !ReferenceEquals(core, _xray))
@@ -2633,7 +2580,6 @@ public static class ConnectionService
         {
             await Task.Delay(TimeSpan.FromSeconds(WatchdogIntervalSeconds), ct);
             if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
-            // 2026-10-23 审计 P1-5：无感切换/换节点后，旧看门狗必须退出 ——
             // 否则它仍拿旧 node 触发自动重启，会把用户切回已经换掉的节点。
             if (!ReferenceEquals(ConnectedNode, node)) return;
             if (_watchdogRestarting) return;   // 已在本看门狗发起的重启流程里
@@ -2736,7 +2682,6 @@ public static class ConnectionService
         LogBus.App($"内核兜底：已进入安全模式（原因：{reason}）—— TUN 与固定出口已关闭，请检查内核日志/配置后在设置页按需重新开启", "Error");
         IncidentLog.Record("watchdog", "看门狗进入安全模式", reason);
 
-        // ★ 2026-10-23 第二批（F9）：内核兜底必须让用户看见。
         //   旧实现只写日志 + 状态字段：窗口在托盘里时用户完全无感（常见客户端的死穴正是「内核死了没人知道」）。
         try { NotifyStateChanged(); } catch { }
         try { UserNotice?.Invoke($"内核连续异常，已进入安全模式（TUN/固定出口已关闭）：{reason}"); } catch { }
@@ -2765,7 +2710,6 @@ public static class ConnectionService
             .Where(n => n.IsValid && !string.Equals(AppState.NodeKey(n), exitKey, StringComparison.Ordinal))
             .Where(n => n.Network is not ("h2" or "quic"))
             .Where(n => n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks)
-            // ★ 2026-10-23 第二批：xray 链式出站要求每个 hop 都能被 xray 承载
             //   （ss-plugin / 明文 vless 只有 sing-box 支持，混进链里会让整份配置被拒）
             .Where(n => !n.RequiresSingBox)
             .OrderByDescending(n => n.RealDelay > 0)

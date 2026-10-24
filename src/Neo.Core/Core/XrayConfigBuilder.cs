@@ -8,7 +8,6 @@ namespace Neo.Core.Core;
 
 public static class XrayConfigBuilder
 {
-    // 2026-10-22 内核性能调整清单（稳定优先；未改动的项附官方依据）
     //   已落地：
     //     1) 关闭 policy 的 user 级流量统计（App 只读 outbound>>>/inbound>>>，见 XrayStats.cs）
     //     2) routing 规则重排：把系统内置的「IP 条件」规则整体移到「域名条件」规则之后
@@ -23,9 +22,7 @@ public static class XrayConfigBuilder
     //       https://xtls.github.io/config/outbound.html
     //     · sniffing.routeOnly：会把客户端（可能被污染的）DNS 结果发给服务端 → 风险高于收益
     //     · dns.serveStale：默认永不淘汰的陈旧记录可能导致连接失败 → 不动
-    //   待实测（见 planning\2026-10-22-稳定路线与测速改造\子报告-内核性能调优.md）：mux、bufferSize、dns 乐观缓存
 
-    // ★ 2026-10-23 改默认端口：10808/10809 是同类客户端最常见的默认值，
     //   同时装两个客户端必然抢端口（实测 v2rayN 正在运行 → neo 连接被拒「10808 被占用」）。
     //   换成 21xxx 段是为了「不与现有代理软件冲突」，不是随机值：
     //   · 21xxx 没有主流代理客户端的默认占用（1080/1087/7890–7897/10808–10810/20171 全部避开）
@@ -34,7 +31,6 @@ public static class XrayConfigBuilder
     public const int DefaultHttpPort = 21809;
 
     /// xray 统计 API 端口（仅本机回环）。
-    /// 2026-10-23 无感切换：内核移到内部端口后，统计 API 也跟着移到 CoreStatsApi（21910），
     /// 否则 XrayStats 查 21910、内核监听 21810，流量统计会一直取不到数（日志表现为读 stdout 超时）。
     public const int StatsApiPort = 21810;
 
@@ -78,7 +74,6 @@ public static class XrayConfigBuilder
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
             {
-                // ★ 2026-10-22 性能调整：关闭「每用户」流量统计（statsUserUplink/Downlink）。
                 //   依据：xray 官方 policy 文档 https://xtls.github.io/config/policy.html
                 //   该项官方默认 false，此前被显式打开；但 App 的统计（XrayStats.cs）只解析
                 //   outbound>>>.../inbound>>>... 计数器，从不读取 user>>>...，打开它只是给每条连接
@@ -131,7 +126,6 @@ public static class XrayConfigBuilder
             },
             ["routing"] = new JsonObject
             {
-                // ★ 2026-10-22 关键修复：改为 AsIs（只按域名路由，绝不为路由去解析域名）。
     //   真实故障现场（23:17–23:29 实测）：x.com / google / youtube / steam 全部 10–15 秒超时，
     //   而同一节点用「不解析域名」的最小配置跑 x.com 200（4.5s）、gstatic 204 —— 节点本身是好的。
     //   根因：IPOnDemand 会在遇到 ip 条件规则时用**国内 DNS（223.5.5.5）**解析被墙域名，
@@ -140,7 +134,6 @@ public static class XrayConfigBuilder
     //   AsIs：带域名的连接完全不做本地解析（域名原样交给代理，由节点侧解析）；
     //   只有本来就是 IP 目标的连接才走 ip 规则（geoip:cn 直连能力保留）。
     //   代价：域名不在 geosite:cn 但托管在国内的站点会走代理（多花一点流量，换来稳定）。
-                //   【已知限制（2026-10-24 审查 P1-7）】AsIs 下 geoip:cn 规则对「域名目标」不生效：
                 //   带域名的目标不做本地解析，IP 类规则不参与匹配。国内直连实际只靠 geosite:cn 一张静态表，
                 //   表外的新站/长尾站/国内 CDN 域名会走代理（实测 realme.com 就是例子）。
                 //   曾试过 IPOnDemand 让 geoip:cn 兜底，但会用国内 DNS 解析被墙域名拿到污染地址
@@ -234,7 +227,6 @@ public static class XrayConfigBuilder
     }
 
     /// 该节点能否作为「固定出口」。
-    /// 依据实测（2026-10-22，xray 26.10.17）：REALITY 不能作为**内层**链路（入口→出口），
     ///   会报 REALITY: received real certificate (potential MITM or redirection)，
     ///   重试几次后连接被重置；ws/tls 这类普通 TLS 传输可以正常串联。
     /// 另外 h2/quic 传输已被 xray 26 移除，不能用于任何出站。
@@ -242,7 +234,6 @@ public static class XrayConfigBuilder
         n.IsValid
         && !string.Equals(n.Security, "reality", StringComparison.OrdinalIgnoreCase)
         && n.Network is not ("h2" or "quic")
-        // ★ 2026-10-23 第二批：链式出站只有 xray 跑；必须 sing-box 的节点（ss-plugin/明文 vless 等）不能当 chain
         && !n.RequiresSingBox
         && n.Protocol is NodeProtocol.VMess or NodeProtocol.VLESS or NodeProtocol.Trojan or NodeProtocol.Shadowsocks;
 
@@ -338,7 +329,6 @@ public static class XrayConfigBuilder
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
             {
-                // ★ 2026-10-22 性能调整：关闭「每用户」流量统计（statsUserUplink/Downlink）。
                 //   依据：xray 官方 policy 文档 https://xtls.github.io/config/policy.html
                 //   该项官方默认 false，此前被显式打开；但 App 的统计（XrayStats.cs）只解析
                 //   outbound>>>.../inbound>>>... 计数器，从不读取 user>>>...，打开它只是给每条连接
@@ -589,7 +579,6 @@ public static class XrayConfigBuilder
             });
         }
 
-        // ★ 2026-10-22 性能调整（稳定优先）：把系统内置的「IP 条件」规则整体后移。
         //   原因：routing.domainStrategy 已是 IPOnDemand —— 官方文档：
         //     “IPOnDemand：若目标包含域名，遇到包含 ip 条件的规则时，使用内置 DNS 将域名解析为 IP 后进行匹配”
         //     https://xtls.github.io/config/routing.html
@@ -608,7 +597,6 @@ public static class XrayConfigBuilder
             var node = rules[i]!;
             if (i >= customRuleCount && node is JsonObject obj && obj.ContainsKey("ip"))
             {
-                // ★ 2026-10-22 关键修复：IP 规则必须加 routeOnly。
                 //   不加时 xray 会把「为匹配 geoip 而解析出的 IP」当作真正目标去连
                 //   （官方文档 routing.md：解析结果默认会替换目标地址）。
                 //   而我们的 DNS 是 223.5.5.5（国内 DNS），对 x.com / api.telegram.org 等
@@ -649,7 +637,6 @@ public static class XrayConfigBuilder
     {
         var stream = BuildStreamSettings(n);
 
-        // ★ 2026-10-23 IPv6 方括号兜底：vless/trojan 的 uri.Host 或旧 state/cache 里的 Server
         //   可能是 "[::1]" 形式，而 xray 的 address 字段要裸地址；这里统一去掉首尾方括号。
         //   BuildFixedExit 复用本方法（入口 hop 与出口 chain 都走这里），因此同样生效。
         var server = StripBrackets(n.Server);
@@ -682,7 +669,6 @@ public static class XrayConfigBuilder
                 var vlessUser = new JsonObject
                 {
                     ["id"] = n.Uuid ?? "",
-                    // ★ 2026-10-23 第二批：VLESS 后量子加密（xray 25+，链接参数 encryption=mlkem768x25519plus...）。
                     //   旧实现写死 "none" → 这类节点能导入、能测速（测速配置同样写死 none 会失败）、连不上。
                     //   xray 26.10.17 实测接受该字段（台账 F1）；空/ none 时行为与旧版一致。
                     ["encryption"] = string.IsNullOrEmpty(n.VlessEncryption) ? "none" : n.VlessEncryption,
@@ -740,7 +726,6 @@ public static class XrayConfigBuilder
                 };
 
             case NodeProtocol.Socks:
-                // ★ 2026-10-23 第二批：socks5 出站（socks:// 分享链接）。xray 实测接受（台账 F1）。
                 var socksServer = new JsonObject
                 {
                     ["address"] = server,
@@ -793,7 +778,6 @@ public static class XrayConfigBuilder
                 {
                     ["serviceName"] = n.ServiceName ?? "",
                 };
-                // ★ 2026-10-23 第二批：gRPC authority / multi 模式（分享链接 authority=、mode=multi）。
                 //   旧实现只写 serviceName → 需要 authority 的节点（多数 CDN 前置）握手 Host 不对，连不上。
                 if (!string.IsNullOrEmpty(n.GrpcAuthority)) grpc["authority"] = n.GrpcAuthority;
                 if (!string.IsNullOrEmpty(n.GrpcMode) && n.GrpcMode.Equals("multi", StringComparison.OrdinalIgnoreCase))
@@ -802,7 +786,6 @@ public static class XrayConfigBuilder
                 break;
 
             case "httpupgrade":
-                // ★ 2026-10-23 第二批：HTTPUpgrade 传输（xray 支持但已标记 deprecated，实测仍可用）。
                 var httpup = new JsonObject
                 {
                     ["path"] = string.IsNullOrEmpty(n.Path) ? "/" : n.Path,
@@ -813,7 +796,6 @@ public static class XrayConfigBuilder
 
             case "kcp":
             case "mkcp":
-                // ★ 2026-10-23 第二批：mKCP 传输（xray 专有，sing-box 不支持）。
                 //   xray 26 实测要求 maxSendingWindow >= 1350（旧默认 0 会被拒绝启动）；
                 //   头混淆 / 种子已从 kcpSettings 移到 finalmask.udp（xray 新格式即此写法），
                 //   kcpSettings 里的 header 字段在 26 已被移除。
@@ -869,7 +851,6 @@ public static class XrayConfigBuilder
                 break;
 
             case "xhttp":
-                // ★ 2026-10-23 第二批：xhttp 的 mode / extra（分享链接 mode=stream-one&extra={...}）。
                 //   旧实现写死 mode=auto、丢 extra → 服务端要求固定模式/分片参数时直接连不上。
                 var xhttp = new JsonObject
                 {
@@ -901,7 +882,6 @@ public static class XrayConfigBuilder
                 if (!string.IsNullOrEmpty(n.Fingerprint)) tls["fingerprint"] = n.Fingerprint;
                 if (n.AllowInsecure) tls["allowInsecure"] = true;
 
-                // ★ 2026-10-23 第二批（分享链接标准参数）：
                 //   · ech → echConfigList（base64 ECHConfigList）；xray 26 还要求 echForceQuery=full 才真正查询
                 //   · vcn → verifyPeerCertByName（按证书里的名字校验，不依赖 SNI）
                 //   · pcs → pinnedPeerCertSha256（证书链 pin，xray 要求 64 位十六进制）
@@ -932,7 +912,6 @@ public static class XrayConfigBuilder
                     ["shortId"] = n.ShortId ?? "",
                     ["spiderX"] = n.SpiderX ?? "",
                 };
-                // ★ 2026-10-23 第二批：REALITY 的 ML-DSA-65 后量子校验（分享链接 pqv=）。
                 //   xray 26.10.17 实测接受该字段（用 xray mldsa65 生成的真实验证串验过，台账 F1）。
                 if (!string.IsNullOrEmpty(n.Mldsa65Verify)) reality["mldsa65Verify"] = n.Mldsa65Verify;
                 s["realitySettings"] = reality;

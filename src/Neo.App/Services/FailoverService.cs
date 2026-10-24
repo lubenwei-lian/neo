@@ -13,15 +13,12 @@ public static class FailoverService
     private static CancellationTokenSource? _cts;
     private static Task? _loop;
     private static volatile bool _failoverInProgress;
-    // 2026-10-24 全面审查 P1-3：当前正在跑的故障转移预算 CTS。用户断开/退出时取消它，
     //   否则 failover 可能在几秒后把会话自动连回来。
     private static CancellationTokenSource? _inflight;
     private static int _failStreak;
-    /// 本次会话是否已经提示过「系统代理被其他程序接管」（避免每 30 秒刷一条）。
     private static bool _reportedForeignProxy;
     private static DateTime _lastSwitchAt = DateTime.MinValue;
     private static DateTime _lastGiveUpAt = DateTime.MinValue;
-    // 2026-10-24 审查 P1-4：全候选失败后的重试间隔。原来 300 秒，TUN 用户可能断网整整 5 分钟；
     //   缩短到 60 秒（TUN 场景还会先尝试把原节点连回来，见 FailoverAsync 末尾）。
     private const int GiveUpRetrySeconds = 60;
 
@@ -257,7 +254,6 @@ public static class FailoverService
         {
             while (!ct.IsCancellationRequested)
             {
-                // 2026-10-23：探活失败后不再干等 30 秒。
                 // 两次失败之间的 30 秒 + 10 秒超时，用户实际要卡 40～50 秒才能等到切换；
                 // 失败一次后 8 秒就复测，真断线时总等待缩到 15～20 秒，误判也能更快被纠正。
                 var wait = _failStreak > 0 ? 8 : 30;
@@ -286,7 +282,6 @@ public static class FailoverService
             return;
         }
         if (!AppState.State.FailoverEnabled) { _failStreak = 0; return; }
-        // 2026-10-23：120s → 60s。切换后新节点若立刻也不稳，用户原先要干等 2 分钟才允许再切。
         if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 60) return;
         if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
 
@@ -318,7 +313,6 @@ public static class FailoverService
         }
         catch { }
 
-        // 2026-10-23：探活失败时先看「最近 30 秒有没有真实流量」。
         //   探活只打 3 个目标（google / cloudflare / telegram），个别站点不可达并不等于节点坏了；
         //   用户正在刷网页（有明显流量）却被切走，就是「刷着刷着突然断网几秒」的来源之一。
         //   有流量时阈值放宽到 4 次、无流量时 3 次（见下方阈值说明）；按 8–10 秒探活周期，
@@ -333,14 +327,11 @@ public static class FailoverService
             return;
         }
 
-        // 2026-10-24：阈值 2→3 / 3→4。
         //   依据（10-23 日志实测，旧阈值 3/2 时期）：切换节点相关日志 77 条、探活失败 51 行，
         //   即一天几十次切换/误切；探活只打 3 个目标，个别目标抖动就会触发断流式切换，
         //   用户体感就是「刷着刷着卡一下」。放宽到 4/3 后误切大幅减少。
-        //   代价（2026-10-24 审查 P2-3 记录）：TUN 下真断流要多等一个探活周期才触发故障转移，
         //   恢复时间变长；若体感变成「断得久」，优先调这里的阈值而不是退回 2/3。
         var threshold = hadTraffic ? 4 : 3;
-        // M2 阶段 3：优先 Rust 状态机判定（fails/lastSwitch 传给 Rust，政策阈值 3/4、冷却 60s 与 C# 对齐）；
         //   桥不可用/异常时回退下方原 C# 判定。
         var rust = Neo.Core.Bridge.RustCoreBridge.TryFailoverDecision(
             DateTimeOffset.Now.ToUnixTimeMilliseconds(),
@@ -353,8 +344,9 @@ public static class FailoverService
         if (rust != null)
         {
             _failStreak = rust.Fails;
-            LogBus.App($"故障转移探活失败（{_failStreak}/{threshold}）· Rust 判定 {rust.Decision}", "Warning");
-            IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + threshold + "，Rust " + rust.Decision + "）");
+            var shownFails = rust.Decision == "switch" ? threshold : _failStreak;
+            LogBus.App($"故障转移探活失败（{shownFails}/{threshold}）· Rust 判定 {rust.Decision}", "Warning");
+            IncidentLog.Record("failover", "探活失败（" + shownFails + "/" + threshold + "，Rust " + rust.Decision + "）");
             if (rust.Decision == "cooldown") return;
             if (hadTraffic && rust.Decision == "keep")
             {
@@ -455,7 +447,6 @@ public static class FailoverService
         "https://www.google.com/generate_204",
         "http://cp.cloudflare.com/generate_204",
         "https://api.telegram.org/",
-        // 2026-10-23 追加：明文 HTTP、体积最小，作为「google 系抖动」时的快速交叉印证。
         "http://www.gstatic.com/generate_204",
     };
 
@@ -490,7 +481,6 @@ public static class FailoverService
             {
                 Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
                 UseProxy = true,
-                // 2026-10-23：8s/10s → 4s/5s。探活是「判断链路是否还活着」，
                 // 超时太长只会让用户多等；真慢到 5 秒还没响应的链路，切走反而更好。
                 ConnectTimeout = TimeSpan.FromSeconds(4),
                 // 不跟随重定向：telegram 根路径就是 302，跟下去会白拉一次请求、拉长探测时间
@@ -515,7 +505,6 @@ public static class FailoverService
     private static long _lastTrafficBytes;
 
     /// <summary>
-    /// 采样本轮间隔内的真实流量（xray/sing-box 统计快照差），用来区分
     /// 「节点真的断了」与「只是探活目标不可达」，以及判断用户是否正在用网。
     /// 首次调用只建立基线，返回 -1（无数据）。
     /// </summary>
@@ -550,7 +539,6 @@ public static class FailoverService
     /// 定期「塞一点流量」测真实吞吐：探活只能证明节点还能转发，证明不了「有带宽」。
     /// 实测存在「延迟 114ms 但只有几十 KB/s」的节点，浏览网页表现为「能打开但一直转圈」。
     /// 判据：128 KB 下载平均吞吐 &lt; 30 KB/s 连续 2 次 → 判定节点劣化并触发切换。
-    /// 时机：每 10 轮探活（约 5 分钟）一次；若本轮用户流量 &gt; 300 KB（正在用网），
     /// 跳过 —— 那时测到的是共享带宽，会误判。
     /// </summary>
     private static async Task MaybeCheckThroughputAsync(long recentBytes, CancellationToken ct)
@@ -620,7 +608,6 @@ public static class FailoverService
         catch { return -1; }
     }
 
-    /// <summary>2026-10-24 审查 P1-3：取消正在进行的故障转移（用户主动断开/退出时调用）。</summary>
     public static void CancelInFlight()
     {
         try { _inflight?.Cancel(); } catch { }
@@ -628,7 +615,6 @@ public static class FailoverService
 
     private static async Task FailoverAsync(CancellationToken loopCt)
     {
-        // 2026-10-24 审查 P1-3：预算 CTS 链到探活循环 token，用户断开时能立刻取消。
         using var own = CancellationTokenSource.CreateLinkedTokenSource(loopCt);
         own.CancelAfter(TimeSpan.FromMinutes(3));
         _inflight = own;
@@ -644,7 +630,6 @@ public static class FailoverService
                 LogBus.App("故障转移：先断开失联节点（TUN 模式避免测试流量绕行），随后直接实测候选", "Warning");
                 try { await RunOnUiAsync(() => ConnectionService.Disconnect("故障转移触发断开")); }
                 catch (Exception ex) { LogBus.App($"故障转移：断开时异常（忽略继续）：[{ex.GetType().Name}] {ex.Message}", "Warning"); }
-                // 2026-10-24 审查 P1-4：TUN 拆除是后台任务（Disconnect 立即返回），只等固定 2.5 秒
                 //   可能在网卡/路由还在时测候选，3 个候选会被残留 TUN 路由全部判死。
                 //   这里等拆除任务结束（最多 12 秒），再做候选探测。
                 try
@@ -660,18 +645,15 @@ public static class FailoverService
             }
 
             var current = AppState.CurrentNode;
-            // ★ 2026-10-23：优先切到「xray 能承载的 TCP 节点」（vless/vmess/trojan/ss）。
             //   原因：校园网/手机热点对 **UDP 流量（hysteria2 / TUIC）限速极严** —— 同一时刻实测
             //   hy2 台北节点下载 0.3 MB/s，而 vless TCP 节点 2.5–3.9 MB/s（相差 8–10 倍），
             //   表现为「能开网页但速度连 1MB/s 都上不去」。故障转移原先只按延迟排序，
             //   hy2 节点延迟好看（UDP 握手快）就容易被选中，用户于是长期跑在限速的 UDP 上。
             //   这里把 UDP 类节点排到 TCP 类节点之后，仅在没有任何可用 TCP 节点时才会退给它。
-            // 2026-10-23：同地区优先 —— 用户手动选的地区通常有理由（要某个出口国家），
             // 切到别的地区虽然能用，但出口 IP 变了，用户会察觉「怎么跳去美国了」。
             var currentRegion = NodeGrouper.RegionOf(current?.Name ?? "");
             var candidates = AppState.Nodes
                 .Where(n => !SameNode(n, current))
-                // ★ 2026-10-23 第二批：TUN 模式下跳过 xray 专有能力节点（mKCP/xhttp/VLESS 加密/pqv/vcn）。
                 //   这些节点在 TUN 下会被 ConnectionService 直接拒绝，留在候选里只会白白消耗 3 次尝试机会。
                 .Where(n => !(AppState.State.UseTun && n.RequiresXray))
                 .OrderBy(n => !string.IsNullOrEmpty(currentRegion)
@@ -686,7 +668,6 @@ public static class FailoverService
             foreach (var cand in candidates)
             {
                 ct.ThrowIfCancellationRequested();
-                // 2026-10-24 审查 P1-3：用户中途断开就别再自动连回去（TUN 场景是主动断开测候选，故排除）。
                 if (!disconnectedForTunTest && !ConnectionService.IsConnected)
                 {
                     LogBus.App("故障转移：会话已被断开，放弃本次切换", "Debug");
@@ -711,7 +692,6 @@ public static class FailoverService
                 string? err;
                 try
                 {
-                    // 2026-10-23 无感切换：优先走「新内核先就绪 → 中继切后端」的路径，
                     // 失败或场景不支持时 SwitchNodeFastAsync 内部自动回退普通重连。
                     (ok, err) = await RunOnUiAsync(() => ConnectionService.SwitchNodeFastAsync(cand));
                 }
@@ -736,7 +716,6 @@ public static class FailoverService
                 return;
             }
 
-            // 2026-10-24 审查 P1-4：TUN 场景此时网络是断的（上面主动 Disconnect 了），
             //   不能干等下一轮 —— 先把原节点连回来恢复网络，下一轮探活再继续找备选。
             if (disconnectedForTunTest && current != null)
             {
@@ -764,9 +743,7 @@ public static class FailoverService
         }
         catch (OperationCanceledException) when (!loopCt.IsCancellationRequested)
         {
-            // 2026-10-23 审计 P1-8：3 分钟独立预算（own）超时抛的 OCE 绝不能冒到 LoopAsync ——
             // 那里的 catch 会让整个探活循环退出，本会话再也不自动切换。
-            // 2026-10-24 P1-3：用户断开时也会走到这里（own 被取消），按 Debug 记录，避免误报成预算用尽。
             if (ct.IsCancellationRequested)
                 LogBus.App("故障转移：已被取消（用户断开或退出）", "Debug");
             else

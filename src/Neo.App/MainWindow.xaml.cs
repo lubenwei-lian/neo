@@ -131,7 +131,6 @@ public sealed partial class MainWindow : Window
             if (App.IsShuttingDown) return;
             ShowStatusText(msg);
         });
-        // ★ 2026-10-23 第二批（F9）：内核看门狗进安全模式时必须让用户看见。
         //   转成「状态条 + 托盘气泡」双通道：窗口最小化到托盘时只有气泡可见，
         //   而 常见客户端的通病则是「内核死了/退化了却毫无提示」。
         ConnectionService.UserNotice += msg => DispatcherQueue.TryEnqueue(() =>
@@ -175,7 +174,6 @@ public sealed partial class MainWindow : Window
 
         NavigateTo("conn");
 
-        // 安全模式横幅：上次启动若被判定为内核异常，常驻提示（用户可「知道了」关闭本次会话的提示）。
         RefreshSafeModeBanner();
     }
 
@@ -187,7 +185,6 @@ public sealed partial class MainWindow : Window
     /// 启动时是否最大化（来自 state.StartMaximized；默认 true）。
     private bool _startMaximized;
 
-    // ★ 2026-10-23 内存优化：页面空闲释放。
     //   现状是「惰性创建 + 永不销毁」：把所有页都点一遍后，节点页（68 张卡片）等常驻 ~35MB+。
     //   这里在切走 45 秒后把非当前页从可视树移除并置空（页面自己退订静态事件），
     //   再点回去时重新创建（惰性创建机制本来就在，代价 <100ms）。
@@ -306,7 +303,6 @@ public sealed partial class MainWindow : Window
 
         if (args.DidPresenterChange)
         {
-            // 2026-10-23 修复「窗口位置一直是歪的」：
             // 原实现只要是 presenter 变化就记录 —— 包括**最小化**。用户点一次标题栏最小化，
             // StartMaximized 就被写成 false，下次启动变成普通窗口（用旧坐标 0,0 + 1920x1032，
             // 看起来就是「歪的」）。现在只在「最大化 / 还原」之间切换时记录，最小化不动记忆。
@@ -416,7 +412,6 @@ public sealed partial class MainWindow : Window
                 }
             }
             catch { }
-            // 2026-10-23：最小化到托盘时窗口状态是 Minimized，此时既不是最大化也不该当作「还原」，
             // 不要覆盖用户之前的选择（否则托盘退出后下次启动就丢了最大化）。
             if (!minimized) AppState.State.StartMaximized = maximized;
 
@@ -448,7 +443,6 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            // 2026-10-23：以最大化启动时不要先套用「上次还原时的坐标/尺寸」——
             // 那会让窗口先出现在旧位置（用户能看到跳变，看起来就是「歪的」）。
             if (_startMaximized) return;
 
@@ -1415,7 +1409,6 @@ public sealed partial class MainWindow : Window
 
             AppWindow.Show();
 
-            // ★ 2026-10-23：默认最大化。实测「Show() 之前 Maximize()」会被 Show 复位成
             //   「工作区大小的还原窗口」（IsZoomed=False，标题栏按钮也不显示还原态）；
             //   放在 Show() 之后才真正进入最大化状态。此时窗口还是全透明（下面才 Reveal），
             //   所以用户看不到尺寸跳变。
@@ -1750,7 +1743,6 @@ public sealed partial class MainWindow : Window
         try { await FailoverService.StopAsync(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
         try { DisposeTrayIcon(); } catch { }
-        // 2026-10-24 审查 P2-10：托盘退出路径原先不落盘窗口位置/最大化状态，这里补上。
         try { SaveWindowBounds(); } catch { }
 
         try { Application.Current.Exit(); } catch { }

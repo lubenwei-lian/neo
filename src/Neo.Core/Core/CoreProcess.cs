@@ -5,7 +5,6 @@ namespace Neo.Core.Core;
 
 public sealed class CoreProcess : IDisposable
 {
-    // 2026-10-24 审查 P2-6：临时测速内核（RealDelayTester，配置名含 neo-realtest）PID 注册表。
     //   TUN 拆除 / 孤儿清理按名字杀 runtime 下 sing-box 时先跳过这些 PID，避免测速进行中被误杀。
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _tempPids = new();
     public static bool IsTempCorePid(int pid) => pid > 0 && _tempPids.ContainsKey(pid);
@@ -33,7 +32,6 @@ public sealed class CoreProcess : IDisposable
     public void Start(string configPath) => Start(configPath, null);
 
     /// <summary>
-    /// 指定完整参数启动（2026-10-23 为 mihomo 增加：它是 `-f &lt;config&gt; -d &lt;dir&gt;`）。
     /// args 为 null 时走默认的 `run -c`。
     /// </summary>
     public void Start(string configPath, IReadOnlyList<string>? args)

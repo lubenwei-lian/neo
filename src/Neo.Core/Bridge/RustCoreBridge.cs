@@ -12,7 +12,6 @@ public sealed record RustFailoverResult(string Decision, int Fails, long? LastSw
 public sealed record RustParseResult(List<NodeItem> Nodes, string? TrafficInfo);
 
 /// <summary>
-/// M2 阶段 3：桌面版调用 Rust 纯逻辑的桥（CLI JSON 协议，失败一律返回 null 让调用方回退 C#）。
 ///
 /// 安全边界：
 ///   1. 只调用 app\runtime\neo-cli.exe（可用环境变量 NEO_RUST_CLI 覆盖，便于测试）；

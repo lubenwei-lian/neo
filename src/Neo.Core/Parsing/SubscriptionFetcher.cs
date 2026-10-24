@@ -128,7 +128,6 @@ public static class SubscriptionFetcher
     public static Action<string>? Logger { get; set; }
     private static void LogBus(string msg) { try { Logger?.Invoke(msg); } catch { } }
 
-    /// <summary>解析正文（M2 阶段 3：Rust 与 C# 双重解析；一致/兜底时用 Rust，不一致时保留 C#）。</summary>
     public static SubscriptionFetchResult ParseContent(string body)
     {
         var csharp = ParseContentCSharp(body);
@@ -186,14 +185,12 @@ public static class SubscriptionFetcher
         if (text.StartsWith("<") || text.Contains("<html", StringComparison.OrdinalIgnoreCase))
             return SubscriptionFetchResult.Fail("订阅返回的是网页而非节点内容（可能已失效/需要续费）");
 
-        // ★ 2026-10-23 第二批：订阅识别顺序对齐主流做法：
         //   ① base64 解码 → ② 原文 → ③ 再试一次解码 → ④ SIP008。
         //   每步内部再区分「Clash YAML」与「分享链接行」两种形态（两种形态各自解析；对应实现见 
         //   AddBatchServers4Custom）。旧实现固定「先 Clash 原文 → 再 SIP008 → 再 base64」，
         //   遇到「base64 包 SIP008」「base64 包 WG」「二次编码」这类面板就会直接判「未解析出节点」。
         var compact = new string(text.Where(c => !char.IsWhiteSpace(c)).ToArray());
         var decoded = ShareLinkParser.TryB64Decode(compact);
-        // ★ 2026-10-23 第二批补强：有些面板会做**两层** base64（base64(base64(links))）。
         //   常见实现的三次尝试其实都是同一份解码结果，覆盖不到这种情况；这里把「解码结果仍是 base64」
         //   再解一层作为额外尝试，其余顺序保持一致。
         var decoded2 = decoded == null
@@ -224,7 +221,6 @@ public static class SubscriptionFetcher
                 var yr = SubscriptionFetchResult.Ok(attempt);
                 yr.Nodes.AddRange(yamlNodes);
 
-                // ★ 2026-10-23：Clash 订阅额外生成一个「Clash 直通」节点（整份 YAML 交给 mihomo）。
                 //   理由：proxy-providers / 复杂 rule-provider / 脚本模式用 NodeItem 表达不了；
                 //   拆出来的节点照旧用于测速/故障转移，直通节点给需要完整 Clash 语义的用户。
                 var passthrough = BuildClashPassthroughNode(attempt);

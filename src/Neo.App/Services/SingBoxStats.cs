@@ -10,7 +10,6 @@ public static class SingBoxStats
     public readonly record struct Snapshot(long Uplink, long Downlink, int ActiveConnections);
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
-    // 2026-10-24 审查 P2-9：统计失败原先完全静默（只能靠采样器 30 秒一条「采样为空」），
     //   无法区分端口/鉴权/协议错误。这里 20 秒限流记 Warning（原因变化时立即记）。
     private static DateTime _lastWarnAt;
     private static string? _lastWarnReason;

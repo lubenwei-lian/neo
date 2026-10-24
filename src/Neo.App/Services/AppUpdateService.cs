@@ -344,7 +344,6 @@ public static class AppUpdateService
     /// 调用方拿到 Ok 后应立即 ExitForUpdate()。
     /// </summary>
     /// <summary>
-    /// 2026-10-23：更新包下载改走 KernelDownloader——**断点续传 + 实时进度 + SHA-256 校验**，
     /// 与内核/分流数据同一套链路（用户要求「不只是这次更新，都能借鉴的都做」）。
     /// 旧实现在这里用一次性流拷贝：没有续传、进度只有百分比、且下载进度只能塞进弹窗。
     /// </summary>

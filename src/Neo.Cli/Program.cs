@@ -66,7 +66,6 @@ internal static class Program
         }
     }
 
-    // ===================== M2 阶段 3：Rust 桥 parity 自检 =====================
 
     private static bool SameIdentity(IReadOnlyList<NodeItem> a, IReadOnlyList<NodeItem> b)
     {

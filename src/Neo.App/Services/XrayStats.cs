@@ -46,7 +46,6 @@ public static class XrayStats
             var readTask = p.StandardOutput.ReadToEndAsync();
             // 与 stdout 并行把 stderr 读完丢弃：既防管道写满阻塞，也留作失败诊断。
             var errTask = p.StandardError.ReadToEndAsync();
-            // 2026-10-24 审查 P2-9：stderr 任务在成功路径从不 await，进程释放后可能抛未观察 Task 异常；
             //   这里挂一个只观察异常的续体，保证任何路径都不会变成 UnobservedTaskException。
             _ = errTask.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
             if (!readTask.Wait(TimeSpan.FromSeconds(3)))
@@ -141,7 +140,6 @@ public static class XrayStats
     /// <summary>
     /// 取数失败诊断（限流 20 秒一条）。
     /// 为什么需要：取数失败时界面只「保留上一帧」，不写日志的话用户和排障者都看不到原因
-    /// （2026-10-23 上传/下载停在旧值即因此静默失败被掩盖）。
     /// </summary>
     private static DateTime _lastDiagAtUtc;
     private static int _diagCount;

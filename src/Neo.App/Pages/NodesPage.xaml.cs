@@ -20,7 +20,6 @@ public sealed partial class NodesPage : UserControl
     private bool _realTesting;
     /// TCP 握手延迟测试进行中（与真连测速互不干扰：两边各自判断/落值）。
     private bool _tcpTesting;
-    /// 本轮真连测速期间用户是否手动点过节点卡片 —— 点过就跳过「自动优选」，尊重用户选择。
     private bool userPickedDuringTest;
     private CancellationTokenSource? _realCts;
     private int _lastCols;
@@ -100,7 +99,6 @@ public sealed partial class NodesPage : UserControl
     }
 
     /// <summary>
-    /// 空闲释放（2026-10-23 内存优化）：切到别的页超过一段时间后，MainWindow 会调它把本页从
     /// 可视树移除并置空。**必须先退订静态事件** —— AppState.NodesChanged 是静态事件，
     /// 不退订的话本页一直被事件源引用，释放等于没释放。
     /// </summary>
@@ -147,7 +145,6 @@ public sealed partial class NodesPage : UserControl
         if (_tilesReleased && Visibility != Visibility.Visible) return;
 
         // 排序口径必须与卡片显示一致（NodeItem.DisplayDelay）：关闭真连测速时界面显示的是 TCP，
-        // 若仍按 RealDelay（全 0）排序，就会出现「延迟测完了但顺序没变」（2026-10-23 用户反馈）。
         var preferReal = AppState.State.RealDelayTestEnabled;
         var nodes = AppState.Nodes
             .OrderBy(n => { var d = n.DisplayDelay(preferReal); return d <= 0 ? int.MaxValue : d; })
@@ -232,7 +229,6 @@ public sealed partial class NodesPage : UserControl
     private void OnTileTapped(object sender, TappedRoutedEventArgs e)
     {
         if (sender is not FrameworkElement fe || fe.DataContext is not NodeTile tile) return;
-        // 测速期间用户点过任意节点卡片 → 本轮测速结束不再自动优选（尊重手动干预）。
         userPickedDuringTest = true;
         if (ReferenceEquals(tile, _selected)) return;
         // 全表互斥：不仅灭上次点击的，还要灭"当前连接节点"的常驻高亮，否则双亮
@@ -513,7 +509,6 @@ public sealed partial class NodesPage : UserControl
                     tile.SetTcpResult(kv.Value);
             }
 
-            // ★ 2026-10-23：hy2/TUIC/mKCP 是 UDP 协议、没有 TCP 端口，TcpDelayTester 会直接跳过（0）。
             //   原实现于是「快速测延迟」永远测不到这些节点（v2rayN 能测是因为它一律走真实代理请求），
             //   而且界面上没有任何解释。这里对这批节点自动补跑一次真连测速（sing-box 临时实例，
             //   内部并发上限 4），让一次点击覆盖全部节点；结果写 RealDelay，
@@ -733,7 +728,6 @@ public sealed partial class NodesPage : UserControl
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         LogBus.App($"真连测速开始（{all.Count} 个节点 · 单实例批量）");
-        // ★ 2026-10-22 可用性复核结果：只有全量真连测速（autoSelect=true）才会做复核；
         //   null 表示「本次没做复核」（补测/未开启），空集合表示「做了复核但没节点通过」。
         IReadOnlyCollection<NodeItem>? usableChecked = null;
         try
@@ -858,11 +852,8 @@ public sealed partial class NodesPage : UserControl
     }
 
     /// <summary>
-    /// 真连测速结束后自动优选：从**本轮实际测到的节点**里，把 RealDelay &gt; 0 且延迟最低的设为当前节点。
-    /// ★ 2026-10-22：延迟最低 ≠ 能用（实测 AWS日本02 延迟 115ms 全场最低，但 x.com 12s 超时；
     ///   AWS日本06 延迟更高却正常）。所以优先在「可用性复核通过」的集合里取延迟最低者；
     ///   复核无结果（整体失败/未开启/前 3 名全部不可用）才退回纯延迟，并打日志注明按延迟选择。
-    /// 只看本轮传入的 tiles（即 RunBatchAsync 的 all），避免选中本轮没测、只有缓存延迟的节点；
     /// 并列时取列表靠前者（LINQ OrderBy 稳定）；-1（超时）与 0（未测）都排除。
     /// 不重连：仅改「当前选中节点」；连接中的静默切换由 ConnectionPage 自己处理。
     /// </summary>
@@ -886,7 +877,6 @@ public sealed partial class NodesPage : UserControl
         }
         if (best == null)
         {
-            // 复核无结果：整体失败 / 批量失败 / 前 3 名全部不可用 / 本轮没有可复核的 xray 节点。
             // 走到这里说明 autoSelect 路径请求过复核（usable 为 null 或空），统一按延迟退回并留痕。
             LogBus.App("真连测速：可用性复核无结果，按延迟选择", "Warning");
             best = reachable.OrderBy(n => n.RealDelay).First();
@@ -908,7 +898,6 @@ public sealed partial class NodesPage : UserControl
             : $"真连测速完成：已自动选择「{best.Name}」（{best.RealDelay} ms · 仅按延迟）");
         UpdateFooter();
 
-        // 2026-10-24 审查 P2-2：自动优选原先只改「选中项」，已连接时用户仍在旧节点上跑。
         //   已连接且实际出口不是 best 时，走无感切换（失败内部会回退普通重连）。
         var live = ConnectionService.ConnectedNode;
         if (ConnectionService.IsConnected && live != null

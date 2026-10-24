@@ -50,7 +50,6 @@ public static class AppState
         public bool BypassCn { get; set; } = true;
         public bool BlockAds { get; set; } = true;
         public bool AllowLan { get; set; } = false;
-        // 2026-10-23 用户要求「所有动作都记录、只保留 7 天」：默认改为 info。
     // Info 级别的连接/切换/测速/更新日志都会落盘；Debug 仍只在排查时手动开启。
     public string LogLevel { get; set; } = "info";
 
@@ -78,7 +77,6 @@ public static class AppState
         public bool UseTun { get; set; } = false;
 
         /// <summary>
-        /// M2 阶段 2（实验，2026-10-24）：sing-box 配置改由 Rust neo-cli 生成；缺 exe/超时/预检失败
         /// 一律自动回退 C# 构建，不影响连接。默认关。
         /// </summary>
         public bool UseRustConfig { get; set; } = false;
@@ -89,7 +87,6 @@ public static class AppState
         public int WinH { get; set; } = 800;
 
         /// <summary>
-        /// 启动时默认最大化（2026-10-23 用户要求）。关闭窗口时记录当前呈现器状态：
         /// 最大化退出 → 下次仍最大化；手动还原并调整过窗口 → 记住还原后的位置/尺寸。
         /// 注意：最大化时会话里 WinX/WinY/WinW/WinH 保存的是**还原态**边界，
         /// 这样用户点「还原」不会得到一个铺满屏幕的窗口。
@@ -138,7 +135,6 @@ public static class AppState
         /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（TCP 握手风格，快）；
         /// true = 走真实连接（慢但能判断是否真的能访问网站）。
         /// 关闭时节点页隐藏「真连测速」按钮、把「快速测延迟」升为主按钮；卡片主徽标显示 TCP 延迟。
-        //   2026-10-23：默认 true。TCP 握手延迟对中转（Cloudflare 等）节点严重失真——
     //   实测美国节点 TCP 68～112ms、真实代理 280～1200ms，默认按 TCP 排序会把用户
     //   引到「数字最好看但实际最慢」的节点上。默认用真连，快速测延迟仅作连通性参考。
     public bool RealDelayTestEnabled { get; set; } = true;
@@ -649,7 +645,6 @@ public static class AppState
     /// 因此这里必须识别并拒绝覆盖，提示用户去商家处理。
     private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes, string? rawText = null)
     {
-        // M2 阶段 3：优先 Rust 判定（正文提示语 + 物理节点名/本机地址）；桥不可用/异常回退原 C# 逻辑。
         try
         {
             var rust = Neo.Core.Bridge.RustCoreBridge.TryDetectPlaceholder(rawText ?? "", nodes);
@@ -666,7 +661,6 @@ public static class AppState
         catch { }
 
         if (nodes.Count == 0) return false;
-        // 2026-10-23：Clash 直通节点本身就是本机 mihomo 的入口（Server=127.0.0.1），
         // 不能被当成「商家占位节点」；判断只看真实节点。
         var physical = nodes.Where(n => !n.IsClashPassthrough && !n.IsCustomConfig).ToList();
         if (physical.Count == 0) return false;
@@ -1055,7 +1049,6 @@ public static class AppState
         NodeProtocol.Shadowsocks => "Shadowsocks",
         NodeProtocol.Hysteria2 => "Hysteria2",
         NodeProtocol.TUIC => "TUIC",
-        // ★ 2026-10-23 第二批：新增协议显示名（节点页/连接页均走这个方法）
         NodeProtocol.AnyTls => "AnyTLS",
         NodeProtocol.Socks => "Socks5",
         NodeProtocol.MihomoConfig => "Clash 直通",

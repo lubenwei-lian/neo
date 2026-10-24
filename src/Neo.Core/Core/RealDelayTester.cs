@@ -26,15 +26,12 @@ public static class RealDelayTester
     /// <summary>测到不超过这个毫秒数就认为「已经足够快」，不再做第 2/3 次计时（每节点最多 3 次）。</summary>
     private const int SlowEnoughMs = 1000;
 
-    // ★ 2026-10-22 保守模式（用户反馈批量测速会被商家限流）：
     //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去 → 容易被判异常流量。
     //   改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰 BatchStaggerBaseMs ± 抖动。
     //
-    // ★ 2026-10-23 提速（用户抱怨 68 节点一次要 1.5–2 分钟）：并发 4→8→10、错峰 200±50→100±30，
     //   批量路径再去掉「预热请求」（只发一次计时请求，延迟口径按首字节时间）。
     //   连接数仍受控，预期总耗时降到原来的 1/3–1/4。
     /// <summary>批量真连测速时，同时在跑的节点探测数上限（10，保守但比 4 快）。</summary>
-    //   2026-10-23：10 → 6。10 路并发一起打同一批节点时，节点侧排队与本地带宽竞争会把
     //   数字放大（实测同一节点 110ms 与 1385ms），排序因此不可信。降到 6 后总耗时可接受
     //   （68 节点约 30～40s），换来与常见客户端（v2rayN）可比的稳定读数。
     private const int BatchMaxConcurrency = 6;
@@ -45,7 +42,6 @@ public static class RealDelayTester
     /// <summary>错峰间隔的随机抖动（±毫秒）：避免整齐的机器节奏被识别成扫描。</summary>
     private const int BatchStaggerJitterMs = 30;
 
-    // ★ 2026-10-22 可用性复核：延迟最低 ≠ 能用。
     //   实测 AWS日本02 延迟 115ms（全场最低）但 x.com 12s 超时，而延迟更高的 AWS日本06 正常。
     //   所以批量延迟测完后，对延迟最低的前 3 名节点，用**同一个临时内核实例**的 socks 端口
     //   **并发**各请求一次 x.com（每个候选独立 socks 端口与连接）：拿到 2xx/3xx 才算可用。
@@ -72,14 +68,12 @@ public static class RealDelayTester
     private const string Target = "https://www.google.com/generate_204";
 
     /// 延迟/可用性探测的目标序列（按顺序退让，第一个成功即采用）。
-    /// 为什么不止 google：2026-10-22 在本机实测同一节点 108 秒 36 次采样里
     ///   x.com 36/36 成功，而 google/generate_204 只有 24/36（其余 5s 超时）——
     ///   单目标会把「google 这条线被限速/抖动」误判成「节点死了」，
     ///   而故障转移挑备选时正是用这个结果判定存活，会把整组备选判死。
     /// cloudflare 204 是明文 HTTP、开销比 TLS 小，且 xray observatory 已在用（同口径）。
     private static readonly string[] ProbeUrls =
     {
-        // ★ 2026-10-23 提速：cloudflare 204 放第一位 —— 明文 HTTP、无 TLS 握手，
         //   单次开销比 google 的 https/generate_204 小一大截（实测节点上 0.2–0.5s vs 0.6–2s），
         //   68 节点批量测速时这一段直接决定总耗时。google 退到第二位做交叉印证。
         "http://cp.cloudflare.com/generate_204",
@@ -93,7 +87,6 @@ public static class RealDelayTester
         //   Clash 直通节点没有可单独拨号的出站（整份 YAML 交给 mihomo），不支持单点测速。
         if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return 0;
 
-        // ★ 2026-10-23 第二批：内核选择改为「协议 + 能力」双判定（NodeItem.RequiresSingBox）：
         //   anytls / ss-plugin / h2 / hy2 gecko / 明文 vless 都只能走 sing-box；
         //   旧实现只看 hy2/tuic → 这些节点用 xray 测速必失败（配置被内核拒绝），界面显示「超时」。
         //   与连接路径同口径：先按能力判定，再叠加「协议→内核」手动映射（KernelRouter 会做能力校验）。
@@ -167,7 +160,6 @@ public static class RealDelayTester
 
             // 多目标退让：google 204 失败（超时/限速）时再用 cloudflare 204 判一次，
             // 避免「google 抖一下」被当成节点不可用。
-            // ★ 2026-10-23 口径修正（对照 v2rayN 实测）：必须「先预热、再计时，且计时最多 3 次取最小」。
             //   原因：首包要建 TCP+TLS+WS 隧道，实测冷连接 0.8～5.6s、热连接 0.13～0.21s；
             //   只测一次等于把建连开销算成"节点延迟"，同一节点会出现 130ms 与 3000ms 两种结果。
             //   预热成功后计时一次通常就够；慢节点多测两次取最小，避免单次抖动决定排序。
@@ -305,7 +297,6 @@ public static class RealDelayTester
     /// 单实例批量测速：xray 系节点编入单实例（每节点独立 socks 端口），一次进程启动全并行测完；
     /// hy2/tuic（sing-box）节点数量少，沿用逐节点单测本地并行。返回各节点延迟（-1=不通）。
     ///
-    /// ★ 2026-10-22 可用性复核（默认关闭，仅全量真连测速的调用方开启）：
     ///   批量延迟测完后，按延迟从低到高取前 3 名，用**同一个临时内核实例**的 socks 端口
     ///   **并发**请求一次 https://x.com/（每个候选独立 socks 端口/连接，单次超时 4s；
     ///   任一成功立即返回，全部失败则等全部结束），2xx/3xx 才算「可用」。
@@ -313,7 +304,6 @@ public static class RealDelayTester
     ///   可用节点集合通过 onUsableChecked 回传（异步方法不能声明 out 参数；回调等价于 out）。
     ///   onUsableChecked 在复核执行结束时调用一次（无论通过几个）；未开启复核或批量失败时不调用。
     ///
-    /// ★ 2026-10-23 总预算（budgetSeconds，默认 45s）：覆盖节点探测阶段（xray 批量 + sb 单测）。
     ///   超预算立即停止剩余探测，并对还没出结果的节点补一次 onResult(node, -1)，
     ///   避免弱网/大量死节点时拖到 1 分半、UI 停在半路。可用性复核有自己独立的 6s 预算，不共用。
     public static async Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
@@ -334,7 +324,6 @@ public static class RealDelayTester
         var xrayNodes = valid.Where(n => !UseSb(n)).ToList();
         var done = 0;
 
-        // ★ 2026-10-23 真连测速总预算：弱网/大量死节点时避免拖到 1 分半。
         //   本 token 只覆盖「节点探测阶段」（xray 批量 + sb 单测）；可用性复核另有自己的 6s 预算，
         //   单独用 ct 派生，不混用本 token（避免复核被总预算提前掐掉）。budgetSeconds <= 0 视为不设预算。
         using var batchBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -396,7 +385,6 @@ public static class RealDelayTester
                         });
                 }
 
-                // ★ 2026-10-22 可用性复核：延迟最低 ≠ 能用（实测 AWS日本02 延迟最低但 x.com 超时）。
                 //   必须在 core.Stop() 之前做 —— 用的就是同一个临时内核实例的 socks 端口。
                 //   只复核 xray 节点（sing-box 节点在各自临时内核里测，且内核已停，无端口可复用）。
                 if (!batchFailed && availabilityRecheck)
@@ -405,7 +393,6 @@ public static class RealDelayTester
                     var checkedCount = 0;
                     // 提到 try 外：预算耗尽分支要打「已复核 N/候选数」的日志。
                     var candidates = new List<int>();
-                    // ★ 2026-10-23 复核改为**并发**：前 3 名同时各打一次 x.com（各自独立 socks 端口），
                     //   任一成功立即返回、不再等其余；全部失败则等全部结束。
                     //   总预算 6s 只作兜底（单次 4s，正常最多等约 4s）。
                     //   用 linked CTS：外部取消（用户点停止）仍原样抛出；预算耗尽只停掉剩余候选，
@@ -486,7 +473,6 @@ public static class RealDelayTester
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (OperationCanceledException)
             {
-                // ★ 2026-10-23 总预算耗尽：不向上抛，剩余节点按「超时(-1)」处理。
                 //   日志与 onResult(-1) 在方法末尾统一补（那里能覆盖 sb 节点，也能准确统计剩余数）。
                 budgetExpired = true;
             }
@@ -541,7 +527,6 @@ public static class RealDelayTester
 
         if (budgetExpired)
         {
-            // ★ 2026-10-23 总预算耗尽：停止剩余探测后，把还没出结果的节点标记为「未测」(0)。
             //   原实现补 -1（超时）—— 那会把「没轮到测」伪装成「节点坏了」，用户据此会误删好节点。
             var remaining = valid.Where(n => !reported.ContainsKey(n)).ToList();
             Log($"真连测速超出 {budgetSeconds}s 预算，剩余 {remaining.Count} 个未测（保持「未测」，不按超时处理）");
@@ -568,7 +553,6 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            // ★ 2026-10-23 修正：恢复「预热 + 计时」两步，但**复用同一条 HTTP 连接**。
             //   为什么必须热：去掉预热后计时把 TCP + TLS 握手（校园无线/手机热点的建连经常 1–3 秒）
             //   也算进了「延迟」，节点页一片 1000ms+、p50 1718ms，用户直接看不出哪个能用
             //   （实测 00:13 那轮：<200ms 0 个、≥1000ms 147 个）。
@@ -582,7 +566,6 @@ public static class RealDelayTester
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch { /* 预热失败不影响下面正式计时（可能是目标抖动，换下一个目标） */ }
 
-                // ★ 2026-10-23 同口径：预热后计时最多 3 次取最小。
                 //   只测一次时，若预热恰好失败/连接被服务端关掉，计时会退化成冷连接
                 //   （实测同一节点 130ms 与 3012ms 并存，排序不可信）。
                 for (var attempt = 0; attempt < 3; attempt++)
@@ -652,7 +635,6 @@ public static class RealDelayTester
     }
 
     /// <summary>
-    /// 「真连测速」保守模式的启动节拍器（2026-10-22）。
     ///
     /// 与 Parallel.ForEachAsync 的 MaxDegreeOfParallelism = BatchMaxConcurrency 配合，
     /// 保证「同时最多 BatchMaxConcurrency（10）条在跑」；本类只负责「启动有间隔」：用信号量
