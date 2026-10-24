@@ -13,7 +13,7 @@ Windows 代理客户端（WinUI 3）。内置 xray 与 sing-box 双内核：系�
 
 ## 下载
 
-见 [Releases](https://github.com/lubenwei-lian/neo-desktop-release/releases)。
+见本仓库 [Releases](https://github.com/lubenwei-lian/neo/releases)。
 
 ## 构建
 
@@ -46,3 +46,4 @@ dotnet build src/Neo.App/Neo.App.csproj -c Release -p:Platform=x64
 - src/ : WinUI 3 主程序（C#）
 - rust/ : Rust 核心（neo-core / neo-cli / neo-jni）
 - installer/、tools/ : 打包与维护脚本
+
