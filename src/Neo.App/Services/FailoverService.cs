@@ -340,6 +340,34 @@ public static class FailoverService
         //   代价（2026-10-24 审查 P2-3 记录）：TUN 下真断流要多等一个探活周期才触发故障转移，
         //   恢复时间变长；若体感变成「断得久」，优先调这里的阈值而不是退回 2/3。
         var threshold = hadTraffic ? 4 : 3;
+        // M2 阶段 3：优先 Rust 状态机判定（fails/lastSwitch 传给 Rust，政策阈值 3/4、冷却 60s 与 C# 对齐）；
+        //   桥不可用/异常时回退下方原 C# 判定。
+        var rust = Neo.Core.Bridge.RustCoreBridge.TryFailoverDecision(
+            DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+            ok: false,
+            hadTraffic: hadTraffic,
+            fails: _failStreak,
+            lastSwitchMs: _lastSwitchAt == DateTime.MinValue
+                ? null
+                : new DateTimeOffset(DateTime.SpecifyKind(_lastSwitchAt, DateTimeKind.Local)).ToUnixTimeMilliseconds());
+        if (rust != null)
+        {
+            _failStreak = rust.Fails;
+            LogBus.App($"故障转移探活失败（{_failStreak}/{threshold}）· Rust 判定 {rust.Decision}", "Warning");
+            IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + threshold + "，Rust " + rust.Decision + "）");
+            if (rust.Decision == "cooldown") return;
+            if (hadTraffic && rust.Decision == "keep")
+            {
+                LogBus.App("探活失败但最近 30 秒仍有真实流量，判定为「个别站点不可达」，暂不切换", "Warning");
+                return;
+            }
+            if (rust.Decision == "keep") return;
+            if (rust.LastSwitchMs is { } switchMs)
+                _lastSwitchAt = DateTimeOffset.FromUnixTimeMilliseconds(switchMs).LocalDateTime;
+            await FailoverAsync(ct);
+            return;
+        }
+
         _failStreak++;
         LogBus.App($"故障转移探活失败（{_failStreak}/{threshold}）", "Warning");
         IncidentLog.Record("failover", "探活失败（" + _failStreak + "/" + threshold + "）");

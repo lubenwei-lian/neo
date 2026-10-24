@@ -1,8 +1,12 @@
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Neo.Core;
+using Neo.Core.Bridge;
 using Neo.Core.Core;
 using Neo.Core.Models;
 using Neo.Core.Parsing;
@@ -46,6 +50,9 @@ internal static class Program
                     if (args.Length < 3) { Console.WriteLine("用法: neo-cli sbconfig <订阅URL|文件> <节点序号> [--tun]"); return 1; }
                     return await CmdSbConfig(args[1], int.Parse(args[2]), args.Contains("--tun"));
 
+                case "rust-parity":
+                    return CmdRustParity(args.Skip(1).ToArray());
+
                 default:
                     Console.WriteLine("未知命令: " + cmd);
                     PrintUsage();
@@ -57,6 +64,145 @@ internal static class Program
             Console.WriteLine("[异常] " + ex.Message);
             return 9;
         }
+    }
+
+    // ===================== M2 阶段 3：Rust 桥 parity 自检 =====================
+
+    private static bool SameIdentity(IReadOnlyList<NodeItem> a, IReadOnlyList<NodeItem> b)
+    {
+        if (a.Count != b.Count || a.Count == 0) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i].Name, b[i].Name, StringComparison.Ordinal)
+                || a[i].Protocol != b[i].Protocol
+                || !string.Equals(a[i].Server, b[i].Server, StringComparison.OrdinalIgnoreCase)
+                || a[i].Port != b[i].Port)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>与 AppState.IsProviderPlaceholder 原 C# 实现等价的参考实现（用于 parity）。</summary>
+    private static bool CsPlaceholder(IReadOnlyList<NodeItem>? nodes)
+    {
+        if (nodes == null || nodes.Count == 0) return false;
+        var physical = nodes.Where(n => !n.IsClashPassthrough && !n.IsCustomConfig).ToList();
+        if (physical.Count == 0) return false;
+        var hints = new[] { "设备过多", "请去官网", "获取新订阅", "使用说明" };
+        var local = 0;
+        foreach (var n in physical)
+        {
+            if (n.Server is "127.0.0.1" or "::1" or "localhost") local++;
+            foreach (var h in hints)
+                if ((n.Name ?? "").Contains(h, StringComparison.Ordinal)) return true;
+        }
+        return local == physical.Count;
+    }
+
+    private static int CmdRustParity(string[] args)
+    {
+        Console.WriteLine($"[rust-parity] Rust CLI: {RustCoreBridge.CliPath}");
+        Console.WriteLine($"[rust-parity] CLI 存在: {File.Exists(RustCoreBridge.CliPath)}");
+        var source = args.Length > 0 ? args[0] : Path.Combine(NeoPaths.DataDir, "subscription-cache.json");
+        if (!File.Exists(source))
+        {
+            Console.WriteLine("[rust-parity] 输入不存在: " + source);
+            return 2;
+        }
+        var bodies = new List<(string Tag, string Body)>();
+        var text = File.ReadAllText(source);
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in doc.RootElement.EnumerateObject())
+                    if (property.Value.ValueKind == JsonValueKind.String)
+                        bodies.Add((property.Name, property.Value.GetString()!));
+            }
+            else bodies.Add(("body", text));
+        }
+        catch { bodies.Add(("body", text)); }
+        Console.WriteLine($"[rust-parity] 订阅正文: {bodies.Count} 份");
+
+        int parseTotal = 0, parseSame = 0, parseRustOnly = 0, parseMismatch = 0;
+        int phTotal = 0, phSame = 0, phMismatch = 0;
+        foreach (var (tag, body) in bodies)
+        {
+            var csharp = SubscriptionFetcher.ParseContentCSharp(body);
+            var rust = RustCoreBridge.TryParseSubscription(body);
+            parseTotal++;
+            if (rust is { Nodes.Count: > 0 })
+            {
+                if (csharp.Success && SameIdentity(csharp.Nodes, rust.Nodes)) parseSame++;
+                else if (!csharp.Success) parseRustOnly++;
+                else
+                {
+                    parseMismatch++;
+                    Console.WriteLine($"  [解析不一致] {tag}: C#={csharp.Nodes.Count} Rust={rust.Nodes.Count}");
+                }
+            }
+            var ph = RustCoreBridge.TryDetectPlaceholder(body, csharp.Nodes);
+            var csPh = CsPlaceholder(csharp.Nodes);
+            phTotal++;
+            if (ph != null && ph.Placeholder == csPh) phSame++;
+            else if (ph != null)
+            {
+                phMismatch++;
+                Console.WriteLine($"  [占位不一致] {tag}: C#={csPh} Rust={ph.Placeholder} reason={ph.Reason}");
+            }
+        }
+
+        // 故障转移序列 parity：随机 400 步，模拟 C# CheckOnce 的阈值/冷却语义
+        var rnd = new Random(20261024);
+        var failStreak = 0;
+        long? lastSwitchMs = null;
+        var now = 1_000_000L;
+        int foTotal = 0, foSame = 0, foMismatch = 0;
+        for (var step = 0; step < 400; step++)
+        {
+            now += 8000 + rnd.Next(0, 5000);
+            var hadTraffic = rnd.NextDouble() < 0.35;
+            var ok = rnd.NextDouble() < 0.12;
+            if (lastSwitchMs is { } last && (now - last) < 60_000) continue; // C# 冷却期直接 return，不探活
+
+            var inputFails = failStreak;
+            var inputLast = lastSwitchMs;
+            string csDecision;
+            if (ok)
+            {
+                failStreak = 0;
+                csDecision = "keep";
+            }
+            else
+            {
+                var threshold = hadTraffic ? 4 : 3;
+                failStreak++;
+                if (failStreak >= threshold)
+                {
+                    csDecision = "switch";
+                    failStreak = 0;
+                    lastSwitchMs = now;
+                }
+                else csDecision = "keep";
+            }
+            var rust = RustCoreBridge.TryFailoverDecision(now, ok, hadTraffic, inputFails, inputLast);
+            foTotal++;
+            if (rust != null && rust.Decision == csDecision) foSame++;
+            else if (rust != null)
+            {
+                foMismatch++;
+                if (foMismatch <= 5)
+                    Console.WriteLine($"  [故障转移不一致] step {step}: C#={csDecision} Rust={rust.Decision} (fails {inputFails}->{rust.Fails}, ok={ok}, traffic={hadTraffic})");
+            }
+        }
+
+        Console.WriteLine($"[rust-parity] 解析: total={parseTotal} 一致={parseSame} 仅Rust={parseRustOnly} 不一致={parseMismatch}");
+        Console.WriteLine($"[rust-parity] 占位: total={phTotal} 一致={phSame} 不一致={phMismatch}");
+        Console.WriteLine($"[rust-parity] 故障转移: total={foTotal} 一致={foSame} 不一致={foMismatch}");
+        var pass = parseMismatch == 0 && phMismatch == 0 && foMismatch == 0 && parseTotal > 0 && phTotal > 0 && foTotal > 0;
+        Console.WriteLine("[rust-parity] " + (pass ? "PASS" : "FAIL"));
+        return pass ? 0 : 1;
     }
 
     private static int CmdParse(string link)

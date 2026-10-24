@@ -647,8 +647,24 @@ public static class AppState
     ///   server=127.0.0.1:6666，名字里写「使用的设备过多 / 请去官网获取新订阅链接」。
     /// 如果照常写进缓存，就会把用户原来能用的 68 个节点覆盖成 3 个本机假节点 —— 直接连不上。
     /// 因此这里必须识别并拒绝覆盖，提示用户去商家处理。
-    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes)
+    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes, string? rawText = null)
     {
+        // M2 阶段 3：优先 Rust 判定（正文提示语 + 物理节点名/本机地址）；桥不可用/异常回退原 C# 逻辑。
+        try
+        {
+            var rust = Neo.Core.Bridge.RustCoreBridge.TryDetectPlaceholder(rawText ?? "", nodes);
+            if (rust != null)
+            {
+                if (rust.Placeholder)
+                {
+                    LogBus.App($"订阅占位判定（Rust）：{rust.Reason}", "Debug");
+                    return true;
+                }
+                if (rust.Parsed) return false;
+            }
+        }
+        catch { }
+
         if (nodes.Count == 0) return false;
         // 2026-10-23：Clash 直通节点本身就是本机 mihomo 的入口（Server=127.0.0.1），
         // 不能被当成「商家占位节点」；判断只看真实节点。
@@ -697,7 +713,7 @@ public static class AppState
             var r = await SubscriptionFetcher.FetchAsync(sub.Url);
             if (r.Success)
             {
-                if (IsProviderPlaceholder(r.Nodes))
+                if (IsProviderPlaceholder(r.Nodes, r.RawText))
                 {
                     LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
                     IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
@@ -744,7 +760,7 @@ public static class AppState
 
         var r = await SubscriptionFetcher.FetchAsync(sub.Url);
         if (!r.Success) return (false, r.Error);
-        if (IsProviderPlaceholder(r.Nodes))
+        if (IsProviderPlaceholder(r.Nodes, r.RawText))
         {
             LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
             IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);

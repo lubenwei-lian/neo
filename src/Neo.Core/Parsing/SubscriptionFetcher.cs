@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Neo.Core.Bridge;
 using Neo.Core.Core;
 using Neo.Core.Models;
 
@@ -127,7 +128,57 @@ public static class SubscriptionFetcher
     public static Action<string>? Logger { get; set; }
     private static void LogBus(string msg) { try { Logger?.Invoke(msg); } catch { } }
 
+    /// <summary>解析正文（M2 阶段 3：Rust 与 C# 双重解析；一致/兜底时用 Rust，不一致时保留 C#）。</summary>
     public static SubscriptionFetchResult ParseContent(string body)
+    {
+        var csharp = ParseContentCSharp(body);
+        try
+        {
+            var rust = RustCoreBridge.TryParseSubscription(body);
+            if (rust is { Nodes.Count: > 0 })
+            {
+                if (csharp.Success && SameNodes(csharp.Nodes, rust.Nodes))
+                {
+                    var r = SubscriptionFetchResult.Ok(body.Trim());
+                    r.Nodes.AddRange(rust.Nodes);
+                    r.TrafficInfo = rust.TrafficInfo ?? csharp.TrafficInfo;
+                    LogBus($"订阅解析：Rust/C# 一致（{rust.Nodes.Count} 节点），采用 Rust 节点");
+                    return r;
+                }
+                if (!csharp.Success)
+                {
+                    var r = SubscriptionFetchResult.Ok(body.Trim());
+                    r.Nodes.AddRange(rust.Nodes);
+                    r.TrafficInfo = rust.TrafficInfo;
+                    LogBus($"订阅解析：C# 失败，改用 Rust（{rust.Nodes.Count} 节点）");
+                    return r;
+                }
+                LogBus("订阅解析：Rust/C# 结果不一致，保留 C# 结果");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogBus("订阅解析：Rust 桥异常，保留 C# 结果：" + ex.Message);
+        }
+        return csharp;
+    }
+
+    private static bool SameNodes(IReadOnlyList<NodeItem> a, IReadOnlyList<NodeItem> b)
+    {
+        if (a.Count != b.Count || a.Count == 0) return false;
+        for (var i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i].Name, b[i].Name, StringComparison.Ordinal)
+                || a[i].Protocol != b[i].Protocol
+                || !string.Equals(a[i].Server, b[i].Server, StringComparison.OrdinalIgnoreCase)
+                || a[i].Port != b[i].Port)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>C# 原有解析实现（Rust 不可用/不一致时回退，也供 parity 自检）。</summary>
+    public static SubscriptionFetchResult ParseContentCSharp(string body)
     {
         var text = body.Trim();
         if (text.Length == 0) return SubscriptionFetchResult.Fail("订阅内容为空");
