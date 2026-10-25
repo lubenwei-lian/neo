@@ -169,6 +169,7 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         Node.TcpDelay = ms;
         Node.TcpDelayAt = DateTime.Now;
+        DelayCache.SetTcp(Node, ms);
         RefreshDelay();   // 关闭真连时它就是主徽标；同时内部会刷新 meta
         LogBus.App($"TCP 延迟 {Node.Name} → " + (ms > 0 ? $"{ms} ms" : ms == -1 ? "超时" : "跳过"), "Debug");
     }

@@ -845,17 +845,18 @@ public static class AppState
         var existing = State.Subscriptions.FirstOrDefault(s => string.Equals(s.Url, u, StringComparison.OrdinalIgnoreCase));
         if (existing != null)
         {
-            existing.Enabled = true;
-            Save();
+            // 重复导入同一 URL 不改变启用状态，避免把用户刻意停用的订阅重新打开。
             return existing.Id;
         }
 
+        // 只有列表为空时，首个订阅才自动启用；后续订阅默认停用，由用户手动开启。
+        var isFirstSubscription = State.Subscriptions.Count == 0;
         var sub = new SubItem
         {
             Id = "s" + DateTime.Now.ToString("MMddHHmmssfff"),
             Url = u,
             Name = string.IsNullOrWhiteSpace(name) ? TryGuessName(u) : name!.Trim(),
-            Enabled = true,
+            Enabled = isFirstSubscription,
         };
         State.Subscriptions.Add(sub);
         Save();

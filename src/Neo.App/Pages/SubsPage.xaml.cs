@@ -503,7 +503,19 @@ public sealed partial class SubsPage : UserControl
 
             var (ok, err) = await AppState.RefreshOneAsync(id);
             if (!ok)
+            {
                 await ShowInfo("拉取失败", err ?? "未知错误");
+            }
+            else
+            {
+                var imported = AppState.Subscriptions.FirstOrDefault(s => s.Id == id);
+                if (imported is { Enabled: false })
+                {
+                    await ShowInfo(
+                        "已导入，未启用",
+                        $"订阅「{imported.Name}」已保存并拉取成功。已有订阅时新订阅默认不启用，不会参与当前节点列表；需要时在订阅卡片打开开关即可。");
+                }
+            }
         }
         finally
         {
