@@ -35,7 +35,19 @@ public static class SubscriptionLogService
     private static readonly List<SubscriptionLogEntry> Entries = new();
     private static string _loadedDate = "";
     private const int MaxEntries = 2000;
-    private const int KeepFileDays = 30;
+    /// <summary>订阅日志保留天数：跟随「设置→通用→日志保留」（7/15/30），默认 7。</summary>
+    private static int KeepFileDays
+    {
+        get
+        {
+            try
+            {
+                var d = AppState.State.LogRetentionDays;
+                return d is 7 or 15 or 30 ? d : 7;
+            }
+            catch { return 7; }
+        }
+    }
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

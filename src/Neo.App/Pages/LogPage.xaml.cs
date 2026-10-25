@@ -62,6 +62,30 @@ public sealed partial class LogPage : UserControl
         Rebuild();
     }
 
+    /// <summary>导出最近 3 天日志为 zip（主日志/内核输出/看门狗/订阅日志 + info.txt）。</summary>
+    private async void OnExportLogsClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FileSavePicker
+            {
+                SuggestedFileName = "neo-logs-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"),
+            };
+            picker.FileTypeChoices.Add("ZIP 压缩包", new List<string> { ".zip" });
+            WinRT.Interop.InitializeWithWindow.Initialize(
+                picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance!));
+            var file = await picker.PickSaveFileAsync();
+            if (file == null) return;
+
+            var path = LogExportService.BuildZip(file.Path, 3);
+            LogBus.App("日志已导出（最近 3 天）：" + path);
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("导出日志", ex);
+        }
+    }
+
     private void OnOpenLogDirClick(object sender, RoutedEventArgs e)
     {
         try { Process.Start(new ProcessStartInfo { FileName = NeoPaths.LogDir, UseShellExecute = true }); }

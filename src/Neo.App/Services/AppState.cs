@@ -62,6 +62,12 @@ public static class AppState
     /// </summary>
     public string KernelLogLevel => LogLevel is "debug" ? "debug" : "warning";
 
+    /// <summary>日志目录（空 = 默认 data\logs）。设置→通用 可改；旧日志不搬动。</summary>
+    public string LogDirectory { get; set; } = "";
+
+    /// <summary>日志保留天数（只允许 7 / 15 / 30，默认 7）。主日志、内核日志（同在主日志里）、订阅日志统一按此清理。</summary>
+    public int LogRetentionDays { get; set; } = 7;
+
         /// 配置迁移版本号：用于「只对老配置执行一次」的默认值修正。
         /// 0 = 迁移前的旧配置。新增迁移时递增此值并在 Load 里补对应分支。
         public int ConfigVersion { get; set; }
@@ -327,6 +333,10 @@ public static class AppState
                     LastFetchLocal = DateTimeOffset.FromUnixTimeSeconds(lastUnix).LocalDateTime;
 
                 MirrorLegacyFromFirst();
+
+                // 日志目录/保留天数属于运行期即可生效的设置：读完配置立刻应用到 LogBus/NeoPaths，
+                // 否则首启动会先往默认目录写几行再切换。
+                ApplyLogSettingsToRuntime();
             }
             catch (Exception ex)
             {
@@ -599,6 +609,18 @@ public static class AppState
 
     /// 重复调用会再次整体替换 State，把运行期尚未落盘的改动直接丢弃，因此必须挡住。
     private static bool _loadedOnce;
+
+    /// <summary>把日志相关设置应用到运行期（NeoPaths 目录覆盖 + 保留天数兜底）。</summary>
+    public static void ApplyLogSettingsToRuntime()
+    {
+        try
+        {
+            if (State.LogRetentionDays is not (7 or 15 or 30))
+                State.LogRetentionDays = 7;
+            NeoPaths.SetLogDirOverride(State.LogDirectory);
+        }
+        catch { }
+    }
 
     public static void Save()
     {

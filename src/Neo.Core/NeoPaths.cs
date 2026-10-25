@@ -55,11 +55,28 @@ public static class NeoPaths
 
     private static string? _dataDir;
 
+    /// <summary>自定义日志目录（空 = 默认 DataDir\logs）。启动时由设置写入。</summary>
+    private static string? _logDirOverride;
+
+    public static void SetLogDirOverride(string? dir)
+    {
+        _logDirOverride = string.IsNullOrWhiteSpace(dir) ? null : dir.Trim();
+    }
+
     public static string LogDir
     {
         get
         {
             var dir = Path.Combine(DataDir, "logs");
+            if (_logDirOverride is { Length: > 0 } custom)
+            {
+                try
+                {
+                    Directory.CreateDirectory(custom);
+                    dir = custom;
+                }
+                catch { /* 自定义目录不可用 → 回退默认，不能让日志写失败 */ }
+            }
             Directory.CreateDirectory(dir);
             return dir;
         }

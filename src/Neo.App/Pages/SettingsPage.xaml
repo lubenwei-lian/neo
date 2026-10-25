@@ -149,6 +149,50 @@
                         </StackPanel>
                         <ToggleSwitch x:Name="SwitchAutoRepairProxy" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="" OffContent="" Toggled="OnAutoRepairProxyToggled" />
                     </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="日志级别" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="LogPathHint" Text="写入 data\logs" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <Border x:Name="LogLevelBox" HorizontalAlignment="Right" VerticalAlignment="Center" Width="120" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0" Tapped="OnLogLevelTapped">
+                            <Grid>
+                                <TextBlock x:Name="LogLevelText" Text="警告" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="日志目录" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock x:Name="LogDirHint" Text="默认 data\logs" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button x:Name="BtnPickLogDir" Style="{StaticResource GhostSm}" Click="OnPickLogDirClick" ToolTipService.ToolTip="选择日志保存目录（只影响之后的新日志，旧日志不搬动）">
+                                <TextBlock Text="选择" FontSize="11.5" />
+                            </Button>
+                            <Button x:Name="BtnResetLogDir" Style="{StaticResource GhostSm}" Click="OnResetLogDirClick" ToolTipService.ToolTip="恢复默认 data\logs">
+                                <TextBlock Text="默认" FontSize="11.5" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid MinHeight="44" Padding="0,9">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="日志保留" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="主日志 / 内核日志 / 订阅日志统一按此天数清理（旧日志不搬动）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Border x:Name="LogRetentionBox" HorizontalAlignment="Right" VerticalAlignment="Center" Width="104" Height="30" CornerRadius="7" Background="{ThemeResource NeoGlass2}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="10,0" Tapped="OnLogRetentionTapped">
+                            <Grid>
+                                <TextBlock x:Name="LogRetentionText" Text="7 天" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
+                                <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                    </Grid>
                 </StackPanel>
             </ui:CoolGlassCard>
 
@@ -471,32 +515,6 @@
                             <Grid>
                                 <TextBlock x:Name="FixedExitEntryText" Text="6 个" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
                                 <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-                    </Grid>
-                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
-
-                    <Grid MinHeight="44" Padding="0,9">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="日志级别" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
-                            <TextBlock x:Name="LogPathHint" Text="写入 data\logs" FontSize="10.5" Foreground="{ThemeResource NeoText2}" Margin="0,2,0,0" />
-                        </StackPanel>
-                        <Border
-                            x:Name="LogLevelBox"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center"
-                            Width="120"
-                            Height="30"
-                            CornerRadius="7"
-                            Background="{ThemeResource NeoGlass2}"
-                            BorderBrush="{ThemeResource NeoHairline}"
-                            BorderThickness="1"
-                            Padding="10,0"
-                            Tapped="OnLogLevelTapped"
-                        >
-                            <Grid>
-                                <TextBlock x:Name="LogLevelText" Text="警告" FontSize="11.5" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
-                                <TextBlock Text="" FontFamily="Segoe Fluent Icons" FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Right" VerticalAlignment="Center" />
                             </Grid>
                         </Border>
                     </Grid>

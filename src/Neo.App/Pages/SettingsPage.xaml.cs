@@ -24,6 +24,7 @@ public sealed partial class SettingsPage : UserControl
 
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
+    private Neo.App.Ui.PopupList? _logRetentionList;
     private Neo.App.Ui.PopupList? _fixedExitNodeList;
     private Neo.App.Ui.PopupList? _fixedExitEntryList;
     private Neo.App.Ui.PopupList? _dnsList;
@@ -547,6 +548,83 @@ public sealed partial class SettingsPage : UserControl
             });
         }
         ShowListBelow(_logLevelList, sender, LogLevelBox);
+    }
+
+    private void OnPickLogDirClick(object sender, RoutedEventArgs e)
+    {
+        _ = PickLogDirAsync();
+    }
+
+    private async Task PickLogDirAsync()
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            WinRT.Interop.InitializeWithWindow.Initialize(
+                picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance!));
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder == null) return;
+
+            AppState.State.LogDirectory = folder.Path;
+            AppState.Save();
+            AppState.ApplyLogSettingsToRuntime();
+            RefreshLogSettingsUi();
+            LogBus.App("日志目录已改为：" + folder.Path + "（旧日志不搬动，只影响之后的新日志）");
+        }
+        catch (Exception ex)
+        {
+            LogBus.Exception("选择日志目录", ex);
+        }
+    }
+
+    private void OnResetLogDirClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            AppState.State.LogDirectory = "";
+            AppState.Save();
+            AppState.ApplyLogSettingsToRuntime();
+            RefreshLogSettingsUi();
+            LogBus.App("日志目录已恢复默认 data\\logs");
+        }
+        catch (Exception ex) { LogBus.Exception("恢复默认日志目录", ex); }
+    }
+
+    private void OnLogRetentionTapped(object sender, TappedRoutedEventArgs e)
+    {
+        _logRetentionList ??= new Neo.App.Ui.PopupList();
+        _logRetentionList.ClearItems();
+        foreach (var d in new[] { 7, 15, 30 })
+        {
+            var days = d;
+            _logRetentionList.AddItem(days + " 天", null, () =>
+            {
+                AppState.State.LogRetentionDays = days;
+                AppState.Save();
+                RefreshLogSettingsUi();
+                LogBus.App("日志保留天数已设为 " + days + " 天（主日志/内核日志/订阅日志）");
+            });
+        }
+        ShowListBelow(_logRetentionList, sender, LogRetentionBox);
+    }
+
+    /// <summary>刷新「日志级别 / 日志目录 / 日志保留」几行的显示。</summary>
+    private void RefreshLogSettingsUi()
+    {
+        try
+        {
+            LogRetentionText.Text = AppState.State.LogRetentionDays + " 天";
+            var custom = AppState.State.LogDirectory;
+            LogDirHint.Text = string.IsNullOrWhiteSpace(custom)
+                ? "默认 data\\logs（可点「选择」改到任意目录）"
+                : custom;
+            BtnResetLogDir.IsEnabled = !string.IsNullOrWhiteSpace(custom);
+            LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine("data", "logs")
+                : NeoPaths.LogDir);
+        }
+        catch { }
     }
 
     /// 把下拉挂在被点元素正下方。传 sender 优先 —— 它是真正被点的那个控件，
@@ -1396,6 +1474,7 @@ public sealed partial class SettingsPage : UserControl
         _syncing = false;
 
         LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
+        RefreshLogSettingsUi();
         UpdateFixedExitUi();
         RefreshSafeModeRow();
         UpdateRuleSetCount();

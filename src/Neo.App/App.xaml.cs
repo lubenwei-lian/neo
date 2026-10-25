@@ -130,6 +130,17 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // 支持工具用：neo.exe --export-logs <zip路径> 直接把最近 3 天日志打成 zip 后退出，
+        // 让「导出日志」的打包逻辑能不弹保存对话框就被自动化验证。
+        var rawArgs = Environment.GetCommandLineArgs();
+        var exportIdx = Array.IndexOf(rawArgs, "--export-logs");
+        if (exportIdx >= 0 && exportIdx + 1 < rawArgs.Length)
+        {
+            try { Services.LogExportService.BuildZip(rawArgs[exportIdx + 1], 3); } catch { }
+            Environment.Exit(0);
+            return;
+        }
+
         bool takeover = Environment.GetCommandLineArgs().Contains("--takeover");
         _single = new Mutex(true, "neo-single-instance-4f8a2c", out bool createdNew);
         if (!createdNew && !takeover)

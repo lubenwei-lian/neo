@@ -29,7 +29,19 @@ public sealed class LogEntry
 public static class LogBus
 {
     private const int MaxLines = 4000;
-    private const int KeepDays = 7;
+    /// <summary>日志保留天数：跟随设置（7/15/30），读不到时回退 7。主日志与内核日志（同文件）都按它清。</summary>
+    private static int KeepDays
+    {
+        get
+        {
+            try
+            {
+                var d = AppState.State.LogRetentionDays;
+                return d is 7 or 15 or 30 ? d : 7;
+            }
+            catch { return 7; }
+        }
+    }
 
     /// 单文件过大时记事本/杀软读取会卡死，且写坏一次就丢掉整天日志。
     private const long MaxFileBytes = 32L * 1024 * 1024;
@@ -204,7 +216,11 @@ public static class LogBus
         try
         {
             var dir = NeoPaths.LogDir;
-            foreach (var f in Directory.GetFiles(dir, "neo-*.log"))
+            // 主日志（含内核输出）与看门狗日志同一套保留策略。
+            var candidates = Directory.GetFiles(dir, "neo-*.log")
+                .Concat(Directory.GetFiles(dir, "guard-*.log"))
+                .ToArray();
+            foreach (var f in candidates)
             {
                 if (!TryParseLogDate(f, out var d)) continue;
                 //   「超龄」；原实现靠 Windows 文件锁让它删除失败，属于侥幸而非设计）。
