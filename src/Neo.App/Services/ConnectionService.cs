@@ -153,6 +153,33 @@ public static class ConnectionService
 
     public static string CoreKind { get; private set; } = "xray";
 
+    /// <summary>当前内核 PID（0 = 没有运行中的内核）。看门狗写状态时用。</summary>
+    public static int CorePid => _xray?.Pid ?? 0;
+
+    /// <summary>看门狗用：是否有 neo-tun 残留网卡（不论是否启用）。</summary>
+    public static bool HasTunResidueForGuard() => HasTunAdapter();
+
+    /// <summary>看门狗用：残留网卡是否仍在生效（有路由/已 Up）。未生效的残留不影响上网，自动清理应跳过。</summary>
+    public static bool HasActiveTunResidueForGuard() => HasTunAdapter() && IsTunAdapterActive();
+
+    /// <summary>看门狗用：同步清理 TUN 残留（需要管理员权限）；返回是否已清理干净。</summary>
+    public static bool CleanupTunResidueForGuard()
+    {
+        try
+        {
+            if (!HasTunAdapter()) return true;
+            TeardownTunNetwork();
+            return !HasTunAdapter();
+        }
+        catch { return false; }
+    }
+
+    /// <summary>供看门狗/启动提醒使用：走统一的用户提示通道（状态条 + 托盘气泡）。</summary>
+    public static void NotifyUser(string message)
+    {
+        try { UserNotice?.Invoke(message); } catch { }
+    }
+
     public static bool FixedExitActive { get; private set; }
 
     /// 当前会话是否由 TUN 接管（系统代理不生效，故障转移自愈逻辑据此跳过）。
@@ -249,6 +276,7 @@ public static class ConnectionService
             LogBus.App($"连接请求 → {node.Name}（{AppState.ProtocolName(node.Protocol)} · {node.EndPoint}）· TUN={(AppState.State.UseTun ? "开" : "关")}", "Debug");
 
             IsConnecting = true;
+            CoreState.Report("connecting", 0, CoreKind, "ConnectAsync");
             NotifyStateChanged();
         if (AppState.State.UseTun && !IsElevated)
             return (false, "TUN 模式需要管理员权限 — 请点击 TUN 开关并确认「以管理员重启」");
@@ -794,6 +822,7 @@ public static class ConnectionService
 
         IsConnected = true;
         ConnectedNode = node;
+        CoreState.Report("running", _xray?.Pid ?? 0, CoreKind, "connected");
         IncidentLog.Record("connect", "已连接 " + node.Name
             + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : ""));
         ConnectedAt = DateTime.Now;
@@ -1018,6 +1047,7 @@ public static class ConnectionService
             return (false, "正在切换节点中，请稍候");
         //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
         IsConnecting = true;
+        CoreState.Report("switching", CorePid, CoreKind, "switch start");
         var epoch = Volatile.Read(ref _sessionEpoch);
         try { SwitchProgress?.Invoke("正在切换节点…"); } catch { }
         try
@@ -1166,6 +1196,7 @@ public static class ConnectionService
             AppState.SetCurrentNode(node);
             ConnectedAt = DateTime.Now;
             IsConnected = true;
+            CoreState.Report("running", newCore.Pid, CoreKind, "switch done");
             //   旧看门狗会因 ConnectedNode 引用变化自己退出，不补的话新内核只剩 Exited 兜底；
             //   _lastCoreStartAt 不更新还会让「启动即崩」被误判成「已稳定运行过」。
             _lastCoreStartAt = DateTime.Now;
@@ -1223,6 +1254,7 @@ public static class ConnectionService
 
     public static void Disconnect(string? reason = null)
     {
+        CoreState.Report("stopping", CorePid, CoreKind, "disconnect: " + (reason ?? ""));
         Interlocked.Increment(ref _sessionEpoch);
         //   否则它可能在几秒后通过 SwitchNodeFastAsync->ConnectAsync(force) 把会话自动连回来。
         if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
@@ -1311,6 +1343,7 @@ public static class ConnectionService
             LogBus.App($"=== 会话结束{dur}（原因：{reason ?? "未标注"}） ===");
             NotifyStateChanged();
         }
+        CoreState.Report("idle", 0, CoreKind, "disconnected");
     }
 
     /// 抽成一个方法是因为三条路径（用户断开 / 内核意外退出 / 启动时清理上次残留）
@@ -2289,6 +2322,7 @@ public static class ConnectionService
         }
         if (!IsConnected) return;
         var node = ConnectedNode;
+        CoreState.Report(node != null && AppState.State.AutoRestartCore ? "restarting" : "idle", 0, CoreKind, "core exited " + code);
         IsConnected = false;
         ConnectedNode = null;
         // 内核退出 = 本会话结束：取消连接后自检。

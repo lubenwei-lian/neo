@@ -609,6 +609,36 @@ public sealed partial class SettingsPage : UserControl
         ShowListBelow(_logRetentionList, sender, LogRetentionBox);
     }
 
+    private void OnCleanResidueClick(object sender, RoutedEventArgs e)
+    {
+        _ = CleanResidueAsync();
+    }
+
+    /// <summary>临时开关：以管理员身份清 TUN 残留；成功后标记删除、整行消失。</summary>
+    private async Task CleanResidueAsync()
+    {
+        try
+        {
+            BtnCleanResidue.IsEnabled = false;
+            var code = await Task.Run(() => GuardPending.LaunchElevatedCleanup());
+            if (code == 0)
+            {
+                GuardPending.Clear();
+                LogBus.App("TUN 残留已清理（管理员授权）");
+            }
+            else
+            {
+                LogBus.App("TUN 残留清理未完成（退出码 " + code + "，可能是取消了管理员授权）", "Warning");
+            }
+        }
+        catch (Exception ex) { LogBus.Exception("清理内核残留", ex); }
+        finally
+        {
+            BtnCleanResidue.IsEnabled = true;
+            RefreshLogSettingsUi();
+        }
+    }
+
     /// <summary>刷新「日志级别 / 日志目录 / 日志保留」几行的显示。</summary>
     private void RefreshLogSettingsUi()
     {
@@ -620,6 +650,7 @@ public sealed partial class SettingsPage : UserControl
                 ? "默认 data\\logs（可点「选择」改到任意目录）"
                 : custom;
             BtnResetLogDir.IsEnabled = !string.IsNullOrWhiteSpace(custom);
+            RowCleanResidue.Visibility = GuardPending.Exists ? Visibility.Visible : Visibility.Collapsed;
             LogPathHint.Text = "写入 " + (NeoPaths.LogDir.StartsWith(NeoPaths.DataDir, StringComparison.OrdinalIgnoreCase)
                 ? Path.Combine("data", "logs")
                 : NeoPaths.LogDir);

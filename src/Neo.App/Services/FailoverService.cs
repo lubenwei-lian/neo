@@ -693,6 +693,7 @@ public static class FailoverService
                 try
                 {
                     // 失败或场景不支持时 SwitchNodeFastAsync 内部自动回退普通重连。
+                    CoreState.Report("failover", ConnectionService.CorePid, ConnectionService.CoreKind, "failover to " + cand.Name);
                     (ok, err) = await RunOnUiAsync(() => ConnectionService.SwitchNodeFastAsync(cand));
                 }
                 catch (Exception ex)

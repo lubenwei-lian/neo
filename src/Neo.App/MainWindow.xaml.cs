@@ -1372,6 +1372,12 @@ public sealed partial class MainWindow : Window
         ConnectionService.CleanupOrphanedSystemProxy();
         try
         {
+            if (GuardPending.Exists)
+                ConnectionService.NotifyUser("上次异常退出留下 TUN 残留待清理：设置 → 通用 → 清理内核残留");
+        }
+        catch { }
+        try
+        {
             BrandMarkBox.Background = new Microsoft.UI.Xaml.Media.ImageBrush
             {
                 ImageSource = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri("ms-appx:///Assets/neo-mark.png")),

@@ -193,6 +193,17 @@
                             </Grid>
                         </Border>
                     </Grid>
+                    <Rectangle Height="1" Fill="{ThemeResource NeoHairline2}" />
+
+                    <Grid x:Name="RowCleanResidue" MinHeight="44" Padding="0,9" Visibility="Collapsed">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="清理内核残留" FontSize="12.5" FontWeight="Medium" Foreground="{ThemeResource NeoText1}" />
+                            <TextBlock Text="检测到上次异常退出留下的 TUN 网卡/路由，需要管理员权限清理（清完自动消失）" FontSize="10.5" TextWrapping="Wrap" Foreground="{ThemeResource NeoText2}" Margin="0,2,8,0" />
+                        </StackPanel>
+                        <Button x:Name="BtnCleanResidue" Style="{StaticResource GhostSm}" Click="OnCleanResidueClick" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <TextBlock Text="立即清理" FontSize="11.5" />
+                        </Button>
+                    </Grid>
                 </StackPanel>
             </ui:CoolGlassCard>
 

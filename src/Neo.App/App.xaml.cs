@@ -141,6 +141,25 @@ public partial class App : Application
             return;
         }
 
+        // 无界面看门狗模式：--guard <neoPid>。阻塞运行，直到 neo 退出/清理完成。
+        var guardIdx = Array.IndexOf(rawArgs, "--guard");
+        if (guardIdx >= 0 && guardIdx + 1 < rawArgs.Length && int.TryParse(rawArgs[guardIdx + 1], out var guardNeoPid))
+        {
+            var guardCode = 0;
+            try { guardCode = Services.GuardMode.Run(guardNeoPid); } catch { }
+            Environment.Exit(guardCode);
+            return;
+        }
+
+        // 管理员身份清理 TUN 残留：--cleanup-tun（由看门狗/设置页通过 UAC 拉起）。
+        if (rawArgs.Contains("--cleanup-tun"))
+        {
+            var code = 2;
+            try { code = Services.GuardMode.RunCleanupTun(); } catch { }
+            Environment.Exit(code);
+            return;
+        }
+
         bool takeover = Environment.GetCommandLineArgs().Contains("--takeover");
         _single = new Mutex(true, "neo-single-instance-4f8a2c", out bool createdNew);
         if (!createdNew && !takeover)
@@ -200,6 +219,15 @@ public partial class App : Application
         //  必须先读旧标记再写新标记，否则会把自己刚写的当成「上次残留」。
         bool previousRunUnclean = Services.RunStateMarker.Exists;
         Services.RunStateMarker.MarkRunning();
+
+        // 拉起事件驱动看门狗（独立进程、不入 Job；neo 被杀后它负责残留清理）。
+        try { Services.GuardLauncher.Start(); } catch { }
+
+        // 上次没有权限清理的 TUN 残留：本次启动提醒 + 设置页出现临时开关。
+        if (Services.GuardPending.Exists)
+        {
+            try { Services.LogBus.App("检测到上次异常退出残留的 TUN 清理任务未完成 —— 设置→通用→清理内核残留 可手动处理", "Warning"); } catch { }
+        }
         if (previousRunUnclean)
         {
             try
