@@ -43,7 +43,7 @@
         <Border Grid.Row="0" Style="{StaticResource NeoCard}" Padding="12,10">
             <Grid>
                 <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
-                    <TextBlock Text="&#xE9D5;" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" />
+                    <TextBlock Text="&#xE9D5;" Style="{StaticResource Glyph}" FontSize="14" Foreground="{ThemeResource NeoAccent}" VerticalAlignment="Center" />
                     <TextBlock Text="运行日志" FontSize="12.5" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
                     <Button x:Name="BtnExportLogs" Style="{StaticResource GhostSm}" Click="OnExportLogsClick" AutomationProperties.AutomationId="BtnExportLogs" ToolTipService.ToolTip="导出最近 3 天日志为一个 zip（含版本信息）">
                         <TextBlock Text="导出日志" FontSize="11.5" />
