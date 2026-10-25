@@ -269,9 +269,9 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBox x:Name="PortSocksBox" Text="21808" MinWidth="0" BorderThickness="0" Background="Transparent"
+                            <TextBox x:Name="PortSocksBox" Text="21808" MinWidth="0" MinHeight="0" Height="28" BorderThickness="0" Background="Transparent"
                                      HorizontalAlignment="Stretch" VerticalContentAlignment="Center"
-                                     Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
+                                     Padding="0,8,0,0" TextAlignment="Center" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
                                      Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
                                      AutomationProperties.AutomationId="PortSocksBox" />
                         </Border>
@@ -294,9 +294,9 @@
                             BorderThickness="1"
                             Padding="10,0"
                         >
-                            <TextBox x:Name="PortHttpBox" Text="21809" MinWidth="0" BorderThickness="0" Background="Transparent"
+                            <TextBox x:Name="PortHttpBox" Text="21809" MinWidth="0" MinHeight="0" Height="28" BorderThickness="0" Background="Transparent"
                                      HorizontalAlignment="Stretch" VerticalContentAlignment="Center"
-                                     Padding="0" TextAlignment="Right" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
+                                     Padding="0,8,0,0" TextAlignment="Center" FontSize="11.5" FontFamily="{StaticResource NeoMonoFont}"
                                      Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"
                                      AutomationProperties.AutomationId="PortHttpBox" />
                         </Border>
