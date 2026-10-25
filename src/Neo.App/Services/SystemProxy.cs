@@ -275,4 +275,35 @@ public static class SystemProxy
         }
         catch { return false; }
     }
+
+    /// <summary>
+    /// 清理「异常退出留下的快照」：neo 被强杀时 Disable() 没执行，data\proxy-backup.json 会一直留着。
+    /// 若此时系统代理已被关掉（ProxyEnable=0），这份快照既不会被 Disable 用掉，
+    /// 也不会被 CleanupOrphaned 处理（后者要求代理是开着的）→ 它会一直躺着，
+    /// 并在下次连接/断开时被当成「用户原设置」还原，埋下隐患。
+    /// 判据：快照存在 且 当前系统代理未启用 → 还原快照并删除文件。
+    /// 正在接管中（ProxyEnable=1）时不动，交给 CleanupOrphaned / 正常 Disable。
+    /// </summary>
+    public static bool CleanupStaleSnapshot()
+    {
+        try
+        {
+            if (!File.Exists(BackupPath)) return false;
+            if (IsEnabled) return false;
+            if (!TryRestoreFromBackup(out var why))
+            {
+                LogBus.App($"残留代理快照还原失败（{why}）——保留 {BackupPath} 待下次重试", "Warning");
+                return false;
+            }
+            try { File.Delete(BackupPath); } catch { }
+            _tookOver = false;
+            Notify();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"清理残留代理快照失败：{ex.GetType().Name} {ex.Message}", "Warning");
+            return false;
+        }
+    }
 }

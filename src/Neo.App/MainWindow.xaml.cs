@@ -357,6 +357,8 @@ public sealed partial class MainWindow : Window
             try { FailoverService.Stop(); } catch { }
             try { StopOwnTimersAndDisconnect(); } catch { }
             try { DisposeTrayIcon(); } catch { }
+            try { LogBus.App("neo exit（关闭窗口）", "Info"); } catch { }
+            try { RunStateMarker.Clear(); } catch { }
 
             // 进程却仍然存活（MainWindowHandle=0、无托盘图标、217 MB 常驻），
             // 因为托盘库以 ContextMenuMode.SecondWindow 模式额外创建了一个 WinUI 宿主窗口
@@ -1734,6 +1736,7 @@ public sealed partial class MainWindow : Window
     {
         if (Interlocked.Exchange(ref _exitingOnce, 1) != 0) return;
         _exiting = true;
+        try { LogBus.App("neo exit（有序收尾 · 同步路径）", "Info"); } catch { }
 
         // 最先立标志：此后所有迟到的「投递回 UI 线程」都会主动放弃，
         // 而不是去碰正在销毁的 DispatcherQueue（那会以不可捕获的 fail-fast 终止进程）。
@@ -1743,6 +1746,7 @@ public sealed partial class MainWindow : Window
         try { FailoverService.Stop(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
         try { DisposeTrayIcon(); } catch { }
+        try { RunStateMarker.Clear(); } catch { }
 
         try { Application.Current.Exit(); } catch { }
     }
@@ -1754,12 +1758,14 @@ public sealed partial class MainWindow : Window
         if (Interlocked.Exchange(ref _exitingOnce, 1) != 0) return;
         _exiting = true;
         App.IsShuttingDown = true;
+        try { LogBus.App("neo exit（托盘退出）", "Info"); } catch { }
 
         try { StatsSampler.Stop(); } catch { }
         try { await FailoverService.StopAsync(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
         try { DisposeTrayIcon(); } catch { }
         try { SaveWindowBounds(); } catch { }
+        try { RunStateMarker.Clear(); } catch { }
 
         try { Application.Current.Exit(); } catch { }
     }

@@ -270,6 +270,32 @@ public static class RealDelayTester
         return best;
     }
 
+    /// <summary>
+    /// 清理上次进程被强杀后残留的测速临时配置（%TEMP%\neo-realtest-*.json）。
+    /// 判据：只删「默认 5 分钟前」的文件，避免误删正在进行的测速配置。
+    /// 返回删除个数。
+    /// </summary>
+    public static int CleanupStaleTempConfigs(TimeSpan? olderThan = null)
+    {
+        var removed = 0;
+        try
+        {
+            var cutoff = DateTime.Now - (olderThan ?? TimeSpan.FromMinutes(5));
+            foreach (var file in Directory.EnumerateFiles(Path.GetTempPath(), "neo-realtest-*.json"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTime(file) >= cutoff) continue;
+                    File.Delete(file);
+                    removed++;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return removed;
+    }
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);

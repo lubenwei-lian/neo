@@ -1917,6 +1917,20 @@ public static class ConnectionService
     {
         try
         {
+            //  ① 上次异常退出留下的「代理快照」：开关已被关掉、快照却还在 → 还原并删除。
+            //     （代理还开着的情况由下面的 CleanupOrphaned 走同一条还原路径。）
+            if (SystemProxy.CleanupStaleSnapshot())
+            {
+                LogBus.App("检测到上次异常退出残留的系统代理快照（代理开关已关但未还原），已恢复原有设置", "Warning");
+            }
+
+            //  ② 上次测速被强杀时留在 %TEMP% 的临时配置 → 只清陈旧文件。
+            var staleTemp = RealDelayTester.CleanupStaleTempConfigs();
+            if (staleTemp > 0)
+            {
+                LogBus.App($"已清理上次测速残留的临时配置 {staleTemp} 个", "Debug");
+            }
+
             //   换端口后这些残留不再被认作「neo 端口」→ 必须一并纳入清理名单，
             //   否则升级后用户会遇到「旧代理还开着、但 neo 已不监听」的全网断流。
             //   判据仍是「该端口无人监听」，所以别的客户端正占用 10808 时不会被误关（实测 v2rayN 场景）。

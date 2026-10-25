@@ -19,6 +19,9 @@ public sealed class CoreProcess : IDisposable
 
     private volatile bool _stopping;
 
+    //   Job 绑定失败只提示一次，避免每个内核都刷一条（原因通常是环境，不会自己变好）。
+    private static bool _jobAttachWarned;
+
     public bool IsRunning => _process is { HasExited: false };
     public int Pid => _process?.Id ?? -1;
 
@@ -85,6 +88,26 @@ public sealed class CoreProcess : IDisposable
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
         _process = p;
+
+        //  把内核挂到「随主进程结束」的 Job：neo 被任务管理器强杀/崩溃时 Disconnect 不会执行，
+        //  内核子进程会残留并继续占端口；Job 由系统在进程结束时代为终止，无需依赖退出代码。
+        try
+        {
+            if (!KillOnCloseJob.Attach(p, out var jobError) && !_jobAttachWarned)
+            {
+                _jobAttachWarned = true;
+                LogLine?.Invoke("[neo] 内核未能加入随主进程结束的 Job（" + jobError + "）——本进程被强杀时该内核可能残留");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            if (!_jobAttachWarned)
+            {
+                _jobAttachWarned = true;
+                LogLine?.Invoke("[neo] 内核 Job 绑定异常：" + ex.GetType().Name + " " + ex.Message);
+            }
+        }
+
         if (configPath.IndexOf("neo-realtest", StringComparison.OrdinalIgnoreCase) >= 0)
         {
             try { _tempPids[p.Id] = 1; } catch { }

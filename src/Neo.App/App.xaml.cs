@@ -48,6 +48,7 @@ public partial class App : Application
         var exe = Environment.ProcessPath;
         try { Services.LogBus.App($"应用重启：exe={exe}，释放单实例锁", "Info"); } catch { }
         ReleaseSingleInstance();
+        try { Services.RunStateMarker.Clear(); } catch { }
         if (!string.IsNullOrEmpty(exe))
         {
             // 必须**同步**拉起新进程再退出：之前用 Task.Run + 900ms 延迟，
@@ -183,6 +184,19 @@ public partial class App : Application
         // 而首次构建同样发生在 Loaded 之后 —— 提前加载顺带修掉「首帧用默认配置」的问题。
         try { Services.AppState.Load(); } catch { }
         try { Services.UsageTracker.Load(); } catch { }
+
+        //  运行标记：正常退出会删除；下次启动若标记还在 → 上次没走有序收尾（强杀/崩溃）。
+        //  必须先读旧标记再写新标记，否则会把自己刚写的当成「上次残留」。
+        bool previousRunUnclean = Services.RunStateMarker.Exists;
+        Services.RunStateMarker.MarkRunning();
+        if (previousRunUnclean)
+        {
+            try
+            {
+                Services.LogBus.App("检测到上次未正常退出（运行标记未被清理）——窗口就绪后将执行残留清理（系统代理快照/内核/测速临时文件）", "Warning");
+            }
+            catch { }
+        }
 
         // 启动看门狗：上次没走到窗口显示 → 计数；连续两次失败 → 安全模式（先保证能起来）。
         // 只关「TUN / 固定出口」这两项最容易把启动拖死的设置，其他设置原样保留。
