@@ -517,8 +517,7 @@ public sealed partial class NodesPage : UserControl
                 .Where(n => n.IsValid
                     && !n.IsClashPassthrough && !n.IsCustomConfig && !n.IsNaive
                     && n.TcpDelay == 0
-                    && (n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-                        || (n.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp"))
+                    && DelayTestPlanner.RequiresRealConnection(n))
                 .Distinct()
                 .ToList();
             var udpDone = 0;

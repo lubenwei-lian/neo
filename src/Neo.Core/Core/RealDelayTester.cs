@@ -83,20 +83,31 @@ public static class RealDelayTester
     public static async Task<int> RealPingAsync(NodeItem node, string runtimeDir,
         int timeoutMs = DefaultTimeoutMs, CancellationToken ct = default)
     {
-        if (!node.IsValid) return -1;
-        //   Clash 直通节点没有可单独拨号的出站（整份 YAML 交给 mihomo），不支持单点测速。
-        if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return 0;
+        var plan = DelayTestPlanner.PlanFor(node);
+        var first = await RealPingOnceAsync(node, runtimeDir, timeoutMs, relaxTls: false, ct).ConfigureAwait(false);
+        if (first.Ms >= 0) return first.Ms;
+        if (first.CertFailed && plan.RelaxTlsOnCertFailure && !node.AllowInsecure)
+        {
+            Log($"测速：节点「{node.Name}」证书不受信（{plan.Reason}），放宽校验后重测");
+            var second = await RealPingOnceAsync(node, runtimeDir, timeoutMs, relaxTls: true, ct).ConfigureAwait(false);
+            return second.Ms;
+        }
+        return first.Ms;
+    }
 
-        //   anytls / ss-plugin / h2 / hy2 gecko / 明文 vless 都只能走 sing-box；
-        //   旧实现只看 hy2/tuic → 这些节点用 xray 测速必失败（配置被内核拒绝），界面显示「超时」。
-        //   与连接路径同口径：先按能力判定，再叠加「协议→内核」手动映射（KernelRouter 会做能力校验）。
+    private static async Task<(int Ms, bool CertFailed)> RealPingOnceAsync(NodeItem node, string runtimeDir,
+        int timeoutMs, bool relaxTls, CancellationToken ct)
+    {
+        if (!node.IsValid) return (-1, false);
+        if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return (0, false);
+
         bool useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
             || (node.RequiresSingBox && !node.RequiresXray));
         var exe = Path.Combine(runtimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
         if (!File.Exists(exe))
         {
             Log($"单节点测速失败（本机原因，非节点问题）：内核不存在 {exe}", isError: true);
-            return BatchFailed;
+            return (BatchFailed, false);
         }
 
         var port = FreePort();
@@ -107,7 +118,7 @@ public static class RealDelayTester
         try
         {
             var cfg = useSingBox
-                ? SingBoxConfigBuilder.BuildTest(node, port)
+                ? SingBoxConfigBuilder.BuildTest(node, port, relaxTls)
                 : XrayConfigBuilder.BuildTest(node, port);
             await File.WriteAllTextAsync(cfgPath, cfg, ct);
             core = new CoreProcess(exe, runtimeDir);
@@ -118,12 +129,10 @@ public static class RealDelayTester
             for (var i = 0; i < 40 && !ready; i++)
             {
                 ct.ThrowIfCancellationRequested();
-                //   CoreProcess.Start() 不会因此抛异常，随后所有 socks 探测只会「连接被拒」
-                //   → 全部 -1，界面把本机故障显示成节点「超时」。这里先看内核是否还活着。
                 if (!core.IsRunning)
                 {
                     Log($"单节点测速失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
-                    return BatchFailed;
+                    return (BatchFailed, false);
                 }
                 try
                 {
@@ -141,12 +150,12 @@ public static class RealDelayTester
             if (!core.IsRunning)
             {
                 Log($"单节点测速失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
-                return BatchFailed;
+                return (BatchFailed, false);
             }
             if (!ready)
             {
                 Log($"单节点测速失败（本机原因，非节点问题）：内核在等待窗口内未监听测速端口。内核日志尾部：{TailText(tail)}", isError: true);
-                return BatchFailed;
+                return (BatchFailed, false);
             }
             started = true;
 
@@ -158,17 +167,12 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            // 多目标退让：google 204 失败（超时/限速）时再用 cloudflare 204 判一次，
-            // 避免「google 抖一下」被当成节点不可用。
-            //   原因：首包要建 TCP+TLS+WS 隧道，实测冷连接 0.8～5.6s、热连接 0.13～0.21s；
-            //   只测一次等于把建连开销算成"节点延迟"，同一节点会出现 130ms 与 3000ms 两种结果。
-            //   预热成功后计时一次通常就够；慢节点多测两次取最小，避免单次抖动决定排序。
             var best = int.MaxValue;
             foreach (var url in ProbeUrls)
             {
                 try { using var warm = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { /* 预热失败不影响下面的计时尝试 */ }
+                catch { }
 
                 for (var attempt = 0; attempt < 3; attempt++)
                 {
@@ -182,19 +186,19 @@ public static class RealDelayTester
                         {
                             var ms = (int)sw.ElapsedMilliseconds;
                             if (ms < best) best = ms;
-                            if (best <= SlowEnoughMs) return best;   // 已经足够快，不再多测
+                            if (best <= SlowEnoughMs) return (best, false);
                         }
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                    catch { /* 换下一次尝试 */ }
+                    catch { }
                 }
-                if (best < int.MaxValue) return best;
+                if (best < int.MaxValue) return (best, false);
             }
-            return -1;
+            return (-1, TailHasCertError(tail));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return -1;
+            return (-1, TailHasCertError(tail));
         }
         catch (OperationCanceledException)
         {
@@ -202,19 +206,31 @@ public static class RealDelayTester
         }
         catch (Exception ex) when (!started)
         {
-            //   原先一律 return -1（界面显示「超时」），用户会误判节点坏。
             Log($"单节点测速失败（本机原因，非节点问题）：[{ex.GetType().Name}] {ex.Message}", isError: true);
-            return BatchFailed;
+            return (BatchFailed, false);
         }
         catch
         {
-            return -1;
+            return (-1, TailHasCertError(tail));
         }
         finally
         {
             core?.Stop();
             try { File.Delete(cfgPath); } catch { }
         }
+    }
+
+    /// <summary>内核日志里是否出现「证书不受信」类错误（x509 / unknown authority）。</summary>
+    private static bool TailHasCertError(ConcurrentQueue<string> tail)
+    {
+        foreach (var line in tail)
+        {
+            if (line.Contains("certificate signed by unknown authority", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("x509:", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("failed to verify certificate", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     /// 通过「已连接的本地代理」测延迟。用于连接后自动补测当前节点。

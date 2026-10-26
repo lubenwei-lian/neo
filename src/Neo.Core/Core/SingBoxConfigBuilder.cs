@@ -105,7 +105,7 @@ public static class SingBoxConfigBuilder
         };
     }
 
-    public static string BuildTest(NodeItem node, int socksPort)
+    public static string BuildTest(NodeItem node, int socksPort, bool relaxTls = false)
     {
         if (!node.IsValid) throw new ArgumentException("节点无效（缺地址或端口）");
 
@@ -120,7 +120,7 @@ public static class SingBoxConfigBuilder
                 ["listen"] = "127.0.0.1",
                 ["listen_port"] = socksPort,
             }),
-            ["outbounds"] = BuildTestOutbounds(node),
+            ["outbounds"] = BuildTestOutbounds(node, relaxTls),
             ["route"] = new JsonObject { ["default_domain_resolver"] = "dns-direct" },
         };
         ApplyWireGuardEndpoints(root, node);
@@ -223,16 +223,15 @@ public static class SingBoxConfigBuilder
     };
 
     /// <summary>
-    /// 测速专用出站：TUIC / Hysteria2 一律跳过证书校验。
-    /// 原因：这类 UDP 节点的服务端常用自签证书，供应商分享链接里 allow_insecure 经常是 0（甚至没带），
-    /// 严格校验会让测速 100% 超时（实测日志：x509: certificate signed by unknown authority），
-    /// 用户看到的是「节点没延迟」。测速只回答「能不能通、多快」，不负责证书策略；
-    /// 真实连接仍按 allow_insecure 字段严格校验，两者互不影响。
+    /// 测速专用出站。relaxTls=false 时保持与真实连接一致的严格校验；
+    /// 只有 RealDelayTester 在「内核明确报证书不受信、且该节点按 DelayTestPlanner 允许放宽」时才传 true，
+    /// 用于 UDP 类节点（TUIC/Hysteria2 等自签证书常见）测出真实延迟。
+    /// 放宽只影响这一次测速，不改变节点本身的 allow_insecure 与真实连接策略。
     /// </summary>
-    private static JsonArray BuildTestOutbounds(NodeItem n)
+    private static JsonArray BuildTestOutbounds(NodeItem n, bool relaxTls)
     {
         var outbounds = BuildOutbounds(n);
-        if (n.Protocol is NodeProtocol.TUIC or NodeProtocol.Hysteria2)
+        if (relaxTls)
         {
             foreach (var item in outbounds)
             {

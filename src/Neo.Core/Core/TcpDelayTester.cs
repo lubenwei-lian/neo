@@ -60,12 +60,8 @@ public static class TcpDelayTester
         {
             if (node == null) continue;
             //   测出来的「超时」不代表节点坏（UDP 类协议本来就没有 TCP 端口）。
-            if (!node.IsValid
-                || node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-                || node.IsClashPassthrough
-                || node.Protocol is NodeProtocol.WireGuard
-                || node.IsCustomConfig
-                || (node.Network ?? "").ToLowerInvariant() is "kcp" or "mkcp")
+            // 能力判定统一交给 DelayTestPlanner：UDP/直通/无效节点没有 TCP 端口，跳过。
+            if (!DelayTestPlanner.HasTcpPort(node))
             {
                 result[node] = 0;
                 continue;
