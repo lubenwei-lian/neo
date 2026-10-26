@@ -18,6 +18,9 @@ public sealed partial class NodesPage : UserControl
     private List<NodeTile> _tiles = new();
     private NodeTile? _selected;
     private bool _realTesting;
+    private int _phaseNo;
+    private string? _phaseLabel;
+
     /// TCP 握手延迟测试进行中（与真连测速互不干扰：两边各自判断/落值）。
     private bool _tcpTesting;
     private bool userPickedDuringTest;
@@ -527,7 +530,7 @@ public sealed partial class NodesPage : UserControl
                 try
                 {
                     await RealDelayTester.RealPingBatchAsync(
-                        udpNodes, NeoPaths.RuntimeDir, budgetSeconds: 90,
+                        udpNodes, NeoPaths.RuntimeDir,
                         onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                         {
                             if (App.IsShuttingDown) return;
@@ -715,11 +718,44 @@ public sealed partial class NodesPage : UserControl
         }
     }
 
+    /// <summary>底部居中的进度文本：阶段/已测数、重试轮次，完成消息停留 3 秒后清空。</summary>
+    private async void UpdateFootProgress(DelayTestProgress p)
+    {
+        if (App.IsShuttingDown || FootCenter == null) return;
+        if (p.Phase is DelayTestPhase.Tcp or DelayTestPhase.Udp)
+        {
+            if (!string.Equals(_phaseLabel, p.Label, StringComparison.Ordinal))
+            {
+                _phaseNo = _phaseNo <= 0 ? 1 : 2;
+                _phaseLabel = p.Label;
+            }
+            FootCenter.Text = $"阶段 {_phaseNo}/2 · {p.Label} 测速中 {p.Done}/{p.Total}";
+            FootTime.Text = $"真连测速中 {p.Done}/{p.Total}…";
+            return;
+        }
+        if (p.Phase == DelayTestPhase.Retry)
+        {
+            FootCenter.Text = $"失败重试 {p.RetryRound}/4 · 剩余 {p.Remaining} 个";
+            FootTime.Text = $"真连测速中 {p.Done}/{p.Total}…";
+            return;
+        }
+        if (p.Phase == DelayTestPhase.Done)
+        {
+            var msg = p.Message;
+            FootCenter.Text = msg;
+            await Task.Delay(3000);
+            if (!App.IsShuttingDown && !_realTesting && string.Equals(FootCenter.Text, msg, StringComparison.Ordinal))
+                FootCenter.Text = "";
+        }
+    }
+
     private async Task RunBatchAsync(List<NodeTile> all, bool autoSelect)
     {
         if (all.Count == 0) return;
         if (_realTesting) return;
         _realTesting = true;
+        _phaseNo = 0;
+        _phaseLabel = null;
         userPickedDuringTest = false;   // 本轮测速的用户干预标记从零开始
         bool canceled = false;
         _realCts = new CancellationTokenSource();
@@ -738,9 +774,6 @@ public sealed partial class NodesPage : UserControl
             var usableDuringTest = new List<(NodeItem Node, int Ms)>();
             var map = await RealDelayTester.RealPingBatchAsync(
                 all.Select(t => t.Node).ToList(), NeoPaths.RuntimeDir,
-                // 批量超时 4.5s：Core 侧已改为单请求计时，4.5s 足够；再长只会拖慢整批
-                //（批量是并行的，最后一名决定总耗时）。
-                timeoutMs: 4500,
                 onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                 {
                     if (App.IsShuttingDown) return;
@@ -749,7 +782,6 @@ public sealed partial class NodesPage : UserControl
                         tile.SetResult(ms);
                         done++;
                         // 每个节点都刷新页脚进度（原先每 10 个刷一次，用户以为卡住）。
-                        FootTime.Text = $"真连测速中 {done}/{all.Count}…";
                         FootAvg.Text = "";
 
                         if (ms > 0) usableDuringTest.Add((node, ms));
@@ -773,40 +805,11 @@ public sealed partial class NodesPage : UserControl
                     }
                 }),
                 ct: _realCts.Token,
+                onProgress: p => _ = DispatcherQueue.TryEnqueue(() => UpdateFootProgress(p)),
                 // 复核只对全量真连测速做（autoSelect=true）；补测不复核。
                 availabilityRecheck: autoSelect,
                 onUsableChecked: usable => { usableChecked = usable; });
 
-            // 批量里超时（-1）/没测到的节点做一次**有限**的单独重试：
-            //   只重试前 6 个、总预算 6s、单次 5s —— 避免几个死节点把整批拖到最后。
-            var retry = all.Where(t => t.RealValue <= 0).Take(6).ToList();
-            if (retry.Count > 0 && _realCts is { IsCancellationRequested: false })
-            {
-                LogBus.App($"真连测速：重试 {retry.Count} 个（上限 6，预算 6s，单次 5s 超时）…");
-                using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(_realCts.Token);
-                retryCts.CancelAfter(TimeSpan.FromSeconds(6));
-                var retried = 0;
-                try
-                {
-                    await Parallel.ForEachAsync(retry,
-                        new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = retryCts.Token },
-                        async (tile, ict) =>
-                        {
-                            var ms = await RealDelayTester.RealPingAsync(
-                                tile.Node, NeoPaths.RuntimeDir, timeoutMs: 5000, ct: ict);
-                            Interlocked.Increment(ref retried);
-                            _ = DispatcherQueue.TryEnqueue(() =>
-                            {
-                                if (!App.IsShuttingDown) tile.SetResult(ms);
-                            });
-                        });
-                }
-                catch (OperationCanceledException)
-                {
-                    if (_realCts is { IsCancellationRequested: true }) throw;   // 用户点了停止：交给外层标记 canceled
-                    LogBus.App($"真连测速：重试预算 6s 用尽，已重试 {retried}/{retry.Count} 个（其余保持未测）", "Warning");
-                }
-            }
         }
         catch (OperationCanceledException)
         {
@@ -823,6 +826,7 @@ public sealed partial class NodesPage : UserControl
             RealTestBtnText.Text = "真连测速";
             _realCts?.Dispose();
             _realCts = null;
+            if (FootCenter != null) FootCenter.Text = "";
         }
 
         if (!canceled) _lastRealTestAt = DateTime.Now;

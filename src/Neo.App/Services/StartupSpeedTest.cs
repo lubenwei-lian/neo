@@ -75,7 +75,8 @@ public static class StartupSpeedTest
         var sw = Stopwatch.StartNew();
         LogBus.App($"启动自动测速开始（{nodes.Count} 个节点 · 后台）");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        // 进度驱动：不再用 3 分钟总预算截断；只保留用户/应用退出时的取消。
+        using var cts = new CancellationTokenSource();
         var ok = 0;
         var reported = 0;
         await RealDelayTester.RealPingBatchAsync(
@@ -85,7 +86,7 @@ public static class StartupSpeedTest
                 if (ms > 0)
                 {
                     node.RealDelay = ms;
-                    DelayCache.Set(node, ms);
+                    DelayCache.Set(node, ms, node.RealDelayNote);
                     Interlocked.Increment(ref ok);
                 }
                 // 其余（-1 超时 / BatchFailed 本机失败）不写回：保持「未测速」，下次再测

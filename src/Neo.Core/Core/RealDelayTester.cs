@@ -128,8 +128,18 @@ public static class RealDelayTester
         return new RealPingResult(ms, note);
     }
 
+    /// <summary>用指定 URL 探测「这个节点实际能不能用」（可用性复核）。返回 ms，<=0 表示不可用。</summary>
+    public static async Task<int> ProbeUrlAsync(NodeItem node, string runtimeDir, string url,
+        int timeoutMs = 4000, CancellationToken ct = default)
+    {
+        var plan = DelayTestPlanner.PlanFor(node);
+        var r = await RealPingOnceAsync(node, runtimeDir, timeoutMs, 1, plan.RelaxTlsOnCertFailure, ct, url)
+            .ConfigureAwait(false);
+        return r.Ms;
+    }
+
     private static async Task<(int Ms, bool CertFailed)> RealPingOnceAsync(NodeItem node, string runtimeDir,
-        int timeoutMs, int attempts, bool relaxTls, CancellationToken ct)
+        int timeoutMs, int attempts, bool relaxTls, CancellationToken ct, string? urlOverride = null)
     {
         if (!node.IsValid) return (-1, false);
         if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return (0, false);
@@ -199,6 +209,20 @@ public static class RealDelayTester
                 ConnectTimeout = TimeSpan.FromMilliseconds(timeoutMs),
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+
+            if (urlOverride != null)
+            {
+                try
+                {
+                    var swUrl = Stopwatch.StartNew();
+                    using var respUrl = await http.GetAsync(urlOverride, HttpCompletionOption.ResponseHeadersRead, ct);
+                    swUrl.Stop();
+                    var codeUrl = (int)respUrl.StatusCode;
+                    return (codeUrl is >= 200 and < 400 ? (int)swUrl.ElapsedMilliseconds : -1, TailHasCertError(tail));
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch { return (-1, TailHasCertError(tail)); }
+            }
 
             var best = int.MaxValue;
             foreach (var url in ProbeUrls)
@@ -381,239 +405,18 @@ public static class RealDelayTester
     ///
     ///   超预算立即停止剩余探测，并对还没出结果的节点补一次 onResult(node, -1)，
     ///   避免弱网/大量死节点时拖到 1 分半、UI 停在半路。可用性复核有自己独立的 6s 预算，不共用。
-    public static async Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
+    /// <summary>
+    /// 真连测速入口（兼容旧签名）。实际调度在 DelayTestRunner：
+    /// 进度驱动、按 TCP/UDP 数量决定先后、两组测完再统一重试失败节点（首测 + 4 次重试）。
+    /// timeoutMs 参数已废弃（单节点超时由 DelayTestPlanner 决定：TCP 9s / UDP 15s）。
+    /// </summary>
+    public static Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir,
-        int timeoutMs = DefaultTimeoutMs, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
+        int timeoutMs = 0, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
         bool availabilityRecheck = false,
         Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null,
-        int budgetSeconds = 120)
-    {
-        var result = new ConcurrentDictionary<NodeItem, int>();
-        var valid = nodes.Where(n => n.IsValid).ToList();
-        //   Clash 直通节点是「整份 YAML 交给 mihomo」，没有独立可测的出站 → 跳过（保持未测）。
-        valid.RemoveAll(n => n.IsClashPassthrough || n.IsCustomConfig || n.IsNaive);
-        static bool BaseUseSb(NodeItem n) => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-            || (n.RequiresSingBox && !n.RequiresXray);
-        static bool UseSb(NodeItem n) => KernelRouter.Apply(n, BaseUseSb(n));
-        var sbNodes = valid.Where(UseSb).ToList();
-        var xrayNodes = valid.Where(n => !UseSb(n)).ToList();
-        var done = 0;
-
-        //   本 token 只覆盖「节点探测阶段」（xray 批量 + sb 单测）；可用性复核另有自己的 6s 预算，
-        //   单独用 ct 派生，不混用本 token（避免复核被总预算提前掐掉）。budgetSeconds <= 0 视为不设预算。
-        using var batchBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (budgetSeconds > 0) batchBudget.CancelAfter(TimeSpan.FromSeconds(budgetSeconds));
-        var batchToken = batchBudget.Token;
-        var budgetExpired = false;
-        // 已回调过的节点（xray + sb）：预算耗尽补 -1 时用于去重，保证每个节点只回调一次。
-        var reported = new ConcurrentDictionary<NodeItem, byte>();
-
-        if (sbNodes.Count > 0 && !budgetExpired)
-        {
-            try
-            {
-                await Parallel.ForEachAsync(sbNodes,
-                    new ParallelOptions { CancellationToken = batchToken, MaxDegreeOfParallelism = 4 },
-                    async (n, ict) =>
-                    {
-                        var ms = await RealPingAsync(n, runtimeDir, timeoutMs, ict);
-                        result[n] = ms;
-                        reported[n] = 0;
-                        onResult?.Invoke(n, ms);
-                        Interlocked.Increment(ref done);
-                    });
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (OperationCanceledException)
-            {
-                // 总预算在 sb 阶段耗尽：同样停止剩余节点，交给末尾统一补 -1 + 日志。
-                budgetExpired = true;
-            }
-        }
-
-        if (xrayNodes.Count > 0)
-        {
-            var batchFailed = false;
-            var ports = AllocPorts(xrayNodes.Count);
-            var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-realtest-batch-{ports[0]}-{Guid.NewGuid():N}.json");
-            CoreProcess? core = null;
-            var batchResult = new int[xrayNodes.Count];
-            Array.Fill(batchResult, -1);
-            var tail = new ConcurrentQueue<string>();
-            try
-            {
-                await File.WriteAllTextAsync(cfgPath, XrayConfigBuilder.BuildTestBatch(xrayNodes, ports), ct);
-                core = new CoreProcess(Path.Combine(runtimeDir, "xray.exe"), runtimeDir);
-                core.LogLine += line => AppendTail(tail, line);
-                core.Start(cfgPath);
-                await Task.Delay(1000, batchToken); // 给内核 1 秒初始化（计入总预算）
-
-                //   CoreProcess.Start() 不会抛异常；原实现继续对已关闭的 socks 端口探测，
-                //   于是整批都得到 -1「超时」而不是 -2「本机失败」。这里主动检测秒退。
-                if (!core.IsRunning)
-                {
-                    batchFailed = true;
-                    Log($"批量测速失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
-                }
-
-                if (!batchFailed)
-                {
-                    // 整批开始的 INFO 日志：让人一眼看出这次是「保守但更快」的模式。
-                    // 批量路径已去掉预热请求：每节点只发一次计时请求（延迟口径含建连+TLS，见 PingViaSocksAsync 注释）。
-                    Log($"真连测速：并发 {BatchMaxConcurrency}、错峰 {BatchStaggerBaseMs}ms、单请求计时（保守但更快，避免触发商家限流）");
-
-                    // 节拍器负责「启动有间隔」，MaxDegreeOfParallelism 负责「同时最多 BatchMaxConcurrency（10）条在跑」。
-                    // 两者都接收 ict：取消时 Task.Delay/WaitAsync 立即抛出，不会卡住整批。
-                    var startGate = new BatchStartGate();
-                    await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
-                        new ParallelOptions
-                        {
-                            CancellationToken = batchToken,
-                            MaxDegreeOfParallelism = BatchMaxConcurrency,
-                        },
-                        async (i, ict) =>
-                        {
-                            await startGate.WaitTurnAsync(ict);
-                            batchResult[i] = await PingViaSocksAsync(ports[i], timeoutMs, ict);
-                            result[xrayNodes[i]] = batchResult[i];
-                            reported[xrayNodes[i]] = 0;
-                            // 每个节点测完立即回调（上层按节点更新进度；「每 10 个」只是上层刷页脚文本的节流）。
-                            onResult?.Invoke(xrayNodes[i], batchResult[i]);
-                            Interlocked.Increment(ref done);
-                        });
-                }
-
-                //   必须在 core.Stop() 之前做 —— 用的就是同一个临时内核实例的 socks 端口。
-                //   只复核 xray 节点（sing-box 节点在各自临时内核里测，且内核已停，无端口可复用）。
-                if (!batchFailed && availabilityRecheck)
-                {
-                    var usable = new List<NodeItem>();
-                    var checkedCount = 0;
-                    // 提到 try 外：预算耗尽分支要打「已复核 N/候选数」的日志。
-                    var candidates = new List<int>();
-                    //   任一成功立即返回、不再等其余；全部失败则等全部结束。
-                    //   总预算 6s 只作兜底（单次 4s，正常最多等约 4s）。
-                    //   用 linked CTS：外部取消（用户点停止）仍原样抛出；预算耗尽只停掉剩余候选，
-                    //   已完成的「可用/不可用」结论照用（不把未复核节点误判成不可用）。
-                    using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    budget.CancelAfter(TimeSpan.FromSeconds(AvailabilityRecheckBudgetSeconds));
-                    var budgetToken = budget.Token;
-                    try
-                    {
-                        // 按延迟从低到高取前 3 名（并列按端口索引稳定排序）。
-                        candidates = Enumerable.Range(0, xrayNodes.Count)
-                            .Where(i => batchResult[i] > 0)
-                            .OrderBy(i => batchResult[i])
-                            .Take(AvailabilityRecheckTop)
-                            .ToList();
-                        Log($"可用性复核 {candidates.Count} 个（并发），避免选到延迟低但用不了的节点" +
-                            $"（单次超时 {AvailabilityRecheckTimeoutMs}ms、总预算 {AvailabilityRecheckBudgetSeconds}s）");
-                        if (candidates.Count > 0)
-                        {
-                            // 每个候选用自己的 socks 端口并发发请求（本来就是独立连接）；
-                            // recheckCts 用于「任一成功即取消其余」。
-                            using var recheckCts = CancellationTokenSource.CreateLinkedTokenSource(budgetToken);
-                            var pending = new List<Task<(int Index, bool Ok)>>();
-                            async Task<(int Index, bool Ok)> ProbeOneAsync(int index, CancellationToken token)
-                            {
-                                var ok = await IsUsableViaSocksAsync(ports[index], token).ConfigureAwait(false);
-                                return (index, ok);
-                            }
-                            try
-                            {
-                                foreach (var i in candidates) pending.Add(ProbeOneAsync(i, recheckCts.Token));
-                                while (pending.Count > 0)
-                                {
-                                    await Task.WhenAny(pending);
-                                    var finished = pending.First(t => t.IsCompleted);
-                                    pending.Remove(finished);
-                                    var (i, ok) = await finished;
-                                    checkedCount++;
-                                    if (ok) usable.Add(xrayNodes[i]);
-                                    Log($"可用性复核：「{xrayNodes[i].Name}」（{batchResult[i]} ms）→ {(ok ? "可用" : "不可用")}");
-                                    if (ok)
-                                    {
-                                        // 任一成功就够判定「有可用节点」：不等其余候选，取消在飞请求后返回。
-                                        recheckCts.Cancel();
-                                        break;
-                                    }
-                                }
-                            }
-                            finally
-                            {
-                                // 成功提前退出/预算耗尽/用户取消时，把仍在飞的请求取消并收尾，避免未观察异常。
-                                if (pending.Count > 0)
-                                {
-                                    recheckCts.Cancel();
-                                    try { await Task.WhenAll(pending); } catch { }
-                                }
-                            }
-                        }
-                    }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                    {
-                        // 用户取消整批测速：维持原有语义（向上抛，由调用方按「已取消」处理）。
-                        throw;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // 预算耗尽：停止剩余候选，已复核完的结论照用。
-                        Log($"可用性复核超出 {AvailabilityRecheckBudgetSeconds}s 预算，已复核 {checkedCount}/{candidates.Count}");
-                    }
-                    catch (Exception ex)
-                    {
-                        // 复核本身失败不能影响已经测到的延迟结果：按「无结果」上交，由上层退回按延迟选择。
-                        Log($"可用性复核整体失败（不影响延迟结果）：[{ex.GetType().Name}] {ex.Message}", isError: true);
-                    }
-                    onUsableChecked?.Invoke(usable);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (OperationCanceledException)
-            {
-                //   日志与 onResult(-1) 在方法末尾统一补（那里能覆盖 sb 节点，也能准确统计剩余数）。
-                budgetExpired = true;
-            }
-            //   被静默吞掉，随后 batchResult 的 -1 初值被当成「确定超时」写进结果，
-            //   界面于是把「本机故障」显示成满屏节点「超时」，且日志里零痕迹。
-            //   现在：留 Error 痕 + 标记本批为「本机失败」，不再冒充测速结果。
-            catch (Exception ex)
-            {
-                batchFailed = true;
-                Log($"批量测速失败（本机原因，非节点问题）：[{ex.GetType().Name}] {ex.Message}", isError: true);
-            }
-            finally
-            {
-                core?.Stop();
-                try { File.Delete(cfgPath); } catch { }
-            }
-
-            // 只有正常跑完才回填结果；本机失败时**不写** -1 冒充超时，
-            // 改为写入明确的失败标记值（见下方约定），并把该批的 -2 也通知给上层，
-            // 避免界面停在旧状态。
-            for (var i = 0; i < xrayNodes.Count; i++)
-            {
-                var value = batchFailed ? BatchFailed : batchResult[i];
-                result[xrayNodes[i]] = value;
-                if (batchFailed && reported.TryAdd(xrayNodes[i], 0))
-                    onResult?.Invoke(xrayNodes[i], value);
-            }
-        }
-
-        if (budgetExpired)
-        {
-            //   原实现补 -1（超时）—— 那会把「没轮到测」伪装成「节点坏了」，用户据此会误删好节点。
-            var remaining = valid.Where(n => !reported.ContainsKey(n)).ToList();
-            Log($"真连测速超出 {budgetSeconds}s 预算，剩余 {remaining.Count} 个未测（保持「未测」，不按超时处理）");
-            foreach (var n in remaining)
-            {
-                result[n] = 0;
-                if (reported.TryAdd(n, 0)) onResult?.Invoke(n, 0);
-            }
-        }
-
-        return result;
-    }
+        Action<DelayTestProgress>? onProgress = null)
+        => DelayTestRunner.RunAsync(nodes, runtimeDir, onResult, ct, availabilityRecheck, onUsableChecked, onProgress);
 
     private static async Task<int> PingViaSocksAsync(int port, int timeoutMs, CancellationToken ct)
     {

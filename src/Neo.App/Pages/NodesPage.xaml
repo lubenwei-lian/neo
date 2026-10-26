@@ -241,6 +241,8 @@
                             <TextBlock x:Name="FootTime" Text="尚未测速" FontSize="11" Foreground="{ThemeResource NeoText2}" />
                             <TextBlock x:Name="FootAvg" Text="" FontSize="11" Foreground="{ThemeResource NeoText2}" />
                         </StackPanel>
+                        <TextBlock x:Name="FootCenter" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   FontSize="11" Foreground="{ThemeResource NeoText2}" Text="" TextTrimming="CharacterEllipsis" MaxWidth="560" />
                         <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="11"
                                    Foreground="{ThemeResource NeoText2}" Text="点击卡片选择节点 · 真连测速 = 实际链路延迟（再点一次停止）" />
                     </Grid>
