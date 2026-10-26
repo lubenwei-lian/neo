@@ -231,7 +231,7 @@ public static class ShareLinkParser
             Sni = OrNull(G(q, "sni")) ?? OrNull(G(q, "peer")),
         };
         if (portSpec.Length > 0) node.Extras["server_ports"] = portSpec;
-        node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure"));
+        node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure")) || ParseBool(G(q, "allow_insecure"));
         //   ech 也没写进 sing-box 的 tls.ech。现在 pin 落 CertSha256（排障/未来内核支持），ech 落 EchConfigList。
         node.CertSha256 = OrNull(G(q, "pinSHA256")) ?? node.CertSha256;
         node.EchConfigList = OrNull(G(q, "ech")) ?? node.EchConfigList;
@@ -425,7 +425,7 @@ public static class ShareLinkParser
             node.Password = OrNull(G(q, "password")) ?? "";
         }
 
-        node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure"));
+        node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure")) || ParseBool(G(q, "allow_insecure"));
         Copy(node, q, "congestion_control");
         Copy(node, q, "udp_relay_mode");
         Copy(node, q, "alpn");
@@ -534,7 +534,7 @@ public static class ShareLinkParser
         }
 
         //   旧实现只认后者 → insecure=1 被静默忽略（证书校验没跳过，节点连不上）。两者任一为真即视为跳过校验。
-        node.AllowInsecure = ParseBool(G("allowInsecure")) || ParseBool(G("insecure"));
+        node.AllowInsecure = ParseBool(G("allowInsecure")) || ParseBool(G("insecure")) || ParseBool(G("allow_insecure"));
 
         foreach (var kv in q)
         {

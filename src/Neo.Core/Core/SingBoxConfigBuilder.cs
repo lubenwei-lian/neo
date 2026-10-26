@@ -120,7 +120,7 @@ public static class SingBoxConfigBuilder
                 ["listen"] = "127.0.0.1",
                 ["listen_port"] = socksPort,
             }),
-            ["outbounds"] = BuildOutbounds(node),
+            ["outbounds"] = BuildTestOutbounds(node),
             ["route"] = new JsonObject { ["default_domain_resolver"] = "dns-direct" },
         };
         ApplyWireGuardEndpoints(root, node);
@@ -221,6 +221,26 @@ public static class SingBoxConfigBuilder
         ["listen"] = allowLan ? "0.0.0.0" : "127.0.0.1",
         ["listen_port"] = port,
     };
+
+    /// <summary>
+    /// 测速专用出站：TUIC / Hysteria2 一律跳过证书校验。
+    /// 原因：这类 UDP 节点的服务端常用自签证书，供应商分享链接里 allow_insecure 经常是 0（甚至没带），
+    /// 严格校验会让测速 100% 超时（实测日志：x509: certificate signed by unknown authority），
+    /// 用户看到的是「节点没延迟」。测速只回答「能不能通、多快」，不负责证书策略；
+    /// 真实连接仍按 allow_insecure 字段严格校验，两者互不影响。
+    /// </summary>
+    private static JsonArray BuildTestOutbounds(NodeItem n)
+    {
+        var outbounds = BuildOutbounds(n);
+        if (n.Protocol is NodeProtocol.TUIC or NodeProtocol.Hysteria2)
+        {
+            foreach (var item in outbounds)
+            {
+                if (item is JsonObject o && o["tls"] is JsonObject tls) tls["insecure"] = true;
+            }
+        }
+        return outbounds;
+    }
 
     private static JsonArray BuildOutbounds(NodeItem n) => n.Protocol is NodeProtocol.WireGuard
         // WireGuard 走 endpoints（sing-box 1.11+），没有对应 outbound。
