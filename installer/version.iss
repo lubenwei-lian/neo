@@ -8,4 +8,4 @@
 ;   4) tools\launcher\neo_launcher.rc   FILEVERSION / PRODUCTVERSION / 字符串
 ;   5) installer\说明.txt               末尾「版本 x.y.z」行
 ; ============================================================================
-#define MyAppVersion "0.2.9"
+#define MyAppVersion "0.2.8"
