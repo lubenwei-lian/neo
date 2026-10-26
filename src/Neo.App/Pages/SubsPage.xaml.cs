@@ -22,6 +22,9 @@ public sealed partial class SubsPage : UserControl
     /// 样式比较，**不再起 xray 子进程**，因此不存在原先注释里担心的 UI 线程冻结问题。
     private readonly Microsoft.UI.Xaml.DispatcherTimer _usageTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private bool _syncingAuto;
+    /// <summary>切换单个订阅开关时抑制整页重建，避免所有开关被重新创建而集体重播动画。</summary>
+    private bool _skipDisplayRebuild;
+
     private bool _addingSub;
 
     private Neo.App.Ui.PopupList? _intervalList;
@@ -57,6 +60,7 @@ public sealed partial class SubsPage : UserControl
 
     private void UpdateDisplay()
     {
+        if (_skipDisplayRebuild) return;
         RebuildSubCards();
 
         _syncingAuto = true;
@@ -107,13 +111,14 @@ public sealed partial class SubsPage : UserControl
         row1.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-        left.Children.Add(new Ellipse
+        var dot = new Ellipse
         {
             Width = 7,
             Height = 7,
             VerticalAlignment = VerticalAlignment.Center,
             Fill = ThemeUtil.Get(sub.Enabled ? "NeoGreen" : "NeoText3", Color.FromArgb(255, 0x98, 0xA0, 0xAA)),
-        });
+        };
+        left.Children.Add(dot);
         left.Children.Add(new TextBlock
         {
             Text = sub.Name,
@@ -139,8 +144,13 @@ public sealed partial class SubsPage : UserControl
         var sidToggle = sub.Id;
         toggle.Toggled += (_, _) =>
         {
-            AppState.SetSubscriptionEnabled(sidToggle, toggle.IsOn);
-            UpdateDisplay();
+            var on = toggle.IsOn;
+            //   只改数据 + 这个开关自己的圆点，不重建整页：重建会把每个 ToggleSwitch 重新创建，
+            //   其它开关会跟着重播一次位移动画，看起来像「一起被拨动」。
+            _skipDisplayRebuild = true;
+            try { AppState.SetSubscriptionEnabled(sidToggle, on); }
+            finally { _skipDisplayRebuild = false; }
+            dot.Fill = ThemeUtil.Get(on ? "NeoGreen" : "NeoText3", Color.FromArgb(255, 0x98, 0xA0, 0xAA));
         };
         right.Children.Add(toggle);
 
