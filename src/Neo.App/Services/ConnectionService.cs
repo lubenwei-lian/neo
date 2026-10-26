@@ -257,18 +257,42 @@ public static class ConnectionService
     /// 只有内核明确报证书不受信时，才把该节点标记为「本次放宽」并在日志里写明原因。
     /// 与测速的两套方案保持一致：正常证书不受影响，自签节点不至于「能测延迟却连不上」。
     /// </summary>
+    /// <summary>该节点是否有「可放宽的 TLS 证书校验」（TUIC/Hy2/Trojan，以及声明 tls 的 VMess/VLESS）。</summary>
+    private static bool SupportsTlsPolicy(NodeItem node)
+    {
+        if (node.IsNaive || node.IsClashPassthrough || node.IsCustomConfig) return false;
+        if (node.Protocol is NodeProtocol.WireGuard) return false;
+        if (node.Protocol is NodeProtocol.TUIC or NodeProtocol.Hysteria2 or NodeProtocol.Trojan) return true;
+        var sec = (node.Security ?? "").Trim().ToLowerInvariant();
+        return sec == "tls";
+    }
+
+    /// <summary>
+    /// 连接前的证书策略探测（TUIC/Hysteria2 及所有走 TLS 的节点）：
+    ///   先按分享链接声明的 allow_insecure 严格连；只有内核明确报证书不受信时，
+    ///   才把该节点标记为「本次放宽」并在日志里写明原因。
+    /// 与测速的双方案一致：正常证书不受影响，自签节点不至于「能测延迟却连不上」。
+    /// </summary>
     private static async Task ApplyTlsPolicyAsync(NodeItem node)
     {
         try
         {
-            if (node.Protocol is not (NodeProtocol.TUIC or NodeProtocol.Hysteria2)) return;
+            if (!SupportsTlsPolicy(node)) return;
             if (node.AllowInsecure || node.ForceInsecure) return;
-            if (node.RealDelayNote?.Contains("证书放宽", StringComparison.Ordinal) == true)
+
+            var note = node.RealDelayNote ?? "";
+            if (note.Contains("证书放宽", StringComparison.Ordinal) || note.Contains("证书不受信", StringComparison.Ordinal))
             {
                 node.ForceInsecure = true;
                 LogBus.App($"节点「{node.Name}」测速时已确认证书不受信 → 本次连接放宽校验", "Warning");
                 return;
             }
+
+            // 测速时严格校验都能通过，说明证书没问题，不必再起一次临时内核。
+            if (node.RealDelay > 0) return;
+            if (node.TlsChecked) return;
+            node.TlsChecked = true;
+
             var certBad = await RealDelayTester.CertUntrustedAsync(node, NeoPaths.RuntimeDir, 6000)
                 .ConfigureAwait(false);
             if (certBad)

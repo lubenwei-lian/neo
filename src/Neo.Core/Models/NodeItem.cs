@@ -86,6 +86,8 @@ public sealed class NodeItem
     public bool AllowInsecure { get; set; }
     /// <summary>本次运行期强制放宽证书校验（连接前探测到服务端证书不受信时置位，不写回配置）。</summary>
     public bool ForceInsecure { get; set; }
+    /// <summary>本次运行是否已做过证书探测（避免每次连接都起临时内核）。</summary>
+    public bool TlsChecked { get; set; }
 
     public Dictionary<string, string> Extras { get; } = new();
 

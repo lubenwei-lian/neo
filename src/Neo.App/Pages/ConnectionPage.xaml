@@ -218,6 +218,8 @@
                                                        Foreground="{ThemeResource NeoText1}" />
                                             <TextBlock x:Name="SelHint" Text="" FontSize="11.5"
                                                        Foreground="{ThemeResource NeoText3}" Margin="0,2,0,0" />
+                                            <TextBlock x:Name="KernelHint" Text="" FontSize="10.5"
+                                                       Foreground="{ThemeResource NeoText3}" Margin="0,1,0,0" />
                                         </StackPanel>
                                     </StackPanel>
                                     <TextBlock Text="&#xE76C;" FontFamily="Segoe Fluent Icons" FontSize="14"

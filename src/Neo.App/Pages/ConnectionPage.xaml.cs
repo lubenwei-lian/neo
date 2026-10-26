@@ -1411,6 +1411,7 @@ public sealed partial class ConnectionPage : UserControl
         var flagKey = node == null ? "other" : AppState.GuessFlag(node.Name);
         Ui.FlagPainter.Draw(SelFlag, flagKey);
 
+        KernelHint.Text = fixedExit != null ? "" : KernelSupport.Describe(node);
         SelNodeName.Text = fixedExit != null ? "出口：" + fixedExit.Name : (node?.Name ?? "未选择节点");
         SelHint.Text = fixedExit != null
             ? "固定出口 · 入口 " + ConnectionService.FixedExitEntries + " 条（切换入口不影响出口）"
