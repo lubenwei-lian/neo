@@ -80,23 +80,56 @@ public static class RealDelayTester
         Target,
     };
 
+    /// <summary>真连测速结果：毫秒值 + 补充说明（证书放宽 / UDP 限制等）。</summary>
+    public readonly record struct RealPingResult(int Ms, string? Note);
+
     public static async Task<int> RealPingAsync(NodeItem node, string runtimeDir,
+        int timeoutMs = DefaultTimeoutMs, CancellationToken ct = default)
+        => (await RealPingDetailedAsync(node, runtimeDir, timeoutMs, ct).ConfigureAwait(false)).Ms;
+
+    /// <summary>
+    /// 两阶段真连测速：
+    ///   1) 按节点声明的证书策略严格测；
+    ///   2) 只有内核明确报证书不受信、且该方案允许放宽（UDP 类）时，才放宽一次重测，并写明原因。
+    /// 超时/失败时根据传输层给出可解释的说明（UDP 被限、证书不受信等）。
+    /// </summary>
+    public static async Task<RealPingResult> RealPingDetailedAsync(NodeItem node, string runtimeDir,
         int timeoutMs = DefaultTimeoutMs, CancellationToken ct = default)
     {
         var plan = DelayTestPlanner.PlanFor(node);
-        var first = await RealPingOnceAsync(node, runtimeDir, timeoutMs, relaxTls: false, ct).ConfigureAwait(false);
-        if (first.Ms >= 0) return first.Ms;
-        if (first.CertFailed && plan.RelaxTlsOnCertFailure && !node.AllowInsecure)
+        var effectiveTimeout = timeoutMs > 0 ? timeoutMs : plan.TimeoutMs;
+        var first = await RealPingOnceAsync(node, runtimeDir, effectiveTimeout, plan.Attempts, relaxTls: false, ct).ConfigureAwait(false);
+        var ms = first.Ms;
+        string? note = null;
+
+        if (ms > 0)
+        {
+            note = null;
+        }
+        else if (first.CertFailed && plan.RelaxTlsOnCertFailure && !node.AllowInsecure)
         {
             Log($"测速：节点「{node.Name}」证书不受信（{plan.Reason}），放宽校验后重测");
-            var second = await RealPingOnceAsync(node, runtimeDir, timeoutMs, relaxTls: true, ct).ConfigureAwait(false);
-            return second.Ms;
+            var second = await RealPingOnceAsync(node, runtimeDir, effectiveTimeout, plan.Attempts, relaxTls: true, ct).ConfigureAwait(false);
+            ms = second.Ms;
+            note = ms > 0
+                ? "证书放宽"
+                : plan.Transport == DelayTransport.Udp ? "证书放宽后仍超时（UDP 可能被限制）" : "证书放宽后仍失败";
         }
-        return first.Ms;
+        else if (first.CertFailed)
+        {
+            note = "证书不受信";
+        }
+        else if (plan.Transport == DelayTransport.Udp && ms <= 0)
+        {
+            note = "UDP 可能被网络限制";
+        }
+
+        node.RealDelayNote = note;
+        return new RealPingResult(ms, note);
     }
 
     private static async Task<(int Ms, bool CertFailed)> RealPingOnceAsync(NodeItem node, string runtimeDir,
-        int timeoutMs, bool relaxTls, CancellationToken ct)
+        int timeoutMs, int attempts, bool relaxTls, CancellationToken ct)
     {
         if (!node.IsValid) return (-1, false);
         if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return (0, false);
@@ -174,7 +207,7 @@ public static class RealDelayTester
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch { }
 
-                for (var attempt = 0; attempt < 3; attempt++)
+                for (var attempt = 0; attempt < Math.Max(1, attempts); attempt++)
                 {
                     try
                     {

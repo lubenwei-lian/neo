@@ -23,7 +23,9 @@ public sealed record DelayPlan(
     DelayScheme Scheme,
     DelayTransport Transport,
     bool RelaxTlsOnCertFailure,
-    string Reason);
+    string Reason,
+    int TimeoutMs = 9000,
+    int Attempts = 3);
 
 public static class DelayTestPlanner
 {
@@ -56,8 +58,10 @@ public static class DelayTestPlanner
         // 「TCP 握手」只服务于显式的快速测延迟按钮，不参与自动方案选择。
         return t == DelayTransport.Udp
             ? new DelayPlan(DelayScheme.RealConnection, t, RelaxTlsOnCertFailure: true,
-                Reason: "UDP 协议没有 TCP 端口，走真连；证书不受信时自动放宽一次")
+                Reason: "UDP 协议没有 TCP 端口，走真连；证书不受信时自动放宽一次",
+                TimeoutMs: 15000, Attempts: 2)
             : new DelayPlan(DelayScheme.RealConnection, t, RelaxTlsOnCertFailure: false,
-                Reason: "TCP 协议，走真连并严格校验证书");
+                Reason: "TCP 协议，走真连并严格校验证书",
+                TimeoutMs: 9000, Attempts: 3);
     }
 }

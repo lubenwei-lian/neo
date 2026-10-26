@@ -88,6 +88,8 @@ public sealed class NodeItem
     public Dictionary<string, string> Extras { get; } = new();
 
     public int RealDelay { get; set; }
+    /// <summary>真连测速的补充说明（如「证书放宽」「UDP 可能被限制」）；null 表示无特殊说明。</summary>
+    public string? RealDelayNote { get; set; }
 
     /// TCP 握手延迟（毫秒）：0 = 未测，-1 = 超时，>0 = 握手毫秒。
     /// 与 <see cref="RealDelay"/> 的区别：RealDelay 是「经代理真实请求一次」的端到端延迟

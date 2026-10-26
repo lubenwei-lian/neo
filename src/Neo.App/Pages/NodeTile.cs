@@ -156,8 +156,10 @@ public sealed class NodeTile : INotifyPropertyChanged
         else if (tcp == -1) meta += " · TCP 超时";
 
         var real = Node.RealDelay;
-        if (real > 0) meta += $" · 真连 {real}ms";
-        else if (real == -1) meta += " · 真连 超时";
+        var note = Node.RealDelayNote;
+        var noteSuffix = string.IsNullOrEmpty(note) ? "" : $"（{note}）";
+        if (real > 0) meta += $" · 真连 {real}ms{noteSuffix}";
+        else if (real == -1) meta += " · 真连 超时" + noteSuffix;
         else if (real == RealDelayTester.BatchFailed) meta += " · 真连 本机失败";
 
         meta += _locMetaSuffix;
@@ -194,7 +196,7 @@ public sealed class NodeTile : INotifyPropertyChanged
     {
         //   否则会把「本机临时失败」显示成「节点不可用」并影响排序/自动选择；保持未测速（0）待重测。
         Node.RealDelay = ms > 0 ? ms : (ms == -1 ? -1 : 0);
-        DelayCache.Set(Node, ms);
+        DelayCache.Set(Node, ms, Node.RealDelayNote);
         RefreshDelay();
         //   必须与 -1（节点真的超时）在日志里区分，否则无法事后归因。
         LogBus.App($"测速 {Node.Name} → " + (ms > 0 ? $"{ms} ms"
