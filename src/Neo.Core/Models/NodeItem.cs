@@ -84,6 +84,8 @@ public sealed class NodeItem
     public string? ShortId { get; set; }
     public string? SpiderX { get; set; }
     public bool AllowInsecure { get; set; }
+    /// <summary>本次运行期强制放宽证书校验（连接前探测到服务端证书不受信时置位，不写回配置）。</summary>
+    public bool ForceInsecure { get; set; }
 
     public Dictionary<string, string> Extras { get; } = new();
 

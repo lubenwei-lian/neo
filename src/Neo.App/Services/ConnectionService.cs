@@ -252,6 +252,37 @@ public static class ConnectionService
 
     public static string ConfigPath => Path.Combine(NeoPaths.DataDir, "config.json");
 
+    /// <summary>
+    /// 连接前的证书策略探测：TUIC / Hysteria2 先按分享链接声明的 allow_insecure 严格连；
+    /// 只有内核明确报证书不受信时，才把该节点标记为「本次放宽」并在日志里写明原因。
+    /// 与测速的两套方案保持一致：正常证书不受影响，自签节点不至于「能测延迟却连不上」。
+    /// </summary>
+    private static async Task ApplyTlsPolicyAsync(NodeItem node)
+    {
+        try
+        {
+            if (node.Protocol is not (NodeProtocol.TUIC or NodeProtocol.Hysteria2)) return;
+            if (node.AllowInsecure || node.ForceInsecure) return;
+            if (node.RealDelayNote?.Contains("证书放宽", StringComparison.Ordinal) == true)
+            {
+                node.ForceInsecure = true;
+                LogBus.App($"节点「{node.Name}」测速时已确认证书不受信 → 本次连接放宽校验", "Warning");
+                return;
+            }
+            var certBad = await RealDelayTester.CertUntrustedAsync(node, NeoPaths.RuntimeDir, 6000)
+                .ConfigureAwait(false);
+            if (certBad)
+            {
+                node.ForceInsecure = true;
+                LogBus.App($"节点「{node.Name}」证书不受信 → 本次连接放宽校验（原因已记录，正常证书节点不受影响）", "Warning");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogBus.App($"证书策略探测失败（按严格校验继续）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+        }
+    }
+
     public static async Task<(bool Ok, string? Error)> ConnectAsync(NodeItem node, bool force = false)
     {
         if (!force && IsConnected && ConnectedNode != null && SameNode(ConnectedNode, node))
@@ -310,6 +341,7 @@ public static class ConnectionService
         }
 
         if (!node.IsValid) return (false, "节点无效（缺地址或端口）");
+        await ApplyTlsPolicyAsync(node).ConfigureAwait(false);
 
         // 上次分流数据更新时若有文件被内核占用，已暂存为 *.pending；这里在启动内核前应用，
         // 保证「更新后连接」用到的就是新数据（否则要等下一次重启才生效）。

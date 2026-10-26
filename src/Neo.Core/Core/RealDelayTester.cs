@@ -128,6 +128,15 @@ public static class RealDelayTester
         return new RealPingResult(ms, note);
     }
 
+    /// <summary>严格校验证书做一次握手，只回答「证书是否不受信」。</summary>
+    public static async Task<bool> CertUntrustedAsync(NodeItem node, string runtimeDir,
+        int timeoutMs = 6000, CancellationToken ct = default)
+    {
+        var r = await RealPingOnceAsync(node, runtimeDir, timeoutMs, 1, relaxTls: false, ct)
+            .ConfigureAwait(false);
+        return r.CertFailed;
+    }
+
     /// <summary>用指定 URL 探测「这个节点实际能不能用」（可用性复核）。返回 ms，<=0 表示不可用。</summary>
     public static async Task<int> ProbeUrlAsync(NodeItem node, string runtimeDir, string url,
         int timeoutMs = 4000, CancellationToken ct = default)

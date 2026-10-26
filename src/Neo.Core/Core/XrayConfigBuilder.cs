@@ -902,7 +902,7 @@ public static class XrayConfigBuilder
                     ["serverName"] = n.Sni ?? n.HostHeader ?? n.Server,
                 };
                 if (!string.IsNullOrEmpty(n.Fingerprint)) tls["fingerprint"] = n.Fingerprint;
-                if (n.AllowInsecure) tls["allowInsecure"] = true;
+                if (n.AllowInsecure || n.ForceInsecure) tls["allowInsecure"] = true;
 
                 //   · ech → echConfigList（base64 ECHConfigList）；xray 26 还要求 echForceQuery=full 才真正查询
                 //   · vcn → verifyPeerCertByName（按证书里的名字校验，不依赖 SNI）

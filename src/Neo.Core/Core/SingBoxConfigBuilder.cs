@@ -388,7 +388,7 @@ public static class SingBoxConfigBuilder
             ["enabled"] = true,
             ["server_name"] = n.Sni ?? n.HostHeader ?? StripBrackets(n.Server),
         };
-        if (n.AllowInsecure) tls["insecure"] = true;
+        if (n.AllowInsecure || n.ForceInsecure) tls["insecure"] = true;
 
         //   曾判定「pinSHA256 是加强校验、insecure 是跳过校验，语义相反」并删除本行，
         //     无 insecure -> 000 失败，内核报 tls: failed to verify certificate:
