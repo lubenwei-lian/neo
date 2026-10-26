@@ -408,6 +408,29 @@ public static class RealDelayTester
         // 已回调过的节点（xray + sb）：预算耗尽补 -1 时用于去重，保证每个节点只回调一次。
         var reported = new ConcurrentDictionary<NodeItem, byte>();
 
+        if (sbNodes.Count > 0 && !budgetExpired)
+        {
+            try
+            {
+                await Parallel.ForEachAsync(sbNodes,
+                    new ParallelOptions { CancellationToken = batchToken, MaxDegreeOfParallelism = 4 },
+                    async (n, ict) =>
+                    {
+                        var ms = await RealPingAsync(n, runtimeDir, timeoutMs, ict);
+                        result[n] = ms;
+                        reported[n] = 0;
+                        onResult?.Invoke(n, ms);
+                        Interlocked.Increment(ref done);
+                    });
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException)
+            {
+                // 总预算在 sb 阶段耗尽：同样停止剩余节点，交给末尾统一补 -1 + 日志。
+                budgetExpired = true;
+            }
+        }
+
         if (xrayNodes.Count > 0)
         {
             var batchFailed = false;
@@ -574,29 +597,6 @@ public static class RealDelayTester
                 result[xrayNodes[i]] = value;
                 if (batchFailed && reported.TryAdd(xrayNodes[i], 0))
                     onResult?.Invoke(xrayNodes[i], value);
-            }
-        }
-
-        if (sbNodes.Count > 0 && !budgetExpired)
-        {
-            try
-            {
-                await Parallel.ForEachAsync(sbNodes,
-                    new ParallelOptions { CancellationToken = batchToken, MaxDegreeOfParallelism = 4 },
-                    async (n, ict) =>
-                    {
-                        var ms = await RealPingAsync(n, runtimeDir, timeoutMs, ict);
-                        result[n] = ms;
-                        reported[n] = 0;
-                        onResult?.Invoke(n, ms);
-                        Interlocked.Increment(ref done);
-                    });
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (OperationCanceledException)
-            {
-                // 总预算在 sb 阶段耗尽：同样停止剩余节点，交给末尾统一补 -1 + 日志。
-                budgetExpired = true;
             }
         }
 
