@@ -18,7 +18,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.8</Version>
+    <Version>0.2.9</Version>
     <Product>neo</Product>
     <AssemblyTitle>neo</AssemblyTitle>
     <Description>neo — 本地代理客户端（xray + sing-box 双内核）</Description>
@@ -26,7 +26,7 @@
     <Copyright>Copyright © 2026</Copyright>
     <!-- 与 <Version> 保持一致：此项决定「文件属性 → 详细信息」里的文件版本。
          此前硬编码 0.1.2.0 且从未随版本更新，导致界面显示 0.2.8 而属性里是 0.1.2.0。 -->
-    <FileVersion>0.2.8.0</FileVersion>
+    <FileVersion>0.2.9.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
