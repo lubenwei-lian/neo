@@ -746,6 +746,28 @@ public static class XrayConfigBuilder
                     ["settings"] = new JsonObject { ["servers"] = new JsonArray(socksServer) },
                 };
 
+            case NodeProtocol.Http:
+                var httpServer = new JsonObject
+                {
+                    ["address"] = server,
+                    ["port"] = n.Port,
+                };
+                if (!string.IsNullOrEmpty(n.Username))
+                {
+                    httpServer["users"] = new JsonArray(new JsonObject
+                    {
+                        ["user"] = n.Username,
+                        ["pass"] = n.Password ?? "",
+                    });
+                }
+                return new JsonObject
+                {
+                    ["tag"] = "proxy",
+                    ["protocol"] = "http",
+                    ["settings"] = new JsonObject { ["servers"] = new JsonArray(httpServer) },
+                    ["streamSettings"] = BuildStreamSettings(n),
+                };
+
             case NodeProtocol.AnyTls:
                 // xray 26.10.17 实测没有 anytls 出站（台账 F1：unknown config id: anytls）→ 必须走 sing-box。
                 // 这里抛出可读原因，由 ConnectionService / 内核能力判定提前拦下，不会走到这个分支。

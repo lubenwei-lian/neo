@@ -228,6 +228,7 @@ public static class ConfigShadow
         NodeProtocol.TUIC => "tuic",
         NodeProtocol.AnyTls => "anytls",
         NodeProtocol.Socks => "socks",
+        NodeProtocol.Http => "http",
         NodeProtocol.WireGuard => "wireguard",
         NodeProtocol.Naive => "naive",
         _ => "unknown",

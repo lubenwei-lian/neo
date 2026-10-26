@@ -30,6 +30,11 @@ public static class ShareLinkParser
             if (link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5h://", StringComparison.OrdinalIgnoreCase)) return ParseSocks(link);
+
+            // HTTP(S) 代理：必须带 userinfo(@)，否则会跟普通网址（订阅地址）混淆。
+            if ((link.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                 link.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) &&
+                link.Contains('@')) return ParseHttp(link);
             return null;
         }
         catch
@@ -570,6 +575,44 @@ public static class ShareLinkParser
                     break;
             }
         }
+    }
+
+    private static NodeItem? ParseHttp(string link)
+    {
+        var scheme = link[..link.IndexOf("://", StringComparison.Ordinal)];
+        var body = link[(link.IndexOf("://", StringComparison.Ordinal) + 3)..];
+        var node = new NodeItem { Protocol = NodeProtocol.Http, Security = "none" };
+
+        var hash = body.IndexOf('#');
+        if (hash >= 0) { node.Name = Uri.UnescapeDataString(body[(hash + 1)..]); body = body[..hash]; }
+        var qm = body.IndexOf('?');
+        var query = "";
+        if (qm >= 0) { query = body[(qm + 1)..]; body = body[..qm]; }
+
+        var at = body.LastIndexOf('@');
+        if (at < 0) return null;
+        var userInfo = Uri.UnescapeDataString(body[..at]);
+        var hostPort = body[(at + 1)..].Trim().Trim('/');
+        var colon = userInfo.IndexOf(':');
+        if (colon >= 0) { node.Username = userInfo[..colon]; node.Password = userInfo[(colon + 1)..]; }
+        else node.Username = userInfo;
+
+        // 端口可省，http 默认 80、https 默认 443。
+        var (host, portExpr) = SplitHostPortExpr(hostPort);
+        var port = FirstPort(NormalizePortSpec(portExpr));
+        if (port <= 0) port = scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? 443 : 80;
+        if (host.Length == 0) return null;
+        node.Server = host;
+        node.Port = port;
+
+        if (scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+        {
+            node.Security = "tls";
+            var q = ParseQuery(query);
+            node.Sni = OrNull(G(q, "sni")) ?? OrNull(G(q, "peer")) ?? host;
+            node.AllowInsecure = ParseBool(G(q, "insecure")) || ParseBool(G(q, "allowinsecure")) || ParseBool(G(q, "allow_insecure"));
+        }
+        return node;
     }
 
     private static Dictionary<string, string> ParseQuery(string query)

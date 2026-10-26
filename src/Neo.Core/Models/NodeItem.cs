@@ -16,6 +16,9 @@ public enum NodeProtocol
     /// <summary>socks5 出站节点（socks:// / socks5:// 分享链接）。</summary>
     Socks,
 
+    /// <summary>HTTP(S) 代理出站（http://user:pass@host:port；https:// 表示到代理本身走 TLS）。</summary>
+    Http,
+
     /// <summary>
     /// Clash 直通节点：不拆节点，把订阅里**整份 Clash YAML** 交给 mihomo 内核跑。
     /// 用于 proxy-providers / 复杂 rule-provider 这类用 NodeItem 模型表达不了的订阅。

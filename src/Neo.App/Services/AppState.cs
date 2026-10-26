@@ -1129,6 +1129,7 @@ public static class AppState
         NodeProtocol.TUIC => "TUIC",
         NodeProtocol.AnyTls => "AnyTLS",
         NodeProtocol.Socks => "Socks5",
+        NodeProtocol.Http => "HTTP",
         NodeProtocol.MihomoConfig => "Clash 直通",
         NodeProtocol.WireGuard => "WireGuard",
         NodeProtocol.CustomConfig => "自定义配置",

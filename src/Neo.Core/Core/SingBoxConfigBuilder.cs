@@ -352,6 +352,14 @@ public static class SingBoxConfigBuilder
                 if (!string.IsNullOrEmpty(n.Password)) o["password"] = n.Password;
                 break;
 
+            case NodeProtocol.Http:
+                o["type"] = "http";
+                if (!string.IsNullOrEmpty(n.Username)) o["username"] = n.Username;
+                if (!string.IsNullOrEmpty(n.Password)) o["password"] = n.Password;
+                // 只有 https:// 才给代理本身再套一层 TLS；http:// 是明文。
+                ApplyTls(o, n, forceTls: (n.Security ?? "").Equals("tls", StringComparison.OrdinalIgnoreCase));
+                break;
+
             case NodeProtocol.TUIC:
                 o["type"] = "tuic";
                 o["uuid"] = n.Uuid ?? "";
