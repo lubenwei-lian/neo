@@ -1,0 +1,79 @@
+/* Native host only: preserve the source surfaces and use dark OS scrollbars. */
+:root{color-scheme:dark}
+/* Hidden overflow still lets Chromium scroll body to focus an input. */
+html,body{overflow:clip!important}
+.preview-note{display:none!important}
+#uiDialog .dialog-copy{font-family:inherit;font-size:12px}
+/* Solid reference backdrop; cards keep their original surface and contrast. */
+html,body,.page,.page.leaving{background:#101014!important}
+.panel,.hero,.h1card,.usage,.sidx,#setIndex,.sbody,#setBody,.side,.drawer,.sheet,.planstrip,.logpanel,.corebar{background:rgb(24,24,28)!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+.side .usage,.hero .h1card{background:transparent!important}
+.spark>.sparkCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.panel>.spark:has(>.sparkCanvas){min-height:80px}
+.ringButton[data-connecting="true"] .prog{stroke-dasharray:100 453!important;stroke-dashoffset:0!important;animation:neo-connecting 1.4s linear infinite;transform-origin:98px 98px}
+@keyframes neo-connecting{from{transform:rotate(-90deg)}to{transform:rotate(270deg)}}
+/* A network check keeps its original pill width and animates until it settles. */
+#setBody .row .btn.is-checking{box-sizing:border-box;flex:none;width:var(--neo-check-width,auto)!important;min-width:0;gap:4px;padding-inline:4px!important;cursor:progress;opacity:1}
+.update-check-spinner{display:block;flex:none;width:10px;height:10px;box-sizing:border-box;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:neo-update-check .8s linear infinite}
+@keyframes neo-update-check{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.update-check-spinner{animation-duration:2s}}
+.native-usage-tip{position:fixed;z-index:500;pointer-events:none;padding:7px 12px;border-radius:14px;background:var(--NeoSurface,#23232b);color:var(--NeoText2,#ddd);border:1px solid var(--NeoHairline,#ffffff14);box-shadow:0 4px 16px #0004;font:11px var(--font,system-ui);white-space:nowrap}
+.native-usage-tip[hidden]{display:none}
+@media(max-width:1180px){#subsBody1 .s1log{display:flex!important;flex:none;min-height:240px;max-height:360px}#subsBody1 .s1log>.rows{min-height:0;overflow:auto}}
+@media(prefers-reduced-motion:reduce){.ringButton[data-connecting="true"] .prog{animation:none}}
+.native-full-sublog{display:flex;flex-direction:column;gap:6px}
+.ui-dialog.native-list-dialog{overflow:hidden;max-height:calc(100dvh - 72px)}
+.native-list-dialog .dialog-body{display:flex;flex-direction:column;min-height:0;max-height:calc(100dvh - 184px);overflow:hidden}
+.native-list-dialog .dialog-copy,.native-list-dialog .dialog-actions{flex:none}
+.native-list-dialog .xlist,.native-list-dialog .native-full-sublog{min-height:0;overflow:auto;flex:1 1 auto}
+.native-list-dialog .xrow,.native-list-dialog .lgrow{flex:none}
+/* Node tiles: quieter names; hover text must fully replace the latency ink. */
+#listD .node-name b{font-size:11.5px!important;font-weight:500!important;line-height:16px}
+@media(max-width:1370px){#listD .node-name b{font-size:11px!important}}
+#listD .node-test{isolation:isolate;overflow:hidden;border-radius:999px}
+#listD .node-test:is(:hover,:focus-visible)>.lat{opacity:0}
+#listD .node-test:is(:hover,:focus-visible)::after{content:'测速';position:absolute;inset:0;display:grid;place-items:center;border-radius:inherit;background:#263549;font-size:11px;font-weight:500;z-index:1}
+/* Keep rolling digits and their unit on one measured line, without em offsets. */
+.page[data-page="nodes"] .lat{--native-lat-size:11px;display:inline-flex;align-items:center!important;justify-content:flex-end;height:18px!important;font-size:var(--native-lat-size)!important;line-height:16px!important;gap:2px!important}
+.page[data-page="nodes"] .lat .digits,.page[data-page="nodes"] .lat .d{height:16px!important;line-height:16px!important}
+.page[data-page="nodes"] .lat .d{width:.64em}
+.page[data-page="nodes"] .lat .col,.page[data-page="nodes"] .lat .col>span{line-height:16px!important}
+.page[data-page="nodes"] .lat .col>span{height:16px!important}
+.page[data-page="nodes"] .lat .unit{position:static!important;top:auto!important;transform:none!important;align-self:center!important;height:16px!important;font-size:var(--native-lat-size)!important;line-height:16px!important;margin-left:1px!important;font-weight:400}
+.page[data-page="nodes"] .lat .txt{font-size:11px!important;line-height:16px!important}
+/* An inline latency child otherwise adds a text descender below the button,
+   putting its digits 2px above the neighboring exit-status label. */
+#listD .node-test{display:inline-flex;align-items:center;justify-content:center;font-size:11px!important;line-height:16px;height:20px;min-height:20px;padding:0 3px;min-width:34px;flex:none}
+#listD .node-bottom{min-height:20px}
+.compact-nodes #listD.dgrid>.node-card{padding:4px 10px!important;gap:2px!important}
+#listD .node-proto{flex:0 1 auto;min-width:0}
+.native-exit-mark{margin-left:auto;font-size:9px;line-height:16px;color:var(--NeoText3);white-space:nowrap;flex:none}
+.native-exit-mark[data-state="confirmed"]{color:var(--NeoGreen)}
+.native-exit-mark[data-state="mismatch"],.native-exit-mark[data-state="unconfirmed"]{color:var(--NeoYellow)}
+.native-exit-summary{font-size:11px;color:var(--NeoText3);margin:0 0 8px}
+.native-exit-dialog .xrow{display:grid;grid-template-columns:minmax(100px,1fr) minmax(90px,.7fr) 52px minmax(104px,.7fr);gap:10px}
+.native-exit-dialog .xv{white-space:normal}
+.page[data-page="nodes"]>.filterrow{flex-wrap:wrap;align-items:center;row-gap:8px;flex:none}
+#nFilter,#nRegion,#nConnectCompact,#nTestGroup{flex-shrink:0}
+#nRegion,#nTestGroup .btn{white-space:nowrap}
+#nTestGroup{flex-wrap:nowrap}
+/* Connection picker: the same compact node cards and column breakpoints. */
+#sheetList{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-content:start;padding:4px 14px 14px;scrollbar-gutter:stable}
+#sheetList>.sheet-node{display:flex;flex-direction:column;justify-content:center;gap:7px;min-width:0;height:64px;padding:9px 12px;border:1px solid rgba(255,255,255,.045);border-radius:18px;background:rgba(255,255,255,.032);text-align:left;cursor:pointer;transition:background .18s,border-color .18s}
+#sheetList>.sheet-node:hover{background:rgba(255,255,255,.065);border-color:rgba(255,255,255,.1)}
+#sheetList>.sheet-node.on{background:rgba(90,169,255,.14);border-color:rgba(90,169,255,.28)}
+#sheetList>.sheet-node:focus-visible{outline:2px solid var(--NeoBlue,#5aa9ff);outline-offset:-2px}
+#sheetList .node-name{display:flex;align-items:center;gap:8px;min-width:0;width:100%}
+#sheetList .node-name b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px!important;font-weight:500;line-height:16px}
+#sheetList .node-bottom{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-width:0}
+#sheetList .node-proto{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--NeoText3);font-size:10.5px!important}
+#sheetList .lat{display:inline-flex;align-items:center!important;gap:2px!important;height:16px!important;font-size:11px!important;line-height:16px!important;flex:none}
+#sheetList .lat .digits,#sheetList .lat .d{height:16px!important;line-height:16px!important}
+#sheetList .lat .d{width:.64em}
+#sheetList .lat .col,#sheetList .lat .col>span{line-height:16px!important}
+#sheetList .lat .col>span{height:16px!important}
+#sheetList .lat .unit{position:static!important;top:auto!important;transform:none!important;align-self:center!important;font-size:11px!important;height:16px!important;line-height:16px!important;margin-left:1px!important;font-weight:400}
+#sheetList .empty-state{grid-column:1/-1}
+@media(min-width:1400px){#sheetList{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media(min-width:1601px){#sheetList{grid-template-columns:repeat(6,minmax(0,1fr))}}
+@media(min-width:1901px){#sheetList{grid-template-columns:repeat(7,minmax(0,1fr))}}

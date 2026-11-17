@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN" style="background:#101014">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neo</title>
+<link rel="stylesheet" href="css/base2.css?v=cd4e829d2d3e">
+<link rel="stylesheet" href="css/pages2.css?v=c43caa6a4c0a">
+<link rel="stylesheet" href="css/pages3.css?v=af3aaf445a36">
+<link rel="stylesheet" href="css/pages4.css?v=b0f6d72130cc">
+<link rel="stylesheet" href="css/pages5.css?v=0335b5c89b31">
+<link rel="stylesheet" href="css/finalize.css?v=992df2735057">
+<link rel="icon" href="assets/neo.ico">
+<link rel="stylesheet" href="css/type-v5.css?v=14fb68ba2241">
+<style>body:not(.native-ready){visibility:hidden}</style>
+<script src="js/native-host.js?v=0aff7ffc3105"></script>
+<link rel="stylesheet" href="css/native.css?v=e25d207424b0">
+<script src="js/native-traffic.js?v=41040be563d5"></script>
+</head>
+<body data-wall="default" style="background:#101014">
+
+<!-- 层级 0/1：壁纸 + 暗化遮罩（固定，不随内容重绘） -->
+<div class="wall" aria-hidden="true"></div>
+<div class="scrim" aria-hidden="true"></div>
+
+
+<header class="tbar">
+  <div class="tbar-l">
+    <img class="mark" src="assets/neo.ico" alt=""><span class="wordmark">neo</span><i class="vr"></i>
+    <span class="ptitle" id="pageTitle">连接</span>
+  </div>
+  <div class="vsbar" id="vsbar" hidden>
+    <button class="vs on" data-v="A">A</button><button class="vs" data-v="B">B</button>
+    <button class="vs" data-v="C">C</button><button class="vs" data-v="D">D</button>
+  </div>
+  <div class="tbar-r">
+    <button class="winbtn">&#xE921;</button><button class="winbtn">&#xE922;</button><button class="winbtn close">&#xE8BB;</button>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="side">
+    <nav class="navlist" id="navlist">
+      <button class="nav on" data-page="conn"><span class="nglyph">&#xE7E8;</span><span class="nlabel">连接</span><span class="nmeta"><i class="ndot"></i><em>未连接</em></span></button>
+      <button class="nav" data-page="nodes"><span class="nglyph">&#xE774;</span><span class="nlabel">节点</span><span class="nmeta"><em>14</em></span></button>
+      <button class="nav" data-page="subs"><span class="nglyph">&#xE8A5;</span><span class="nlabel">订阅</span><span class="nmeta"><em>3</em></span></button>
+      <button class="nav" data-page="log"><span class="nglyph">&#xE9D5;</span><span class="nlabel">日志</span><span class="nmeta"><em>实时</em></span></button>
+    </nav>
+    <div class="usage">
+      <span class="u1">今日已用</span>
+      <div class="u2"><b id="uToday">154.1</b><span>MB</span></div>
+      <div class="u3"><span>累计</span><span>412 MB</span></div>
+    </div>
+    <div class="sfoot">
+      <button class="nav navset" id="navSettings"><span class="nglyph">&#xE713;</span><span class="nlabel">设置</span></button>
+    </div>
+  </aside>
+
+  <main class="content" id="content">
+
+    <!-- ========== 连接 ========== -->
+    <section class="page on" data-page="conn">
+      <div class="cv on" data-c="3">
+        <div class="split">
+
+          <div class="hero">
+            <div class="ringwrap fill">
+              <button class="ringButton" type="button" aria-label="连接" aria-pressed="false">
+              <svg class="ring" viewBox="0 0 196 196" aria-hidden="true" focusable="false">
+                <defs><linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#5AA9FF"/><stop offset="1" stop-color="#7CC4FF"/></linearGradient></defs>
+                <circle class="track" cx="98" cy="98" r="88"/>
+                <circle class="prog" cx="98" cy="98" r="88" stroke="url(#g3)"/>
+              </svg>
+              <span class="ringc">
+                <span class="st cState">未连接</span>
+                <span class="tm cTime">00:00:00</span>
+                <span class="ex cExit">出口地区 —</span>
+              </span>
+              </button>
+            </div>
+            <div class="ringhint"><span id="connCaption">准备就绪</span></div>
+
+            <div class="h1card nodePick" title="点击切换节点">
+              <div class="h1hd">
+                <span class="flag curFlag"></span>
+                <span class="curName">香港 01 · IPLC</span>
+                <span class="curLat"></span>
+                <span class="pickcaret">&#xE70D</span>
+              </div>
+              <div class="h1meta curMeta">VLESS · TCP + TLS · hk01.neo.im:443</div>
+              <div class="h1sep"></div>
+              <div class="h1stats">
+                <div><span>下载</span><b class="dnV">0<em>MB/s</em></b></div>
+                <div><span>上传</span><b class="upV">0<em>MB/s</em></b></div>
+                <div><span>今日</span><b>154<em>MB</em></b></div>
+              </div>
+              <div class="h1sep"></div>
+              <div class="h1kv">
+                <div><b>本地端口</b><span class="localPorts">21808 / 21809</span></div>
+                <div><b>系统代理</b><span class="proxyState">未接管</span></div>
+              </div>
+              <div class="h1sep"></div>
+              <div class="h1sw">
+                <div class="switem"><span>悬浮球</span><i class="sw" data-sw="float"><b></b></i></div>
+                <div class="switem"><span>TUN 模式</span><i class="sw" data-sw="tun"><b></b></i></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rightcol">
+            <div class="cgrid">
+              <div class="panel">
+                <div class="ptitle"><span class="g">&#xE9D9;</span>实时流量<span class="right flowPeak">峰值 —</span></div>
+                <div class="flow">
+                  <div class="kv"><span class="k">下载</span><span class="v num dnV">0<small>MB/s</small></span></div>
+                  <div class="kv"><span class="k">上传</span><span class="v num upV">0<small>MB/s</small></span></div>
+                </div>
+                <div class="spark" style="flex:1"><canvas class="sparkCanvas" role="img" aria-label="实时下载与上传流量曲线"></canvas></div>
+              </div>
+
+              <div class="panel">
+                <div class="ptitle"><span class="g">&#xE8FD;</span>代理模式<span class="right proxyAddr">127.0.0.1:21808</span></div>
+                <div class="modes modeSeg">
+                  <button class="on" data-m="rule">规则</button><button data-m="global">全局</button><button data-m="direct">直连</button>
+                </div>
+                <div class="minirow" style="margin-top:8px"><div><div class="t">本地分流</div><div class="d modeDesc">国内域名与 IP 直连，其余走节点</div></div></div>
+                <div class="minirow"><div><div class="t">系统代理</div><div class="d"><span class="proxyState">未接管</span> Windows 代理设置</div></div>
+                  <span class="badge proxyBadge">未启用</span></div>
+              </div>
+
+              <div class="panel">
+                <div class="ptitle"><span class="g">&#xE8A5;</span>当前订阅<span class="right subExp">2026-12-14 到期</span></div>
+                <div class="nm" style="font-size:12.5px;font-weight:600"><span class="subNm">机场 A · 标准版</span></div>
+                <div class="bar" style="margin-top:10px"><i class="subBar" style="width:33%"></i></div>
+                <div class="minirow"><span class="d subUse">154.1 / 465 GB</span><span class="v" id="connSubPct">33%</span></div>
+                <div class="minirow"><div><div class="t">剩余额度</div><div class="d" id="connSubRemaining">310.9 GB</div></div><span class="v" id="connSubUpdated">今天 14:06</span></div>
+                <div class="minirow"><span class="d" id="connSubNodes">6 个节点</span><button class="btn sm ghost" id="connSubUpdate">更新</button></div>
+              </div>
+
+              <div class="panel healthpanel">
+                <div class="ptitle"><span class="g">&#xE774;</span>连通性 <b id="healthPct" class="health-pct">—</b><span class="right"><button class="btn sm ghost btnDiag">详情</button></span></div>
+                <div class="hex" id="healthSites"></div>
+                <div class="healthfoot"><span id="healthCount">尚未检测</span><button class="btn sm ghost" id="healthRun">检测</button></div>
+              </div>
+            </div>
+
+            <div class="panel logpanel">
+              <div class="ptitle"><span class="g">&#xE9D5;</span>内核日志<span class="right">自动滚动 · <button class="btn sm ghost toLog">全部</button></span></div>
+              <div class="logstream">
+                <div class="l"><span class="t">14:33:40</span><span class="lv info">信息</span>连接到 香港 01 · IPLC (hk01.neo.im:443)</div>
+                <div class="l"><span class="t">14:33:41</span><span class="lv debug">调试</span>TCP 握手 18 ms · TLS 1.3 · h2</div>
+                <div class="l"><span class="t">14:33:41</span><span class="lv info">信息</span>出口确认 香港 · 203.0.113.7</div>
+                <div class="l"><span class="t">14:36:15</span><span class="lv warn">警告</span>节点 美国洛杉矶 04 真连延迟 188 ms，高于阈值</div>
+                <div class="l"><span class="t">14:38:20</span><span class="lv debug">调试</span>规则集 geoip:cn 命中 1,284 次</div>
+                <div class="l"><span class="t">14:40:00</span><span class="lv info">信息</span>流量统计写入 data\usage.json</div>
+                <div class="l"><span class="t">14:41:12</span><span class="lv debug">调试</span>TCP 保活 12 条连接 · 无重传</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="sheet" id="nodeSheet" role="dialog" aria-label="切换节点" aria-modal="true" inert aria-hidden="true">
+          <div class="sheet-grip"></div>
+          <div class="sheet-head">
+            <b>切换节点</b><span class="hi">点击即切换，不需要确认</span>
+            <button class="btn sm ghost" id="sheetClose">收起</button>
+          </div>
+          <div class="sheet-list" id="sheetList"></div>
+        </div>
+
+        <div class="corebar">
+          <b>内核 xray 25.9.6</b><i class="sep"></i><span>内存 84 MB</span><i class="sep"></i>
+          <span>活跃连接 <span id="coreActive">0</span></span><i class="sep"></i><span>参与节点 <span id="coreParticipants">0 / 14</span></span>
+          <span class="right"><button class="btn sm ghost" id="coreDetails">运行详情</button><button class="btn sm ghost toLog">日志</button></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" data-page="nodes">
+      <div class="ph"><h1>节点</h1><span class="sub" id="nCnt">14 个 · 7 个地区</span>
+        <span class="grow"></span>
+        <button class="btn icon" id="nMore" aria-label="更多节点操作">&#xE712;</button>
+      </div>
+      <div class="filterrow">
+        <div class="seg" id="nFilter">
+          <button class="chip on" data-f="all">全部</button><button class="chip" data-f="ok">可用</button>
+          <button class="chip" data-f="timeout">超时</button><button class="chip" data-f="untested">未测</button>
+        </div>
+        <button class="pill-select" id="nRegion" aria-label="按地区筛选"><span id="nRegionText">全部地区</span><i>▾</i></button><button class="btn primary connect" id="nConnectCompact">连接</button><div class="testgroup" id="nTestGroup"><button class="btn primary" id="nTestAll" title="测试全部节点延迟，结果逐个排序">全部测速</button><button class="btn ghost" id="nRetest" title="只补测未测与超时的节点">补测</button><button class="btn ghost" id="nTcpAll" title="全部节点走一次快速 TCP 握手">快速 TCP</button><button class="btn ghost" id="nExitRegions" title="查看已测出口地区，按需检测未测节点">出口地区</button></div>
+        <span class="fhint" id="nHint">A 宽行 · B 分组 · C 索引 · D 网格</span>
+      </div>
+      <div class="vp" data-v="A" style="flex:1;min-height:0;display:flex;flex-direction:column">
+        <div class="vlist scroll" id="listA" style="display:flex;flex-direction:column;gap:6px;flex:1"></div>
+      </div>
+      <div class="vp" data-v="B" style="flex:1;min-height:0;display:none">
+        <div class="vgroups scroll" id="listB" style="display:flex;flex-direction:column;gap:12px;flex:1"></div>
+      </div>
+      <div class="vp" data-v="C" style="flex:1;min-height:0;display:none;grid-template-columns:138px minmax(0,1fr);gap:12px">
+        <div class="regions scroll" id="regionsC" style="display:flex;flex-direction:column;gap:2px"></div>
+        <div class="vlist scroll" id="listC" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div class="vp" data-v="D" style="flex:1;min-height:0;display:none;grid-template-columns:minmax(0,1fr) 316px;gap:12px">
+        <div class="dgrid scroll" id="listD" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;align-content:start"></div>
+        <div class="drawer" id="nodeDrawer" style="position:static;transform:none;width:auto;box-shadow:none"></div>
+      </div>
+    </section>
+
+    <!-- ========== 订阅 ========== -->
+    <section class="page" data-page="subs">
+      <div class="ph">
+        <h1>订阅</h1><span class="sub" id="sCnt">3 个订阅 · 14 个节点</span>
+        <span class="grow"></span>
+      </div>
+      <div class="sv on" data-s="1"><div class="svbody" id="subsBody1"></div></div>
+    </section>
+
+    
+
+    <!-- ========== 日志 ========== -->
+    <section class="page" data-page="log">
+      <div class="ph"><h1>运行日志</h1><span class="sub" id="lCnt">最近 120 条</span><span class="grow"></span>
+        <label class="search" style="width:200px"><span class="sicon">&#xE721;</span><input id="lSearch" placeholder="搜索记录"></label>
+        <button class="btn ghost" id="lExport">导出</button>
+        <button class="btn icon" id="lMore" aria-label="更多日志操作">&#xE712;</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex:none">
+        <div class="seg" id="lFilter">
+          <button class="chip on" data-l="all">全部</button><button class="chip" data-l="info">信息</button>
+          <button class="chip" data-l="warn">警告</button><button class="chip" data-l="error">错误</button><button class="chip" data-l="debug">调试</button>
+        </div>
+        <span style="margin-left:auto;font-size:10.5px;color:var(--NeoText3)">自动滚动</span>
+        <button class="sw on" data-sw="autoscroll" role="switch" aria-label="日志自动滚动" aria-checked="true"><b></b></button>
+      </div>
+      <div class="lrows scroll" id="logList" style="flex:1"></div>
+    </section>
+
+    <!-- ========== 设置 ========== -->
+    <section class="page" data-page="settings">
+      <div class="ph"><h1>设置</h1><span class="sub" id="setHint">通用 · 8 项</span></div>
+      <div class="setwrap">
+        <div class="sidx" id="setIndex"></div>
+        <div class="sbody scroll" id="setBody"></div>
+      </div>
+    </section>
+
+    <!-- 诊断抽屉 -->
+    <div class="scrim" id="scrim"></div>
+    <div class="drawer" id="diagDrawer" role="dialog" aria-modal="true" aria-labelledby="diagTitle" inert aria-hidden="true">
+      <div class="dh"><h2 id="diagTitle">连通性</h2><div class="right">
+        <button class="btn sm ghost" id="diagClose">收起</button>
+        <button class="btn sm primary" id="diagRun">开始检测</button></div></div>
+      <div class="dbody">
+        <div class="dsum"><b id="diagScore">—</b><span id="diagWhen">尚未检测</span></div>
+        <div style="font-size:11px;color:var(--NeoText2)" id="diagExit">未连接</div>
+        <div class="rows scroll" id="diagList" style="flex:1"></div><div class="preview-note">界面预览 · 检测结果为演示数据</div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>window.catchErr=1;window.addEventListener("error",function(e){document.title="ERR: "+e.message+" @"+e.lineno;});</script>
+<script src="lib/motion.js"></script>
+<script src="js/app2.js?v=c019772b3f65"></script>
+</body>
+</html>

@@ -11,6 +11,7 @@ public partial class App : Application
     private static Mutex? _single;
 
     public static MainWindow? MainWindowInstance { get; private set; }
+    internal static void MainWindowInstanceForReview(MainWindow window) { if (Ui.NativeUiReview.Enabled) MainWindowInstance = window; }
 
     /// 进程正在退出。所有「把工作 marshal 回 UI 线程」的入口都要先看这个标志。
     /// 为什么需要它：Application.Current.Exit() 之后，XAML 与 DispatcherQueue 会进入销毁流程，
@@ -40,6 +41,8 @@ public partial class App : Application
     public static void Restart(bool saveState = true)
     {
         IsShuttingDown = true;
+        try { Services.FloatingTrafficService.Shutdown(); } catch { }
+        try { Services.StartupSpeedTest.Stop(); } catch { }
         try { Services.LogBus.App("应用重启：断开代理", "Info"); Services.ConnectionService.Disconnect("重启应用"); } catch { }
         if (saveState)
         {
@@ -68,6 +71,7 @@ public partial class App : Application
                 try { Services.LogBus.App("应用重启：拉起新进程失败 " + ex.Message, "Error"); } catch { }
             }
         }
+        try { Services.LogBus.Flush(TimeSpan.FromSeconds(2)); } catch { }
         try { Current.Exit(); } catch (Exception ex) { try { Services.LogBus.App("应用重启：退出失败 " + ex.Message, "Error"); } catch { } }
     }
 
@@ -81,7 +85,10 @@ public partial class App : Application
 
     public App()
     {
+        if (Ui.NativeUiReview.Enabled) Ui.NativeUiReview.RegisterExceptionLogging(this);
         InitializeComponent();
+        // Keep the generated XAML metadata provider while bypassing production services.
+        if (Ui.NativeUiReview.Enabled) return;
         UnhandledException += (_, e) =>
         {
             try { Services.LogBus.Exception("未处理异常", e.Exception); } catch { }
@@ -130,36 +137,13 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // 支持工具用：neo.exe --export-logs <zip路径> 直接把最近 3 天日志打成 zip 后退出，
-        // 让「导出日志」的打包逻辑能不弹保存对话框就被自动化验证。
-        var rawArgs = Environment.GetCommandLineArgs();
-        var exportIdx = Array.IndexOf(rawArgs, "--export-logs");
-        if (exportIdx >= 0 && exportIdx + 1 < rawArgs.Length)
+        if (Ui.NativeUiReview.Enabled)
         {
-            try { Services.LogExportService.BuildZip(rawArgs[exportIdx + 1], 3); } catch { }
-            Environment.Exit(0);
+            Ui.NativeUiReview.SeedFixtures();
+            _window = new MainWindow();
             return;
         }
-
-        // 无界面看门狗模式：--guard <neoPid>。阻塞运行，直到 neo 退出/清理完成。
-        var guardIdx = Array.IndexOf(rawArgs, "--guard");
-        if (guardIdx >= 0 && guardIdx + 1 < rawArgs.Length && int.TryParse(rawArgs[guardIdx + 1], out var guardNeoPid))
-        {
-            var guardCode = 0;
-            try { guardCode = Services.GuardMode.Run(guardNeoPid); } catch { }
-            Environment.Exit(guardCode);
-            return;
-        }
-
-        // 管理员身份清理 TUN 残留：--cleanup-tun（由看门狗/设置页通过 UAC 拉起）。
-        if (rawArgs.Contains("--cleanup-tun"))
-        {
-            var code = 2;
-            try { code = Services.GuardMode.RunCleanupTun(); } catch { }
-            Environment.Exit(code);
-            return;
-        }
-
+        // Headless guard, cleanup and log-export modes are dispatched before XAML starts.
         bool takeover = Environment.GetCommandLineArgs().Contains("--takeover");
         _single = new Mutex(true, "neo-single-instance-4f8a2c", out bool createdNew);
         if (!createdNew && !takeover)
@@ -319,6 +303,7 @@ public partial class App : Application
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder s, int n);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
 
     private const string MainWindowClass = "WinUIDesktopWin32WindowClass";
 
@@ -339,6 +324,7 @@ public partial class App : Application
                 if (p.Id == Environment.ProcessId) continue;
                 uint target = (uint)p.Id;
                 var hit = IntPtr.Zero;
+                var legacyHit=IntPtr.Zero;
 
                 EnumWindows((h, _) =>
                 {
@@ -347,13 +333,14 @@ public partial class App : Application
 
                     var cls = new System.Text.StringBuilder(256);
                     GetClassName(h, cls, 256);
-                    if (!string.Equals(cls.ToString(), MainWindowClass, StringComparison.Ordinal))
-                        return true;   // 不是主窗口（托盘宿主 / GDI+ / IME 等），继续找
+                    if (!cls.ToString().StartsWith("NeoHtml_",StringComparison.Ordinal))
+                    {if(string.Equals(cls.ToString(),MainWindowClass,StringComparison.Ordinal))legacyHit=h;return true;}   // 不是主窗口（托盘宿主 / GDI+ / IME 等），继续找
 
                     hit = h;
                     return false;      // 找到了
                 }, IntPtr.Zero);
 
+                if(hit==IntPtr.Zero)hit=legacyHit;
                 if (hit == IntPtr.Zero)
                 {
                     // 该类名没命中（未来 WinUI 改了类名）：退回旧行为，但至少跳过隐藏窗口，
@@ -372,8 +359,7 @@ public partial class App : Application
 
                 if (hit != IntPtr.Zero)
                 {
-                    ShowWindow(hit, 9);   // SW_RESTORE：从最小化/隐藏恢复
-                    ShowWindow(hit, 5);   // SW_SHOW
+                    ShowWindow(hit, IsIconic(hit) ? 9 : 5); // Restore only minimized windows; preserve maximized windows.
                     SetForegroundWindow(hit);
                     found = true;
                     break;

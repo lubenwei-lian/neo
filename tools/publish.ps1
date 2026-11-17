@@ -208,8 +208,9 @@ if ($ValidateOnly) {
 
     if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 
-    Write-Host '[neo-publish] step 2: dotnet publish (Release, self-contained, win-x64) -> app\'
-    & $dotnet publish 'src\Neo.App\Neo.App.csproj' -c Release -p:Platform=x64 -r win-x64 --self-contained true -o $appDir
+    Write-Host '[neo-publish] step 2: dotnet publish (Release, ReadyToRun, self-contained, win-x64) -> app\'
+    # Precompile managed code so the first visit to a page does less JIT work on the UI thread.
+    & $dotnet publish 'src\Neo.App\Neo.App.csproj' -c Release -p:Platform=x64 -p:NeoUiReview=false -p:PublishReadyToRun=true -r win-x64 --self-contained true -o $appDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
     if (-not (Test-Path -LiteralPath (Join-Path $appDir 'neo.exe'))) {
         throw "dotnet publish 后 app\neo.exe 不存在：$appDir"
@@ -280,6 +281,7 @@ if ($ValidateOnly) {
     $gitkeeps | Remove-Item -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath $launcher -Destination (Join-Path $out 'neo.exe') -Force
     Copy-Item -LiteralPath (Join-Path $root 'installer\说明.txt') -Destination (Join-Path $out '说明.txt') -Force
+    Copy-Item -LiteralPath (Join-Path $root 'NOTICE') -Destination (Join-Path $out 'NOTICE') -Force
     New-Item -ItemType Directory -Force (Join-Path $out 'data') | Out-Null
     Write-Host ("[neo-publish]   stripped {0} pdb, removed {1} .gitkeep" -f $pdbs.Count, $gitkeeps.Count)
 }

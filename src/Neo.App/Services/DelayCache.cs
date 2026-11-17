@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using Neo.Core;
 using Neo.Core.Models;
+using Neo.Core.Core;
 
 namespace Neo.App.Services;
 
@@ -16,12 +17,12 @@ namespace Neo.App.Services;
 public static class DelayCache
 {
     private static readonly object _lock = new();
-    private static readonly Dictionary<string, (int Ms, string? Note)> _real = new();
+    private static readonly Dictionary<string, (int Ms, string? Note, DateTime At)> _real = new();
     private static readonly Dictionary<string, int> _tcp = new();
 
     private static string FilePath => Path.Combine(NeoPaths.DataDir, "delays.json");
 
-    private static string KeyOf(NodeItem n) => $"{n.Protocol}|{n.Server}|{n.Port}|{n.Name}";
+    private static string KeyOf(NodeItem n) => NodeIdentity.Fingerprint(n);
 
     static DelayCache()
     {
@@ -54,8 +55,18 @@ public static class DelayCache
         lock (_lock)
         {
             var policy = note != null && note.Contains("证书放宽") ? "relax" : "strict";
-            _real[KeyOf(n) + "|" + policy] = (ms, note);
+            var key = KeyOf(n);
+            _real[key + "|" + policy] = (ms, note, DateTime.UtcNow);
+            // 放宽证书的结果不参与严格连接候选的性能排序。
+            if (policy == "strict") NodeQualityHistory.Shared.RecordLatency(key, ms);
         }
+    }
+
+    public static bool IsFresh(NodeItem n, TimeSpan maximumAge)
+    {
+        lock (_lock)
+            return _real.TryGetValue(KeyOf(n) + "|strict", out var sample)
+                && sample.Ms > 0 && DateTime.UtcNow - sample.At <= maximumAge;
     }
 
     public static void SetTcp(NodeItem n, int ms)

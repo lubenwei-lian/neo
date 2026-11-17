@@ -21,6 +21,7 @@ public static class CoreState
         public int NeoPid { get; set; }
         public string State { get; set; } = "idle";
         public int CorePid { get; set; }
+        public int? SessionEpoch { get; set; }
         public string CoreKind { get; set; } = "";
         public string UpdatedUtc { get; set; } = "";
         public string? Reason { get; set; }
@@ -28,17 +29,19 @@ public static class CoreState
 
     private static readonly object Gate = new();
     private static EventWaitHandle? _event;
+    private static int _lastEpoch = -1;
 
     public static string FilePath => Path.Combine(NeoPaths.DataDir, "core-state.json");
 
     /// <summary>写状态并唤醒看门狗。失败不影响主流程（看门狗读不到状态只会更保守）。</summary>
-    public static void Report(string state, int corePid = 0, string coreKind = "", string? reason = null)
+    public static void Report(string state, int corePid = 0, string coreKind = "", string? reason = null, int? sessionEpoch = null)
     {
         try
         {
             var snap = new Snapshot
             {
                 NeoPid = Environment.ProcessId,
+                SessionEpoch = sessionEpoch,
                 State = state,
                 CorePid = corePid > 0 ? corePid : 0,
                 CoreKind = coreKind ?? "",
@@ -48,6 +51,8 @@ public static class CoreState
             var json = JsonSerializer.Serialize(snap, new JsonSerializerOptions { WriteIndented = true });
             lock (Gate)
             {
+                if (sessionEpoch.HasValue && sessionEpoch.Value < _lastEpoch) return;
+                if (sessionEpoch.HasValue) _lastEpoch = sessionEpoch.Value;
                 Directory.CreateDirectory(NeoPaths.DataDir);
                 var tmp = FilePath + ".tmp";
                 File.WriteAllText(tmp, json);

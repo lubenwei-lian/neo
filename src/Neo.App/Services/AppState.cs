@@ -51,22 +51,22 @@ public static class AppState
         public bool BypassCn { get; set; } = true;
         public bool BlockAds { get; set; } = true;
         public bool AllowLan { get; set; } = false;
-    // Info 级别的连接/切换/测速/更新日志都会落盘；Debug 仍只在排查时手动开启。
-    public string LogLevel { get; set; } = "info";
+        // Info 级别的连接/切换/测速/更新日志都会落盘；Debug 仍只在排查时手动开启。
+        public string LogLevel { get; set; } = "info";
 
-    /// <summary>
-    /// 传给内核（xray/sing-box/mihomo）的日志级别。
-    /// 和界面日志分开：界面日志要「全部记录」，但内核 Info 是逐连接打印的，
-    /// 若跟着开 info 会一天写几十万行、日志文件暴涨（实测一次连接就十几条）。
-    /// 只有用户显式选 debug 时才让内核也开 debug。
-    /// </summary>
-    public string KernelLogLevel => LogLevel is "debug" ? "debug" : "warning";
+        /// <summary>
+        /// 传给内核（xray/sing-box/mihomo）的日志级别。
+        /// 和界面日志分开：界面日志要「全部记录」，但内核 Info 是逐连接打印的，
+        /// 若跟着开 info 会一天写几十万行、日志文件暴涨（实测一次连接就十几条）。
+        /// 只有用户显式选 debug 时才让内核也开 debug。
+        /// </summary>
+        public string KernelLogLevel => LogLevel is "debug" ? "debug" : "warning";
 
-    /// <summary>日志目录（空 = 默认 data\logs）。设置→通用 可改；旧日志不搬动。</summary>
-    public string LogDirectory { get; set; } = "";
+        /// <summary>日志目录（空 = 默认 data\logs）。设置→通用 可改；旧日志不搬动。</summary>
+        public string LogDirectory { get; set; } = "";
 
-    /// <summary>日志保留天数（只允许 7 / 15 / 30，默认 7）。主日志、内核日志（同在主日志里）、订阅日志统一按此清理。</summary>
-    public int LogRetentionDays { get; set; } = 7;
+        /// <summary>日志保留天数（只允许 7 / 15 / 30，默认 7）。主日志、内核日志（同在主日志里）、订阅日志统一按此清理。</summary>
+        public int LogRetentionDays { get; set; } = 7;
 
         /// 配置迁移版本号：用于「只对老配置执行一次」的默认值修正。
         /// 0 = 迁移前的旧配置。新增迁移时递增此值并在 Load 里补对应分支。
@@ -76,6 +76,10 @@ public static class AppState
         /// <summary>启动后直接最小化到托盘（开机自启常配此项；默认关）。</summary>
         public bool StartMinimized { get; set; } = false;
         public bool CompactLayout { get; set; } = false;
+
+        public bool FloatingTrafficEnabled { get; set; }
+        public int FloatingTrafficX { get; set; } = int.MinValue;
+        public int FloatingTrafficY { get; set; } = int.MinValue;
 
         public string DnsServer { get; set; } = "223.5.5.5";
 
@@ -101,7 +105,9 @@ public static class AppState
         public bool StartMaximized { get; set; } = true;
         public bool AutoUpdate { get; set; } = true;
 
-        public bool FailoverEnabled { get; set; } = true;
+        // Keep the manually selected node unless the user explicitly opts in.
+        // This also covers an older configuration that omits the property.
+        public bool FailoverEnabled { get; set; } = false;
 
         /// 固定出口（多入口加速）：出口固定为一个节点，其他节点作为入口链路给它叠加带宽。
         /// 仅在非 TUN（xray）下生效。
@@ -142,9 +148,9 @@ public static class AppState
         /// 节点页「真连测速」开关：false（默认）= 用 TCP 握手测延迟（TCP 握手风格，快）；
         /// true = 走真实连接（慢但能判断是否真的能访问网站）。
         /// 关闭时节点页隐藏「真连测速」按钮、把「快速测延迟」升为主按钮；卡片主徽标显示 TCP 延迟。
-    //   实测美国节点 TCP 68～112ms、真实代理 280～1200ms，默认按 TCP 排序会把用户
-    //   引到「数字最好看但实际最慢」的节点上。默认用真连，快速测延迟仅作连通性参考。
-    public bool RealDelayTestEnabled { get; set; } = true;
+        //   实测美国节点 TCP 68～112ms、真实代理 280～1200ms，默认按 TCP 排序会把用户
+        //   引到「数字最好看但实际最慢」的节点上。默认用真连，快速测延迟仅作连通性参考。
+        public bool RealDelayTestEnabled { get; set; } = true;
 
         /// <summary>
         /// 「检查预发布内核」：true 时 xray 更新会把 GitHub 上标记为 prerelease 的版本也算进候选。
@@ -180,6 +186,8 @@ public static class AppState
         public List<string> ManualLinks { get; set; } = new();
 
         public List<SubItem> Subscriptions { get; set; } = new();
+        // Null preserves the legacy current-node highlight; empty explicitly clears it.
+        public string? PrimarySubscriptionId { get; set; }
 
         // 游戏直连保护：按进程名直连，游戏流量不经节点（防节点拒绝游戏 UDP）
         public bool GameDirectEnabled { get; set; } = true;
@@ -291,13 +299,9 @@ public static class AppState
     {
         try
         {
-            Neo.Core.Core.KernelRouter.Clear();
-            foreach (var kv in State.CoreMap)
-            {
-                // 只接受已知协议名，避免脏数据让路由行为不可预期。
-                if (!Enum.TryParse<NodeProtocol>(kv.Key, ignoreCase: true, out var proto)) continue;
-                Neo.Core.Core.KernelRouter.Set(proto.ToString(), kv.Value);
-            }
+            Neo.Core.Core.KernelRouter.Replace(State.CoreMap
+                .Where(kv => Enum.TryParse<NodeProtocol>(kv.Key, true, out _))
+                .Select(kv => new KeyValuePair<string, string>(Enum.Parse<NodeProtocol>(kv.Key, true).ToString(), kv.Value)));
         }
         catch { }
     }
@@ -366,8 +370,6 @@ public static class AppState
                 if (CurrentNode == null && Nodes.Count > 0)
                     CurrentNode = Nodes[0];
 
-                SyncCoreMap();
-                ApplyLocalPorts();
             }
             catch (Exception ex)
             {
@@ -628,8 +630,6 @@ public static class AppState
         {
             try
             {
-                SyncCoreMap();   // 保存即生效，不用重启
-                ApplyLocalPorts();
                 var tmp = StatePath + ".tmp";
                 File.WriteAllText(tmp, JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true }));
                 File.Move(tmp, StatePath, true);
@@ -661,6 +661,12 @@ public static class AppState
     }
 
     private static readonly SemaphoreSlim SubRefreshGate = new(1, 1);
+    private static readonly Dictionary<string, long> SubRevisions = new();
+    private static long SubRevision(string id) => SubRevisions.TryGetValue(id, out var value) ? value : 0;
+    private static bool SubscriptionCurrent(SubItem sub, string url, long revision, bool requireEnabled = true)
+        => State.Subscriptions.Any(s => ReferenceEquals(s, sub)) && (!requireEnabled || sub.Enabled)
+            && sub.Url == url && SubRevision(sub.Id) == revision;
+
 
     /// 商家在「设备超限 / 链接被重置」时会返回占位节点：
     ///   server=127.0.0.1:6666，名字里写「使用的设备过多 / 请去官网获取新订阅链接」。
@@ -745,34 +751,125 @@ public static class AppState
         }
         try
         {
-        var enabled = State.Subscriptions.Where(s => s.Enabled).ToList();
-        if (enabled.Count == 0)
-            return (false, "尚未配置订阅链接");
+            List<(SubItem Sub, string Url, long Revision)> enabled;
+            lock (SaveGate) enabled = State.Subscriptions.Where(s => s.Enabled)
+                .Select(s => (s, s.Url, SubRevision(s.Id))).ToList();
+            if (enabled.Count == 0) return (false, "No enabled subscription");
+            var okCount = 0;
+            var errors = new List<string>();
 
-        var cache = LoadSubCache();
-        var okCount = 0;
-        var errors = new List<string>();
+            foreach (var (sub, url, revision) in enabled)
+            {
+                lock (SaveGate) { if (!SubscriptionCurrent(sub, url, revision)) continue; }
+                var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "全部刷新");
+                var sw = Stopwatch.StartNew();
+                var r = await SubscriptionFetcher.FetchAsync(url);
+                sw.Stop();
 
-        foreach (var sub in enabled)
+                if (r.Success)
+                {
+                    bool placeholder = IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail);
+                    if (placeholder)
+                    {
+                        LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
+                        IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
+                        errors.Add($"{sub.Name}：{ProviderPlaceholderMessage}");
+                        SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
+                            placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
+                        continue;
+                    }
+                    lock (SaveGate)
+                    {
+                        if (!SubscriptionCurrent(sub, url, revision)) continue;
+                        var cache = LoadSubCache();
+                        cache[sub.Id] = r.RawText ?? "";
+                        sub.NodeCount = r.Nodes.Count;
+                        sub.TrafficInfo = r.TrafficInfo;
+                        sub.SubUpload = r.SubUpload;
+                        sub.SubDownload = r.SubDownload;
+                        sub.SubTotal = r.SubTotal;
+                        sub.SubExpireUnix = r.SubExpireUnix;
+                        sub.LastFetchUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
+                        okCount++;
+                        SaveSubCache(cache);
+                    }
+                    LogBus.App($"订阅 [{sub.Name}] 更新成功 · {r.Nodes.Count} 个节点 · 流量 {sub.TrafficInfo}");
+                    SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
+                        placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
+                }
+                else
+                {
+                    var (http, parseError) = ClassifyFetchFailure(r.Error);
+                    errors.Add($"{sub.Name}：{r.Error}");
+                    LogBus.App($"订阅 [{sub.Name}] 更新失败：{r.Error}", "Warning");
+                    SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
+                        "未判定", sw.Elapsed.TotalMilliseconds);
+                }
+            }
+
+            if (okCount == 0)
+                return (false, string.Join("；", errors));
+
+            lock (SaveGate)
+            {
+                RebuildSubNodesFromCaches();
+                MirrorLegacyFromFirst();
+                Save();
+                LastFetchLocal = DateTime.Now;
+                RebuildNodes();
+            }
+            NotifySubscriptionUpdatedSafe();
+            return (true, null);
+        }
+        finally { try { SubRefreshGate.Release(); } catch { } }
+    }
+
+    public static async Task<(bool Ok, string? Error)> RefreshOneAsync(string id)
+    {
+        // 单条刷新与全部刷新共享整个读—改—写事务的门，避免互相覆盖缓存。
+        if (!await SubRefreshGate.WaitAsync(0))
+            return (false, "订阅刷新正在进行中");
+        try
         {
-            var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "全部刷新");
+            SubItem? sub;
+            string url;
+            long revision;
+            lock (SaveGate)
+            {
+                sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
+                if (sub == null) return (false, "Subscription unavailable");
+                url = sub.Url;
+                revision = SubRevision(id);
+            }
+
+            var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "单条刷新");
             var sw = Stopwatch.StartNew();
-            var r = await SubscriptionFetcher.FetchAsync(sub.Url);
+            var r = await SubscriptionFetcher.FetchAsync(url);
             sw.Stop();
 
-            if (r.Success)
+            if (!r.Success)
             {
-                bool placeholder = IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail);
-                if (placeholder)
-                {
-                    LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
-                    IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
-                    errors.Add($"{sub.Name}：{ProviderPlaceholderMessage}");
-                    SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
-                        placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
-                    continue;
-                }
+                var (http, parseError) = ClassifyFetchFailure(r.Error);
+                SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
+                    "未判定", sw.Elapsed.TotalMilliseconds);
+                return (false, r.Error);
+            }
+            if (IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail))
+            {
+                LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
+                IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
+                SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
+                    placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
+                return (false, ProviderPlaceholderMessage);
+            }
+
+            lock (SaveGate)
+            {
+                if (!SubscriptionCurrent(sub, url, revision, requireEnabled: false)) return (false, "Subscription changed during refresh");
+                var cache = LoadSubCache();
                 cache[sub.Id] = r.RawText ?? "";
+                SaveSubCache(cache);
+
                 sub.NodeCount = r.Nodes.Count;
                 sub.TrafficInfo = r.TrafficInfo;
                 sub.SubUpload = r.SubUpload;
@@ -780,137 +877,131 @@ public static class AppState
                 sub.SubTotal = r.SubTotal;
                 sub.SubExpireUnix = r.SubExpireUnix;
                 sub.LastFetchUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
-                okCount++;
-                LogBus.App($"订阅 [{sub.Name}] 更新成功 · {r.Nodes.Count} 个节点 · 流量 {sub.TrafficInfo}");
-                SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
-                    placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
+
+                RebuildSubNodesFromCaches();
+                MirrorLegacyFromFirst();
+                Save();
+                LastFetchLocal = DateTime.Now;
+                RebuildNodes();
             }
-            else
-            {
-                var (http, parseError) = ClassifyFetchFailure(r.Error);
-                errors.Add($"{sub.Name}：{r.Error}");
-                LogBus.App($"订阅 [{sub.Name}] 更新失败：{r.Error}", "Warning");
-                SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
-                    "未判定", sw.Elapsed.TotalMilliseconds);
-            }
+            NotifySubscriptionUpdatedSafe();
+            SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
+                placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
+            return (true, null);
         }
-
-        SaveSubCache(cache);
-        if (okCount == 0)
-            return (false, string.Join("；", errors));
-
-        RebuildSubNodesFromCaches();
-        MirrorLegacyFromFirst();
-        Save();
-        LastFetchLocal = DateTime.Now;
-        RebuildNodes();
-        NotifySubscriptionUpdatedSafe();
-        return (true, null);
-        }
-        finally { try { SubRefreshGate.Release(); } catch { } }   
-    }
-
-    public static async Task<(bool Ok, string? Error)> RefreshOneAsync(string id)
-    {
-        var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
-        if (sub == null) return (false, "订阅不存在");
-
-        var logId = SubscriptionLogService.Begin(sub.Name, SubscriptionLogService.HostOf(sub.Url), "单条刷新");
-        var sw = Stopwatch.StartNew();
-        var r = await SubscriptionFetcher.FetchAsync(sub.Url);
-        sw.Stop();
-
-        if (!r.Success)
-        {
-            var (http, parseError) = ClassifyFetchFailure(r.Error);
-            SubscriptionLogService.Finish(logId, "失败", http, 0, r.Error, parseError,
-                "未判定", sw.Elapsed.TotalMilliseconds);
-            return (false, r.Error);
-        }
-        if (IsProviderPlaceholder(r.Nodes, r.RawText, out var placeholderDetail))
-        {
-            LogBus.App($"订阅 [{sub.Name}]：{ProviderPlaceholderMessage}", "Error");
-            IncidentLog.Record("subscription", "订阅被商家限制，已保留原节点", ProviderPlaceholderMessage);
-            SubscriptionLogService.Finish(logId, "占位", "2xx", r.Nodes.Count, null, null,
-                placeholderDetail ?? "是", sw.Elapsed.TotalMilliseconds);
-            return (false, ProviderPlaceholderMessage);
-        }
-
-        var cache = LoadSubCache();
-        cache[sub.Id] = r.RawText ?? "";
-        SaveSubCache(cache);
-
-        sub.NodeCount = r.Nodes.Count;
-        sub.TrafficInfo = r.TrafficInfo;
-        sub.SubUpload = r.SubUpload;
-        sub.SubDownload = r.SubDownload;
-        sub.SubTotal = r.SubTotal;
-        sub.SubExpireUnix = r.SubExpireUnix;
-        sub.LastFetchUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
-
-        RebuildSubNodesFromCaches();
-        MirrorLegacyFromFirst();
-        Save();
-        LastFetchLocal = DateTime.Now;
-        RebuildNodes();
-        NotifySubscriptionUpdatedSafe();
-        SubscriptionLogService.Finish(logId, "成功", "2xx", r.Nodes.Count, null, null,
-            placeholderDetail ?? "否", sw.Elapsed.TotalMilliseconds);
-        return (true, null);
+        finally { SubRefreshGate.Release(); }
     }
 
     public static IReadOnlyList<SubItem> Subscriptions => State.Subscriptions;
 
+    public static async Task<(string Id, int Count, bool Enabled)> ImportLocalContentAsync(
+        string content, string name, string? sourcePath = null, CancellationToken ct = default)
+    {
+        if (System.Text.Encoding.UTF8.GetByteCount(content) > SubscriptionSource.MaxImportBytes)
+            throw new ArgumentException("导入内容不能超过16 MB");
+        if (!await SubRefreshGate.WaitAsync(0, ct)) throw new InvalidOperationException("订阅刷新正在进行，请稍后导入");
+        try
+        {
+            var parsed = await Task.Run(() => SubscriptionFetcher.ParseContent(content), ct);
+            if (!parsed.Success || parsed.Nodes.Count == 0) throw new ArgumentException(parsed.Error ?? "未解析出有效节点");
+            ct.ThrowIfCancellationRequested();
+            var source = sourcePath == null ? "" : SubscriptionSource.Normalize(sourcePath);
+            if (source.Length == 0)
+            {
+                var dir = Path.Combine(NeoPaths.DataDir, "imports"); Directory.CreateDirectory(dir);
+                var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content)));
+                source = Path.Combine(dir, hash + ".txt");
+                if (!File.Exists(source)) await File.WriteAllTextAsync(source, content, ct);
+            }
+            lock (SaveGate)
+            {
+                var id = AddSubscription(source, name);
+                var sub = State.Subscriptions.First(s => s.Id == id);
+                var cache = LoadSubCache(); cache[id] = content; SaveSubCache(cache);
+                sub.NodeCount = parsed.Nodes.Count; sub.LastFetchUnix = DateTimeOffset.Now.ToUnixTimeSeconds();
+                sub.TrafficInfo = parsed.TrafficInfo;
+                SubRevisions[id] = SubRevision(id) + 1;
+                RebuildSubNodesFromCaches(); MirrorLegacyFromFirst(); Save(); RebuildNodes();
+                NotifySubscriptionUpdatedSafe();
+                return (id, parsed.Nodes.Count, sub.Enabled);
+            }
+        }
+        finally { SubRefreshGate.Release(); }
+    }
+
     public static string AddSubscription(string url, string? name = null)
     {
-        var u = (url ?? "").Trim();
-        var existing = State.Subscriptions.FirstOrDefault(s => string.Equals(s.Url, u, StringComparison.OrdinalIgnoreCase));
-        if (existing != null)
+        lock (SaveGate)
         {
-            // 重复导入同一 URL 不改变启用状态，避免把用户刻意停用的订阅重新打开。
-            return existing.Id;
-        }
+            var u = (url ?? "").Trim();
+            var existing = State.Subscriptions.FirstOrDefault(s => string.Equals(s.Url, u, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                // 重复导入同一 URL 不改变启用状态，避免把用户刻意停用的订阅重新打开。
+                return existing.Id;
+            }
 
-        // 只有列表为空时，首个订阅才自动启用；后续订阅默认停用，由用户手动开启。
-        var isFirstSubscription = State.Subscriptions.Count == 0;
-        var sub = new SubItem
+            // 只有列表为空时，首个订阅才自动启用；后续订阅默认停用，由用户手动开启。
+            var isFirstSubscription = State.Subscriptions.Count == 0;
+            var sub = new SubItem
+            {
+                Id = "s" + Guid.NewGuid().ToString("N"),
+                Url = u,
+                Name = string.IsNullOrWhiteSpace(name) ? TryGuessName(u) : name!.Trim(),
+                Enabled = isFirstSubscription,
+            };
+            State.Subscriptions.Add(sub);
+            Save();
+            return sub.Id;
+        }
+    }
+
+    public static void EditSubscription(string id,string url,string name)
+    {
+        lock(SaveGate)
         {
-            Id = "s" + DateTime.Now.ToString("MMddHHmmssfff"),
-            Url = u,
-            Name = string.IsNullOrWhiteSpace(name) ? TryGuessName(u) : name!.Trim(),
-            Enabled = isFirstSubscription,
-        };
-        State.Subscriptions.Add(sub);
-        Save();
-        return sub.Id;
+            var sub=State.Subscriptions.FirstOrDefault(s=>s.Id==id)??throw new InvalidOperationException("订阅已移除");
+            SubRevisions[id]=SubRevision(id)+1;
+            sub.Url=url;sub.Name=name;
+            RebuildSubNodesFromCaches();MirrorLegacyFromFirst();Save();RebuildNodes();
+        }
     }
 
     public static void RemoveSubscriptionById(string id)
     {
-        var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
-        if (sub == null) return;
+        lock (SaveGate)
+        {
+            var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
+            if (sub == null) return;
 
-        State.Subscriptions.Remove(sub);
-        var cache = LoadSubCache();
-        cache.Remove(id);
-        SaveSubCache(cache);
+            SubRevisions[id] = SubRevision(id) + 1;
+            State.Subscriptions.Remove(sub);
+            if (State.PrimarySubscriptionId == id) State.PrimarySubscriptionId = null;
+            var cache = LoadSubCache();
+            cache.Remove(id);
+            SaveSubCache(cache);
 
-        RebuildSubNodesFromCaches();
-        MirrorLegacyFromFirst();
-        Save();
-        RebuildNodes();
+            RebuildSubNodesFromCaches();
+            MirrorLegacyFromFirst();
+            Save();
+            RebuildNodes();
+        }
     }
 
     public static void SetSubscriptionEnabled(string id, bool on)
     {
-        var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
-        if (sub == null || sub.Enabled == on) return;
+        lock (SaveGate)
+        {
+            var sub = State.Subscriptions.FirstOrDefault(s => s.Id == id);
+            if (sub == null || sub.Enabled == on) return;
 
-        sub.Enabled = on;
-        RebuildSubNodesFromCaches();
-        MirrorLegacyFromFirst();
-        Save();
-        RebuildNodes();
+            SubRevisions[id] = SubRevision(id) + 1;
+            sub.Enabled = on;
+            RebuildSubNodesFromCaches();
+            MirrorLegacyFromFirst();
+            Save();
+            RebuildNodes();
+        }
     }
 
     private static Dictionary<string, string> LoadSubCache()
@@ -1036,7 +1127,7 @@ public static class AppState
     ///   重启后按名字匹配会认错节点。地址+端口+协议能唯一确定「服务端」，
     ///   名称用来区分同一服务器上的多个不同配置（不同 uuid / 传输参数）。
     /// 旧 state.json 没有 LastNodeKey，调用方都保留了按名字回退的分支。
-    public static string NodeKey(NodeItem n) => $"{n.Server}|{n.Port}|{(int)n.Protocol}|{n.Name}";
+    public static string NodeKey(NodeItem n) => NodeIdentity.Fingerprint(n);
 
     public static void SetCurrentNode(NodeItem node)
     {
@@ -1125,6 +1216,7 @@ public static class AppState
         NodeProtocol.VLESS => "VLESS",
         NodeProtocol.Trojan => "Trojan",
         NodeProtocol.Shadowsocks => "Shadowsocks",
+        NodeProtocol.ShadowsocksR => "ShadowsocksR",
         NodeProtocol.Hysteria2 => "Hysteria2",
         NodeProtocol.TUIC => "TUIC",
         NodeProtocol.AnyTls => "AnyTLS",

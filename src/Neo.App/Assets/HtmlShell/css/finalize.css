@@ -1,0 +1,253 @@
+/* 功能补齐层：视觉沿用主稿；只在此处定义新增功能，避免重复改变既有表面。 */
+.page{transition:none}.page.leaving{visibility:visible;pointer-events:none}
+.settings-content{display:flex;flex-direction:column;gap:8px;min-width:0;flex:none}
+.roll{height:1.5em;line-height:1.5;font-style:normal}.roll>.track{font-style:normal;will-change:auto}.roll>.track>span{height:1.5em;line-height:1.5;white-space:nowrap!important}
+.lat{height:1.5em!important;line-height:1.5;align-items:baseline!important}.lat .digits,.lat .d{height:1.5em!important;line-height:1.5}.lat .d{width:.64em}.lat .col>span{height:1.5em!important;line-height:1.5}.lat .unit{height:auto;line-height:1.5!important;transform:none!important;font-size:.8em!important;align-self:baseline!important}.lat .txt{font-size:inherit}
+
+.health-pct{font-size:15px;font-weight:650;margin-left:4px;font-variant-numeric:tabular-nums}
+.ok{color:var(--NeoGreen)}.warn{color:var(--NeoYellow)}.bad{color:var(--NeoRed)}.dim{color:var(--NeoText3)}
+.healthpanel{display:flex;flex-direction:column;gap:0}
+#healthSites{grid-template-columns:1fr 1fr;gap:0 18px;flex:1;min-height:0;align-content:start;overflow-y:auto;scrollbar-width:thin}
+#healthSites .hx{padding:0;min-height:20px;font-size:11px;line-height:1.5}
+#healthSites .hx b{font-size:10.5px;font-weight:400}
+.healthfoot{display:flex;align-items:center;justify-content:space-between;padding-top:7px;gap:8px;flex:none;font-size:10.5px;color:var(--NeoText3)}
+.rightcol{grid-template-rows:minmax(0,1fr) minmax(0,.6fr)}
+.cgrid{grid-template-rows:minmax(175px,.8fr) minmax(310px,1fr)}
+#scrim{position:fixed;inset:0;z-index:80;background:transparent!important;backdrop-filter:none!important;pointer-events:none;visibility:hidden;opacity:0;transition:opacity .2s,visibility 0s .25s}
+#scrim.on{pointer-events:auto;visibility:visible;opacity:1;transition-delay:0s}
+#diagDrawer{position:fixed;inset:64px 28px 28px auto;width:min(610px,calc(100vw - 48px));z-index:82;transform:none!important;transition:none!important;border-radius:28px!important;padding:0!important;visibility:hidden;pointer-events:none;background:#17171d!important;border:1px solid #26262e!important;box-shadow:0 24px 90px #0006!important;overflow:hidden}
+#diagDrawer.is-open{visibility:visible;pointer-events:auto}
+#diagDrawer>.dh{margin:22px 22px 12px;min-width:0}
+#diagDrawer>.dbody{margin:0 22px 22px;min-width:0}
+#diagDrawer .dh h2{font-size:18px}#diagDrawer .dsum{align-items:baseline;gap:12px}#diagScore{font-size:30px;color:var(--NeoGreen);font-weight:600}
+#diagWhen,#diagExit{font-size:12px!important;color:var(--NeoText2)}
+#diagList{overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;gap:0;padding-right:4px}
+#diagList .ditem{min-height:64px;padding:10px 0;border-radius:0;background:none!important;flex:none}
+.diag-name>b{font-size:13px;font-weight:550}.diag-name .route{font-size:10px;color:var(--NeoAccent);margin-left:10px}
+#diagList .d{font-size:11px;margin-top:5px;overflow-wrap:anywhere}.diag-result{text-align:right;font-size:12px}.diag-result small{display:block;color:var(--NeoText3);font-size:10px;margin-top:5px}
+.preview-note{font-size:10px;color:var(--NeoText3);padding-top:7px;flex:none}
+button:disabled{opacity:.5;cursor:default}
+@media(min-width:1600px){.nlabel{font-size:14px}.nav{height:40px;border-radius:20px}.ptitle{font-size:14px}.h1meta,.h1kv,.minirow .d{font-size:12px}.h1hd .curName{font-size:16px}.ringc .st{font-size:24px}.ringc .tm,.ringc .ex{font-size:13px}#healthSites .hx{font-size:12px;min-height:23px}#healthSites .hx b{font-size:11px}.cgrid{grid-template-rows:minmax(185px,.8fr) minmax(350px,1fr)}}
+@media(max-width:1180px){.rightcol{grid-template-rows:auto auto}.cgrid{grid-template-rows:minmax(185px,auto) minmax(320px,auto)}.logpanel{min-height:200px}#healthSites .hx{min-height:25px}#diagDrawer{top:48px;right:20px;bottom:20px}}
+@media(max-width:900px){.cgrid{grid-template-rows:none;grid-auto-rows:auto}.healthpanel{min-height:350px}.rightcol .panel{min-height:180px}.rightcol .healthpanel{min-height:350px}#diagDrawer{inset:40px 12px 12px;width:calc(100vw - 24px);padding:0!important}}
+/* 系统「减少动画」开关下不再把全站过渡压成 0：用户明确要求看到动画 */
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto}}
+
+/* 节点：保留原有紧凑网格，收敛为一个正式视图。 */
+#vsbar{display:none!important}.node-search{width:250px}.search input{min-width:0}
+.ui-select{appearance:none;border:0;border-radius:18px;background:#29292f;color:var(--NeoText2);padding:8px 34px 8px 13px;font:12px var(--font);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='m1 1 4 4 4-4' fill='none' stroke='%23969ba5' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 13px center;max-width:180px;cursor:pointer}
+.ui-select option{background:#25252b}
+.page[data-page="nodes"] .vp[data-v="D"]{grid-template-columns:minmax(0,1fr) 252px!important;gap:12px!important;align-items:stretch}
+#listD.dgrid{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:6px!important;max-height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 2px 12px}
+#listD.dgrid>.node-card{height:52px!important;border-radius:14px!important;padding:6px 8px!important;background:#19191f!important;gap:3px!important;display:flex;flex-direction:column;justify-content:center;cursor:pointer;min-width:0;transition:background .18s}
+#listD .node-card:hover{background:#202027!important}#listD .node-card.on{background:#1c2b3c!important}
+.node-name{display:flex;align-items:center;gap:6px;min-width:0}.node-name b{font-size:11.5px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-name .flag{width:19px;height:13px;flex:none}.node-selected{display:none;font-size:10px;color:var(--NeoAccent);margin-left:auto}.node-card.on .node-selected{display:block}
+.node-bottom{display:flex;align-items:center;justify-content:space-between;gap:3px;min-width:0}.node-proto{font-size:10px;color:var(--NeoText3);max-width:48%;overflow:hidden;text-overflow:ellipsis}.node-test{border-radius:10px;padding:1px 0;min-height:18px;position:relative}.node-test:hover{color:var(--NeoAccent)}.node-test:hover::after{content:'测速';position:absolute;inset:0;display:grid;place-items:center;border-radius:10px;background:#263549;font-size:11px;font-weight:500}.node-test .lat{font-size:11.5px;gap:1px!important}.node-test .lat .dot{display:none}.node-test .lat .unit{font-size:10px!important}.node-card.testing .lat .txt{font-size:10px}
+#nodeDrawer{background:transparent!important;border:0!important;border-left:1px solid var(--NeoHairline)!important;border-radius:0!important;padding:0 0 0 20px!important;min-height:0;max-height:100%;overflow:auto;gap:8px;align-self:stretch;box-shadow:none!important}
+#nodeDrawer .dh{align-items:flex-start}#nodeDrawer .dh>div{min-width:0}#nodeDrawer .dhName{font-size:15px!important;line-height:1.6;white-space:normal}#nodeDrawer .dhMeta{font-size:11px!important;line-height:1.5}#nodeDrawer .row{padding:7px 0!important;min-height:40px!important}#nodeDrawer .row>span:first-child{font-size:12px!important;color:var(--NeoText1)!important}#nodeDrawer .v{font-size:11px!important;overflow-wrap:anywhere;max-width:135px;text-align:right}#nodeDrawer .dhName.roll{width:auto}#nodeDrawer .dhName.roll>.track>span{white-space:nowrap}#nodeDrawer .btn{flex:none!important;min-width:82px}.empty-state{grid-column:1/-1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:210px;color:var(--NeoText3);font-size:12px}.empty-state>b{font-size:15px;font-weight:500;color:var(--NeoText2)}
+/* 原生顶层弹窗，保持卡片实心与真实透明的外层。 */
+.ui-dialog{color:var(--NeoText1);background:#17171d;border:0;border-radius:28px;padding:24px;width:min(530px,calc(100vw - 40px));max-height:calc(100vh - 72px);margin:auto;box-shadow:0 18px 44px rgba(0,0,0,.42);overflow:auto;font:13px var(--font)}
+.ui-dialog::backdrop{background:rgba(6,6,10,.42)}.ui-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:20px}.ui-dialog h2{font-size:19px;font-weight:600}.dialog-body{min-height:30px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.dialog-copy{font-size:13px;color:var(--NeoText2);line-height:1.8;margin:5px 0 14px}.ui-dialog footer{margin-top:20px}.field{display:flex;flex-direction:column;gap:9px;margin-bottom:16px;color:var(--NeoText2);font-size:12px}.field input,.ui-input,.ui-textarea{font:13px var(--font);color:var(--NeoText1);background:#24242c;border:0;border-radius:16px;padding:12px 14px;width:100%;outline-offset:3px}.ui-textarea{resize:vertical;min-height:135px;line-height:1.8}.form-error{color:var(--NeoRed);font-size:12px}.detail-grid,.record-detail{display:grid;grid-template-columns:auto minmax(0,1fr);gap:18px 24px;font-size:13px}.detail-grid>span{color:var(--NeoText1)}.detail-grid>b{color:var(--NeoText2);font-weight:400;text-align:right}
+/* 两类日志使用同一密度，空白不拉伸条目。 */
+.records-panel{flex:1;min-height:0;overflow:auto;padding:8px 20px!important}.record{border-radius:14px;flex:none}.record summary{list-style:none;display:grid;grid-template-columns:100px minmax(130px,1fr) 60px minmax(100px,1fr) 60px;align-items:center;gap:16px;min-height:60px;cursor:pointer;font-size:12px;padding:8px 4px}.record summary::-webkit-details-marker{display:none}.record summary>b{font-weight:550}.record-time,.record-message,.record-duration{color:var(--NeoText3);font-size:11px}.record-duration{text-align:right}.record:hover{background:#ffffff03}.record[open]{background:#ffffff03}.record-detail{font-size:12px;padding:8px 20px 20px;gap:12px 22px}.record-detail>span{color:var(--NeoText3)}.record-detail>b{font-weight:400;color:var(--NeoText2)}
+#logList{background:transparent;border-radius:0;padding:0!important;overflow:auto}#logList .lrow{min-height:38px;font-size:12px}#logList .lrow .msg{white-space:pre-wrap;overflow-wrap:anywhere}#logList .lrow .tm{font-size:11px}
+@media(min-width:1600px){#listD.dgrid{grid-template-columns:repeat(7,minmax(0,1fr))!important}#listD.dgrid>.node-card{height:64px!important;padding:8px 10px!important;border-radius:16px!important}.node-name b{font-size:14px}.node-proto{font-size:11px}.node-test .lat{font-size:13px}.node-test:hover::after{font-size:12px}#nodeDrawer .dhName{font-size:17px!important}#nodeDrawer .row>span:first-child{font-size:13px!important}#nodeDrawer .v{font-size:12px!important}.page[data-page="nodes"] .vp[data-v="D"]{grid-template-columns:minmax(0,1fr) 272px!important}}
+@media(max-width:1370px){#listD.dgrid{grid-template-columns:repeat(5,minmax(0,1fr))!important}.page[data-page="nodes"] .vp[data-v="D"]{grid-template-columns:minmax(0,1fr) 218px!important}.node-name b{font-size:11.5px}}
+@media(max-width:1100px){#listD.dgrid{grid-template-columns:repeat(4,minmax(0,1fr))!important}.page[data-page="nodes"] .vp[data-v="D"]{grid-template-columns:minmax(0,1fr)!important}#nodeDrawer{display:none!important}.node-search{width:210px}.record summary{grid-template-columns:85px minmax(120px,1fr) 45px 60px}.record-message{display:none}}
+@media(max-width:800px){#listD.dgrid{grid-template-columns:repeat(3,minmax(0,1fr))!important}.node-search{width:180px}.ph{flex-wrap:wrap}.filterrow{flex-wrap:wrap}.record summary{grid-template-columns:80px minmax(70px,1fr) 45px;gap:10px}.record-duration{display:none}}
+
+/* 收敛最后的详情层级：标题清晰、值退一层，操作不拉满。 */
+#nodeDrawer.drawer{position:relative!important;top:auto!important;right:auto!important;bottom:auto!important;display:flex!important;flex-direction:column;font-style:normal!important;background:transparent!important;border-radius:0!important}
+#nodeDrawer .dh,#nodeDrawer .row,#nodeDrawer b,#nodeDrawer span{font-style:normal!important}
+#nodeDrawer>div:last-child{justify-content:flex-end;margin-top:auto!important;padding-top:18px;flex:none}
+#nodeDrawer .row{gap:12px}#nodeDrawer .row .v{min-width:0}
+#subsBody1 .srow .acts{flex:none;gap:8px}#subsBody1 .srow .nm{min-width:0;flex-wrap:wrap}#subsBody1 .srow .nmtext{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#subsBody1 .srow .s-bot{flex-wrap:wrap;row-gap:6px}#subsBody1 .srow .url{min-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+#subsBody1 .srow .cell{white-space:nowrap}.lgcaret{font-family:'Segoe Fluent Icons';font-style:normal}
+/* 展开动画交给 CSS 过渡（max-height + opacity）：JS 量高度在这个 flex 布局里会被算成 0，
+   而且页面会定时重绘，JS 动画会被冲掉 */
+.lgrow .lgdetail{
+  display:block!important;overflow:hidden;
+  max-height:none!important;height:0;opacity:0;
+  transition:max-height .30s cubic-bezier(.32,0,.16,1),opacity .18s linear,margin-top .2s linear;
+}
+.lgrow.open .lgdetail{max-height:none!important;opacity:1;margin-top:6px}
+.map-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;gap:16px;font-size:13px;color:var(--NeoText2)}
+.map-row .ui-select{min-width:140px}.operation-status{font-size:12px;color:var(--NeoText2);padding:12px 0}.operation-progress{width:100%;height:6px;appearance:none;border:0;border-radius:3px;overflow:hidden}.operation-progress::-webkit-progress-bar{background:#2b2b34}.operation-progress::-webkit-progress-value{background:var(--NeoAccent);border-radius:3px}
+#setBody .row .t{font-size:13px!important;font-weight:500}#setBody .row .d{font-size:11.5px!important;line-height:1.6;color:var(--NeoText3)}#setBody .row{gap:20px}#setBody .row>div:first-child{min-width:0}#setBody .row>.v{font-size:12px;max-width:40%;text-align:right;overflow-wrap:anywhere}
+.compact-nodes #listD.dgrid>.node-card{height:46px!important}
+@media(min-width:1600px){#setBody .row .t{font-size:14px!important}#setBody .row .d{font-size:12px!important}.page[data-page="settings"] .sgroup .row{min-height:57px!important}.srow .nmtext{font-size:14px}.srow .cell{font-size:12px}#slList summary{font-size:13px}#logList .lrow{font-size:13px}}
+@media(max-width:1100px){#nodeDrawer.drawer{display:none!important}#subsBody1 .s-bot .url{flex-basis:100%}#subsBody1 .srow .nm .badge{font-size:9px}.record summary{font-size:11px}}
+
+/* 透明验收：覆盖旧样式中残留的 html 深色底，不让预览底色混入主稿。 */
+/* 原型画布：浏览器里必须有一层底色，否则透出白底（真机里这层由窗口/桌面提供） */
+html,body{background:#101014!important}
+.page[data-page="nodes"] #nodeDrawer.drawer{background:transparent!important;border:0!important;border-left:1px solid var(--NeoHairline)!important;border-radius:0!important;padding:0 0 0 20px!important}
+.mark{object-fit:contain;background:none!important;box-shadow:none!important}
+#scrim.closing{visibility:visible!important;pointer-events:auto!important;opacity:0}
+
+/* 小窗口保留完整订阅流程，侧栏日志已有独立入口，不挤占订阅宽度。 */
+@media(max-width:1180px){#subsBody1 .s1{display:flex!important;flex-direction:column;gap:12px;overflow-y:auto;min-height:0;height:100%}#subsBody1 .s1usage{flex:none;min-height:180px;height:180px}#subsBody1 .planstrip{display:flex!important;flex:none;min-height:64px;flex-wrap:wrap;padding:12px 16px!important;gap:12px}#subsBody1 .planstrip .ps-i{font-size:11px}#subsBody1 .planstrip .ps-r{margin-left:auto}#subsBody1 .s1list{flex:1;min-height:290px}#subsBody1 .s1log{display:none!important}#subsBody1 .srow .s-bot{flex-wrap:wrap}#subsBody1 .srow .url{flex-basis:100%}}
+#nConnectCompact{display:none}@media(max-width:1100px){#nConnectCompact{display:inline-flex}}
+#healthSites{scrollbar-gutter:stable}
+
+/* 行是 flex 列布局且高度固定，明细被 flex-shrink 压成 0：放开行高、明细不参与收缩 */
+.lgrow{height:auto!important;min-height:0!important}
+.lgrow .lgdetail{flex:none!important;min-height:0!important}
+
+/* 弹窗：不要整片压黑（深色界面上 42% 黑会像一块黑板），改成几乎不压 + 卡片自己带描边和紧阴影 */
+.ui-dialog::backdrop{background:rgba(8,8,12,.14)!important}
+.ui-dialog{
+  box-shadow:0 10px 26px rgba(0,0,0,.35)!important;
+  border:1px solid rgba(255,255,255,.08)!important;
+}
+
+/* 延迟单位 ms 与数字同基线：同字号 + 视觉缩放（GPT 那版用 .8em + baseline，实际会低 2px） */
+.lat{align-items:baseline!important}
+.lat .unit{
+  font-size:inherit!important;
+  line-height:inherit!important;
+  align-self:baseline!important;
+  height:auto!important;
+  transform:scale(.78);
+  transform-origin:left bottom;
+  margin-left:2px!important;
+  position:relative;
+  top:-0.30em;
+}
+
+
+/* 小号延迟（节点卡/列表/详情）里 ms 再抬一点 */
+.dgrid .lat .unit,.vlist .lat .unit,#nodeDrawer .lat .unit,.srow .lat .unit{top:-0.44em!important}
+
+/* 大屏（≥1600）字号放大，em 位移按新字号补 */
+@media(min-width:1600px){
+  .dgrid .lat .unit,.vlist .lat .unit,#nodeDrawer .lat .unit,.srow .lat .unit{top:-0.52em!important}
+  .lat .unit{top:-0.34em}
+}
+
+/* ms 用真实小字号而不是 transform 缩放：缩放会让字形落在半个像素上，怎么调都"看起来偏" */
+.lat .unit{
+  font-size:.78em!important;
+  line-height:1!important;
+  transform:none!important;
+  align-self:flex-end!important;
+  position:relative;
+  top:-0.20em;
+  margin-left:3px!important;
+}
+.dgrid .lat .unit,.vlist .lat .unit,#nodeDrawer .lat .unit,.srow .lat .unit{top:-0.20em!important}
+@media(min-width:1600px){
+  .lat .unit,.dgrid .lat .unit,.vlist .lat .unit,#nodeDrawer .lat .unit,.srow .lat .unit{top:-0.32em!important}
+}
+
+/* 页面必须是不透明的：切页时新页从下面推上来，旧页还在它后面，
+   页面本身透明就会看到两层内容重叠（像掉帧）
+   —— 底色和画布一致，静态时看不出差别 */
+.page{background:#101014!important;will-change:transform}
+.page.leaving{background:#101014!important}
+.page.on{z-index:2}
+.page.leaving{z-index:1}
+
+/* 切页期间关掉卡片的 backdrop-filter：页面在动的时候每帧都要重算一次模糊，
+   这是"内容和卡帧"的主因；静态时再加回来，肉眼无差别 */
+body.page-animating .panel,
+body.page-animating .hero,
+body.page-animating .side,
+body.page-animating .drawer,
+body.page-animating .sheet,
+body.page-animating .planstrip,
+body.page-animating .sidx,
+body.page-animating .sbody,
+body.page-animating .usage{
+  backdrop-filter:none!important;
+  -webkit-backdrop-filter:none!important;
+}
+
+/* 底部状态条：和其他卡片同一套表面（细边玻璃），不再是一行浮在画布上的字 */
+.corebar{
+  background:rgba(255,255,255,.035)!important;
+  -webkit-backdrop-filter:blur(20px);
+  backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,.06)!important;
+  border-radius:14px!important;
+  height:44px!important;
+  padding:0 14px!important;
+  margin:8px 0 0!important;
+  box-shadow:none!important;
+  flex:none;
+}
+.corebar b{font-size:12.5px}
+.corebar .sep{background:rgba(255,255,255,.10)!important;width:1px;height:12px;margin:0 2px}
+.corebar .btn.sm{height:26px;border-radius:999px}
+
+/* mini 开关的圆钮过渡：之前被重绘打断，现在就地切类，过渡才有意义 */
+.srow .sw.mini b{transition:transform .26s cubic-bezier(.34,1.42,.64,1)!important}
+.srow .sw.mini{transition:background .18s linear,border-color .18s linear!important}
+.srow{transition:background .18s linear,opacity .18s linear}
+
+/* 主用高亮胶囊：盖在行上面，只从第 2 版来 */
+.srow-pill{
+  position:absolute;left:0;right:0;top:0;border-radius:14px;pointer-events:none;z-index:5;
+  background:rgba(90,169,255,.16);
+  border:1px solid rgba(90,169,255,.36);
+  box-shadow:inset 0 0 0 1px rgba(90,169,255,.06);
+  opacity:0;
+}
+.srow.on{background:transparent!important;border-color:transparent!important}
+
+/* 白点四边留白对齐：32×19 轨道里 14px 圆钮，
+   上下各 2.5，左右也各 2.5（原来左 3 右 15 → 视觉上偏右半像素） */
+.sw.mini b{left:1.5px!important}
+.sw.mini.on b{transform:translateX(13px)!important}
+
+/* 柱状图：每根柱子顶部标用量 */
+.uchart i{overflow:visible}
+.uchart .ptag{
+  position:absolute;left:50%;top:-13px;transform:translateX(-50%);
+  font-size:8.5px;line-height:1;color:rgba(255,255,255,.42);
+  font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none;
+}
+.uchart i.peak .ptag{color:#FFD08A;font-weight:600}
+.uchart{padding-top:22px!important}
+
+/* 连接页 H1 卡里的 32×19 开关（类名只有 sw，不是 sw.mini）：左右也各留 2.5 */
+.h1sw .sw b{left:1.5px!important}
+.h1sw .sw.on b{transform:translateX(13px)!important}
+
+/* 地区筛选：胶囊按钮，菜单走 openPicker（圆角），不再用系统 select 的方角弹出 */
+.pill-select{
+  display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 12px 0 14px;
+  border-radius:999px;border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);color:#DDE2EA;font:inherit;font-size:12px;cursor:pointer;
+  transition:background .16s linear,border-color .16s linear;
+}
+.pill-select:hover{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.16)}
+.pill-select i{font-style:normal;font-size:9px;color:#8A909B}
+
+/* 页头三个测试按钮成组，胶囊形，中间 4px 间距 */
+.testgroup{display:inline-flex;align-items:center;gap:4px}
+.testgroup .btn{height:30px;padding:0 13px;border-radius:999px;font-size:12px}
+.testgroup .btn.ghost{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);color:#CFD4DC}
+.testgroup .btn.ghost:hover{background:rgba(255,255,255,.10);color:#EAF0F8}
+.testgroup .btn.primary{background:rgba(90,169,255,.20);border:1px solid rgba(90,169,255,.40);color:#EAF3FF}
+
+/* 出口地区测试面板 */
+.xlist{margin-top:10px;display:flex;flex-direction:column;gap:2px}
+.xrow{display:grid;grid-template-columns:104px minmax(0,1fr) 34px auto;gap:12px;align-items:center;
+  padding:7px 10px;border-radius:10px;font-size:11.5px;color:#C6CCD6}
+.xrow:nth-child(odd){background:rgba(255,255,255,.025)}
+.xn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#E4E9F1}
+.xi,.xg{font-variant-numeric:tabular-nums;color:#8A909B;font-size:11px}
+.xv{font-size:9.5px;padding:1px 7px;border-radius:999px;border:1px solid transparent}
+.xv.ok{color:#7BD88F;background:rgba(123,216,143,.10);border-color:rgba(123,216,143,.24)}
+.xv.no{color:#FFB27A;background:rgba(255,178,122,.10);border-color:rgba(255,178,122,.26)}
+
+/* 测试按钮组贴右：和窗口控制按钮同一侧，中间不再留一大条空 */
+/* 延迟汇总紧跟在测试按钮组后面（原来被甩到窗口最右） */
+.filterrow #nTestGroup{margin-left:0;margin-right:0}
+.filterrow .fhint{
+  display:inline-flex!important;align-items:center;margin-left:10px;
+  font-size:11px;color:rgba(255,255,255,.45);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}

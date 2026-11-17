@@ -24,7 +24,7 @@ public static class SingBoxConfigBuilder
 
     public static string Build(NodeItem node, int socksPort, int httpPort, string proxyMode, bool bypassPrivate,
         bool bypassCn, bool blockAds, bool allowLan, IReadOnlyList<RouteRule>? customRules, string logLevel, string dnsServer,
-        bool gameDirectEnabled = false, IReadOnlyList<string>? gameDirectProcesses = null)
+        bool gameDirectEnabled = false, IReadOnlyList<string>? gameDirectProcesses = null, int? clashApiPort = null)
     {
         if (!node.IsValid) throw new ArgumentException("节点无效（缺地址或端口）");
 
@@ -38,7 +38,7 @@ public static class SingBoxConfigBuilder
                 BuildHttpInbound(httpPort, allowLan)),
             ["outbounds"] = BuildOutbounds(node),
             ["route"] = BuildRoute(proxyMode, bypassPrivate, bypassCn, blockAds, customRules, tunMode: false, gameDirect: gameDirectEnabled, gameProcesses: gameDirectProcesses),
-            ["experimental"] = BuildExperimental(),
+            ["experimental"] = BuildExperimental(clashApiPort),
         };
         ApplyWireGuardEndpoints(root, node);
 
@@ -55,6 +55,34 @@ public static class SingBoxConfigBuilder
             bypassCn, blockAds, allowLan, customRules, logLevel, dnsServer,
             gameDirectEnabled, gameDirectProcesses);
         ApplyWireGuardEndpoints(root, node);
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>
+    /// TUN owns only system ingress. Node transport, rules and counters stay in the existing
+    /// session behind its stable SOCKS relay, so toggling TUN never replaces that session.
+    /// No extra SOCKS/HTTP/controller listeners are opened by this process.
+    /// </summary>
+    public static string BuildTunBridge(int socksPort, string logLevel, string dnsServer,
+        IReadOnlyList<string> transportPaths, bool gameDirectEnabled = false,
+        IReadOnlyList<string>? gameDirectProcesses = null)
+    {
+        if (socksPort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(socksPort));
+        var front = AuxiliaryCorePlan.FrontNode(socksPort, "existing-session");
+        var root = BuildTunCore(BuildOutbounds(front), 1, 2, "global", false, false, false,
+            false, null, logLevel, dnsServer, gameDirectEnabled, gameDirectProcesses);
+        var tun = root["inbounds"]![0]!.DeepClone();
+        root["inbounds"] = new JsonArray(tun);
+        root.Remove("experimental");
+        var paths = transportPaths.Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (paths.Length > 0)
+            root["route"]!["rules"]!.AsArray().Insert(0, new JsonObject
+            {
+                // In particular, Xray sockets must not re-enter their own SOCKS ingress.
+                ["process_path"] = new JsonArray(paths.Select(p => (JsonNode?)p).ToArray()),
+                ["action"] = "route", ["outbound"] = "direct",
+            });
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -135,6 +163,44 @@ public static class SingBoxConfigBuilder
             };
         }
 
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>Each test ingress is pinned to its own outbound/endpoint; unmatched traffic is rejected.</summary>
+    public static string BuildTestBatch(IReadOnlyList<NodeItem> nodes, IReadOnlyList<int> ports)
+    {
+        if (nodes.Count == 0 || nodes.Count != ports.Count) throw new ArgumentException("测试节点与端口数量不一致或为空");
+        if (ports.Distinct().Count() != ports.Count || ports.Any(p => p is < 1 or > 65535))
+            throw new ArgumentException("测试端口无效或重复");
+        var inbounds = new JsonArray();
+        var outbounds = new JsonArray(new JsonObject { ["type"] = "direct", ["tag"] = "direct" });
+        var endpoints = new JsonArray();
+        var rules = new JsonArray();
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var single = JsonNode.Parse(BuildTest(nodes[i], ports[i]))!.AsObject();
+            var inbound = single["inbounds"]![0]!.DeepClone().AsObject();
+            inbound["tag"] = "in" + i; inbounds.Add(inbound);
+            var proxy = single["outbounds"]!.AsArray().FirstOrDefault(o => o?["tag"]?.GetValue<string>() == "proxy")
+                ?? single["endpoints"]?.AsArray().FirstOrDefault(o => o?["tag"]?.GetValue<string>() == "proxy")
+                ?? throw new InvalidOperationException("测试配置缺少代理出站");
+            var copy = proxy.DeepClone().AsObject(); copy["tag"] = "out" + i;
+            if (nodes[i].Protocol is NodeProtocol.WireGuard) endpoints.Add(copy); else outbounds.Add(copy);
+            rules.Add(new JsonObject { ["inbound"] = new JsonArray("in" + i), ["action"] = "route", ["outbound"] = "out" + i });
+        }
+        rules.Add(new JsonObject { ["action"] = "reject" });
+        var root = new JsonObject
+        {
+            ["log"] = new JsonObject { ["level"] = "error", ["timestamp"] = false },
+            ["dns"] = new JsonObject
+            {
+                ["servers"] = new JsonArray(new JsonObject { ["type"] = "udp", ["tag"] = "dns-direct", ["server"] = "223.5.5.5" }),
+                ["final"] = "dns-direct",
+            },
+            ["inbounds"] = inbounds, ["outbounds"] = outbounds,
+            ["route"] = new JsonObject { ["default_domain_resolver"] = "dns-direct", ["rules"] = rules },
+        };
+        if (endpoints.Count > 0) root["endpoints"] = endpoints;
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -688,9 +754,11 @@ public static class SingBoxConfigBuilder
     {
         var rules = new JsonArray();
 
+        // A TUN bridge forwards to this same session. Retain hostname-based routing
+        // for TLS/HTTP/QUIC traffic received over SOCKS as well as native TUN ingress.
+        rules.Add(new JsonObject { ["action"] = "sniff" });
         if (tunMode)
         {
-            rules.Add(new JsonObject { ["action"] = "sniff" });
             rules.Add(new JsonObject { ["protocol"] = "dns", ["action"] = "hijack-dns" });
         }
 
@@ -813,11 +881,11 @@ public static class SingBoxConfigBuilder
         _ => "warn",
     };
 
-    private static JsonObject BuildExperimental() => new()
+    private static JsonObject BuildExperimental(int? port = null) => new()
     {
         ["clash_api"] = new JsonObject
         {
-            ["external_controller"] = $"127.0.0.1:{ClashApiPortOverride}",
+            ["external_controller"] = $"127.0.0.1:{port ?? ClashApiPortOverride}",
             ["secret"] = ClashApiSecret,
         },
     };

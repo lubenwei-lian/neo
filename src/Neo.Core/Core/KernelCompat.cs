@@ -282,12 +282,7 @@ public static class KernelCompat
         return false;
     }
 
-    private static readonly string[] OptionalPerfKeys =
-    {
-        "sockopt", "observatory", "burstObservatory", "mux", "udp_over_tcp",
-    };
-
-    /// <summary>预检失败的第 1 级降级：去掉性能向可选字段（sockopt / observatory / mux 等）。</summary>
+    /// <summary>只移除 Xray 出站 mux 与已列明的 socket 性能字段；保留链式出口和探测/路由依赖。</summary>
     public static string StripOptionalFields(string json, KernelKind kind, out List<string> notes)
     {
         notes = new List<string>();
@@ -297,7 +292,18 @@ public static class KernelCompat
             var root = JsonNode.Parse(json);
             if (root == null) return json;
             var removed = new List<string>();
-            StripKeys(root, removed);
+            if (kind == KernelKind.Xray && root["outbounds"] is JsonArray outbounds)
+            {
+                foreach (var outbound in outbounds.OfType<JsonObject>())
+                {
+                    if (outbound.Remove("mux")) removed.Add("mux");
+                    if (outbound["streamSettings"] is not JsonObject stream
+                        || stream["sockopt"] is not JsonObject sockopt) continue;
+                    foreach (var key in new[] { "tcpFastOpen", "tcpNoDelay", "tcpKeepAliveIdle", "tcpKeepAliveInterval" })
+                        if (sockopt.Remove(key)) removed.Add("sockopt." + key);
+                    if (sockopt.Count == 0) stream.Remove("sockopt");
+                }
+            }
             if (removed.Count == 0) return json;
             notes.Add($"已去掉性能向可选字段（{string.Join("、", removed.Distinct())}）");
             return root.ToJsonString(Indented);
@@ -309,31 +315,14 @@ public static class KernelCompat
         }
     }
 
-    private static void StripKeys(JsonNode? node, List<string> removed)
-    {
-        if (node is JsonObject obj)
-        {
-            foreach (var key in OptionalPerfKeys)
-            {
-                if (!obj.ContainsKey(key)) continue;
-                obj.Remove(key);
-                removed.Add(key);
-            }
-            foreach (var kv in obj.ToList()) StripKeys(kv.Value, removed);
-        }
-        else if (node is JsonArray arr)
-        {
-            foreach (var item in arr) StripKeys(item, removed);
-        }
-    }
-
     // ---- 预检执行 ----
 
     /// <summary>
     /// 用内核自己的校验模式预检一份配置：xray = `xray run -test -c`，sing-box = `check -c`。
     /// 同步阻塞 timeoutMs（调用方应放到 Task.Run 里）；退出码 0 = 通过。
     /// </summary>
-    public static KernelCheckResult RunCheck(string exePath, KernelKind kind, string configPath, int timeoutMs = 8000)
+    public static KernelCheckResult RunCheck(string exePath, KernelKind kind, string configPath, int timeoutMs = 8000,
+        string? resourceDirectory = null)
     {
         try
         {
@@ -364,7 +353,9 @@ public static class KernelCompat
             psi.ArgumentList.Add(configPath);
             // 与真实启动保持一致：内核资源（rule-sets 等）按工作目录解析。
             var exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
-            if (!string.IsNullOrEmpty(exeDir)) psi.WorkingDirectory = exeDir;
+            if (!string.IsNullOrEmpty(exeDir)) psi.WorkingDirectory = resourceDirectory ?? exeDir;
+            if (kind == KernelKind.Xray && resourceDirectory != null)
+                psi.Environment["XRAY_LOCATION_ASSET"] = resourceDirectory;
 
             using var p = Process.Start(psi);
             if (p == null) return new KernelCheckResult(false, true, "预检进程启动失败");
@@ -416,11 +407,24 @@ public static class KernelCompat
     }
 
     /// <summary>把内核启动失败的已知特征（unknown field / unknown transport / removed / unsupported）映射成中文可读原因。</summary>
+    /// <summary>Only a local TCP listener bind failure permits changing internal ports.</summary>
+    public static int? ListenerBindFailurePort(string? stderr)
+    {
+        if (string.IsNullOrWhiteSpace(stderr)) return null;
+        var match = Regex.Match(stderr,
+            @"listen tcp[46]? (?:127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(?<port>\d+): bind:",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Groups["port"].Value, out var port)
+            && port is > 0 and <= 65535 ? port : null;
+    }
+
     public static string DescribeStartupFailure(string? stderr)
     {
         if (string.IsNullOrWhiteSpace(stderr)) return "";
         var s = stderr.ToLowerInvariant();
         var causes = new List<string>();
+        if (ListenerBindFailurePort(stderr) is { } port)
+            causes.Add($"本地监听端口 {port} 被占用或被系统拒绝绑定");
         if (s.Contains("unknown field", StringComparison.Ordinal))
             causes.Add("配置含当前内核不认识的字段（版本升级后字段可能已移除/改名）");
         if (s.Contains("unknown transport", StringComparison.Ordinal))

@@ -1,4 +1,4 @@
-using Neo.Core;
+﻿using Neo.Core;
 using System.Linq;
 using Microsoft.UI;
 using Microsoft.UI.Text;
@@ -10,6 +10,10 @@ using Microsoft.UI.Xaml.Shapes;
 using Neo.App.Services;
 using Neo.Core.Core;
 using Neo.Core.Models;
+using Neo.Core.Presentation;
+using Microsoft.UI.Xaml.Media.Imaging;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.IO;
 using Windows.Foundation;
 using Windows.UI;
 using Windows.UI.Text;
@@ -63,6 +67,9 @@ public sealed partial class ConnectionPage : UserControl
     private readonly List<double> _upHist = new();
 
     public event EventHandler? OpenNodesRequested;
+    public event EventHandler? OpenLogRequested;
+    public FrameworkElement DetailsAnchor => NetworkDetailsButton;
+    public event Action<bool>? OpenNetworkDiagnosticsRequested;
 
     public event EventHandler<string>? ConnectionFailed;
 
@@ -71,13 +78,11 @@ public sealed partial class ConnectionPage : UserControl
     /// 「刚连上」只播一次生长/波纹/填充动画的闸门。
     /// 为什么需要：UpdateStatusRing 每次状态刷新都会跑，若每次都重播，
     /// 界面会反复出现波纹与生长，观感变成闪烁。断开时复位。
-    private bool _ringConnectedAnimDone;
 
     /// 圆环当前已经呈现的视觉阶段：-1 未知 / 0 未连接 / 1 连接中 / 2 已连接。
     /// 为什么需要它：UpdateStatusRing 由 RefreshConnUi 驱动，连接中每秒会跑很多次；
     /// 若每次都 ApplyRingDash + Storyboard.Begin()，「充能」动画会被反复重置到 0
     /// 页面隐藏时 StopRingStoryboards 会把它复位成 -1，恢复可见时重新布景。
-    private int _ringVisualState = -1;
 
     public ConnectionPage()
     {
@@ -86,6 +91,12 @@ public sealed partial class ConnectionPage : UserControl
         ResetChart();
         ActualThemeChanged += (_, _) => SetMode(_mode);
         ConnectionService.StateChanged += RefreshConnUi;
+        NetworkHealthService.Changed += OnNetworkHealthChanged;
+        NetworkDiagnosticsService.Changed += OnNetworkHealthChanged;
+        CurrentExitService.Changed += OnCurrentExitChanged;
+        FloatingTrafficService.Changed += OnFloatBallSettingChanged;
+        BuildHomeSiteRows();
+        _lastSuccessEpoch = ConnectionService.SessionEpoch;
         AppState.NodesChanged += RefreshConnUi;
         //   还是 null（MainWindow 尚在构造），旧代码从未订阅成功，失焦暂停从未生效。
         RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) => ApplyPageVisibility());
@@ -140,9 +151,16 @@ public sealed partial class ConnectionPage : UserControl
     /// 触发 CoreMessaging fail-fast（0xc000027b）——本机已有此崩溃实例。
     public void StopTimers()
     {
+        foreach (var fade in _modeFades) fade?.Stop();
+        NetworkHealthService.Changed -= OnNetworkHealthChanged;
+        NetworkDiagnosticsService.Changed -= OnNetworkHealthChanged;
+        CurrentExitService.Changed -= OnCurrentExitChanged;
+        FloatingTrafficService.Changed -= OnFloatBallSettingChanged;
+        StopConnectionSplash();
         try { _statsTimer.Stop(); } catch { }
         try { _resizeDebounce?.Stop(); } catch { }
         StopRingStoryboards();
+        StopConnectionSplash();
     }
 
     private void RefreshStats()
@@ -166,7 +184,7 @@ public sealed partial class ConnectionPage : UserControl
             TotalUpText.Text = "0"; TotalUpUnit.Text = "B";
             TotalDownText.Text = "0"; TotalDownUnit.Text = "B";
             StatsCoreMemText.Text = "—";
-            PeakText.Text = "未连接";
+            PeakText.Text = "—"; PeakUnit.Text = "";
             RingTimeText.Text = "00:00:00";
             return;
         }
@@ -203,11 +221,7 @@ public sealed partial class ConnectionPage : UserControl
         _lastSnap = cur;
         _lastSnapAt = DateTime.Now;
 
-        if (!IsPageVisible())
-        {
-            UpdateRingTime();
-            return;
-        }
+        if (!IsPageVisible()) return;
 
         StatsCoreMemText.Text = mem is { } m ? m.ToString() : "—";
 
@@ -219,7 +233,7 @@ public sealed partial class ConnectionPage : UserControl
             DownSpeedText.Text = dv; DownSpeedUnit.Text = du + "/s";
 
             var (pv, pu) = SplitBytes(_peakDownBps);
-            PeakText.Text = $"峰值 ↓ {pv} {pu}/s";
+            PeakText.Text = pv; PeakUnit.Text = pu + "/s";
         }
 
         var (tv, tu) = SplitBytes(cur.Uplink);
@@ -242,8 +256,8 @@ public sealed partial class ConnectionPage : UserControl
             var green = GetThemeBrush("NeoGreen", Color.FromArgb(255, 0x16, 0xA3, 0x4A));
             var text2 = GetThemeBrush("NeoText2", Color.FromArgb(255, 0x9A, 0x9A, 0xA0));
 
-            CoreStateText.Text = running ? "内核运行中" : "内核未运行";
-            CoreStateText.Foreground = running ? green : text2;
+            CoreStateText.Text = "内核";
+            CoreStateText.Foreground = GetThemeBrush("NeoText1", Colors.White);
             CoreDot.Fill = running ? green : text2;
 
             //   统计与版本要走 sing-box，标签单独显示 naive。
@@ -252,8 +266,8 @@ public sealed partial class ConnectionPage : UserControl
             bool mihomo = ConnectionService.CoreKind == "mihomo";
             CoreKindText.Text = mihomo ? "mihomo" : (naiveKind ? "naive + sing-box" : (sing ? "sing-box" : "xray"));
             CoreVersionText.Text = mihomo
-                ? (KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "—")
-                : (sing ? (ConnectionService.SingBoxVersion ?? "—") : (ConnectionService.XrayVersion ?? "—"));
+                ? (KernelCatalog.CachedVersion(CoreEngine.Mihomo) ?? "—")
+                : (sing ? (ConnectionService.CachedSingBoxVersion ?? "—") : (ConnectionService.CachedXrayVersion ?? "—"));
 
             var fixedExit = running && ConnectionService.FixedExitActive ? ConnectionService.FixedExitEntries + 1 : 0;
             CoreTagText.Text = fixedExit > 0 ? "固定出口" : (running ? ConnectionService.CoreKind : "—");
@@ -326,19 +340,17 @@ public sealed partial class ConnectionPage : UserControl
         Windows.UI.Color.FromArgb(255, 0xff, 0xbe, 0x4d),
         Windows.UI.Color.FromArgb(255, 0xff, 0xd1, 0x66),
     };
-    private static readonly SolidColorBrush[] DnBrushes =
-        DnPalette.Select(c => new SolidColorBrush(c)).ToArray();
-    private static readonly SolidColorBrush[] UpBrushes =
-        UpPalette.Select(c => new SolidColorBrush(c)).ToArray();
-    private readonly List<Microsoft.UI.Xaml.Shapes.Rectangle> _dnCells = new();
-    private readonly List<Microsoft.UI.Xaml.Shapes.Rectangle> _upCells = new();
-    private int _cellsCols = -1;
+    private static uint Packed(Color color) => (uint)(color.A << 24 | color.R << 16 | color.G << 8 | color.B);
+    private static readonly uint[] DnPixels = DnPalette.Select(Packed).ToArray();
+    private static readonly uint[] UpPixels = UpPalette.Select(Packed).ToArray();
+    private readonly TrafficChartRaster _chartRaster = new();
+    private WriteableBitmap? _chartBitmap;
+    private Stream? _chartStream;
     private DateTime? _sessionStart;
     // 渲染降本：方块尺寸/位置只在布局失效时设置一次，Fill 相同则跳过 ——
     // 每秒常态重绘从上万次依赖属性写入降到几百次。
     private bool _layoutDirty = true;
-    private int[]? _dnLvCache;
-    private int[]? _upLvCache;
+    private int _layoutCols = -1;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _resizeDebounce;
 
     private void PushChart(long upBps, long downBps)
@@ -387,160 +399,103 @@ public sealed partial class ConnectionPage : UserControl
         return th.Length + 1;
     }
 
-    /// 方块池：按列数建一次（每条带 cols*rows 个），列数变化时重建。
+    /// Single DPI-aware image replaces thousands of XAML cells; resize allocates only when geometry changes.
     private void EnsureCells(int cols, double plotH)
     {
-        // 只在「列数变多」时重建池子，变少时复用已有方块（多出来的隐藏起来）。
-        // 原实现是 `if (_cellsCols != cols)` —— 只要列数不等就推倒重建，
-        // 于是「隐藏 → 变窄 → 可见 → 变宽」这条路径会重建两次（第二次要新建近两千个
-        // Rectangle），全部压在 UI 线程上。改为只在需要更多列时才扩容，
-        // 切页回流就不会再触发整池重建；方块的几何仍按当前真实列数重排。
-        if (_cellsCols < cols)
+        var scale = Math.Clamp(XamlRoot?.RasterizationScale ?? 1, 0.5, 4);
+        if (_chartRaster.Configure(cols, plotH, scale))
         {
-            if (_cellsCols > 0)
-            {
-                foreach (var c in _dnCells) ChartCanvas.Children.Remove(c);
-                foreach (var c in _upCells) ChartCanvas.Children.Remove(c);
-                _dnCells.Clear();
-                _upCells.Clear();
-            }
-            _cellsCols = cols;
-            var total = cols * ChartRows;
-            for (int i = 0; i < total; i++)
-            {
-                var dn = new Microsoft.UI.Xaml.Shapes.Rectangle { RadiusX = 2, RadiusY = 2 };
-                var up = new Microsoft.UI.Xaml.Shapes.Rectangle { RadiusX = 2, RadiusY = 2 };
-                Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(dn, 10);
-                Microsoft.UI.Xaml.Controls.Canvas.SetZIndex(up, 10);
-                ChartCanvas.Children.Add(dn);
-                ChartCanvas.Children.Add(up);
-                _dnCells.Add(dn);
-                _upCells.Add(up);
-            }
-            _dnLvCache = new int[total];
-            _upLvCache = new int[total];
-            // 缓存初值必须为 -1：0 会被填色循环当作"已是空槽色"而跳过赋值，
-            // 而 Rectangle 的 Fill 默认为 null —— 空槽方块将永远隐形。
-            for (int i = 0; i < total; i++) { _dnLvCache[i] = -1; _upLvCache[i] = -1; }
+            _chartStream?.Dispose();
+            _chartBitmap = new WriteableBitmap(_chartRaster.Width, _chartRaster.Height);
+            _chartStream = _chartBitmap.PixelBuffer.AsStream();
+            TrafficImage.Source = _chartBitmap;
+            TrafficImage.Width = _chartRaster.Width / scale;
+            TrafficImage.Height = _chartRaster.Height / scale;
             _layoutDirty = true;
         }
-        // 否则它们会停在原位继续显示（画面出现多余的方块）。
-        if (_cellsCols > cols) _layoutDirty = true;
-
-        if (_layoutDirty)
+        if (_layoutDirty || _layoutCols != cols)
         {
-            // 尺寸与位置只在布局失效时写一次（建池 / 窗口尺寸变化），常态重绘不碰几何
-            double bandH = ChartRows * (CellGap + CellSize) - CellGap;
-            double bandTopDn = Math.Max(4, (plotH - (bandH * 2 + BandGap)) / 2);
-            double bandTopUp = bandTopDn + bandH + BandGap;
-
-            // Canvas 不参与布局，位置只能手算 —— 放在下载带底部与上传带顶部之间的空隙，
-            // 留 2px 上边距，避免与下载带最底一排方块贴在一起。
-            try
-            {
-                Microsoft.UI.Xaml.Controls.Canvas.SetLeft(UpBandLabel, PlotLeft);
-                Microsoft.UI.Xaml.Controls.Canvas.SetTop(UpBandLabel, bandTopDn + bandH + 2);
-            }
-            catch { }
-            for (int c = 0; c < cols; c++)
-            {
-                for (int r = 0; r < ChartRows; r++)
-                {
-                    int cellIdx = c * ChartRows + r;
-                    var dn = _dnCells[cellIdx];
-                    var up = _upCells[cellIdx];
-                    dn.Visibility = Visibility.Visible;
-                    up.Visibility = Visibility.Visible;
-                    dn.Width = CellSize;
-                    dn.Height = CellSize;
-                    up.Width = CellSize;
-                    up.Height = CellSize;
-                    double x = PlotLeft + c * (CellGap + CellSize);
-                    Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dn, x);
-                    Microsoft.UI.Xaml.Controls.Canvas.SetTop(dn, bandTopDn + (ChartRows - 1 - r) * (CellGap + CellSize));
-                    Microsoft.UI.Xaml.Controls.Canvas.SetLeft(up, x);
-                    Microsoft.UI.Xaml.Controls.Canvas.SetTop(up, bandTopUp + (ChartRows - 1 - r) * (CellGap + CellSize));
-                }
-            }
-            for (int i = cols * ChartRows; i < _dnCells.Count; i++)
-            {
-                _dnCells[i].Visibility = Visibility.Collapsed;
-                _upCells[i].Visibility = Visibility.Collapsed;
-            }
-            _layoutDirty = false;
+            _layoutCols = cols; _layoutDirty = false;
         }
+    }
+
+    public void ReleaseChartSurface()
+    {
+        _chartStream?.Dispose(); _chartStream = null;
+        TrafficImage.Source = null; _chartBitmap = null; _chartRaster.Release();
+        _layoutDirty = true;
     }
 
     private const double RingBaseSize = 236;
 
-    /// 用来把圆环按同一比例随卡宽放大，避免宽窗口下环显得又小又空。
-    private const double RingReferenceCardWidth = 758;
-
-    /// 按 hero 卡实际宽度缩放圆环（等比、有上限）。
-    /// neo 铺满 1936 后左栏约 1272，若环固定 236 就只占卡宽 18.6%，
-    /// 环周围横向空一大片 —— 那也是「留白很多」的一种。
-    ///   在 1936 窗口中，1.3 → 圆环 307px、hero 卡总高 **378px**，
-    ///   上限 1.3 是按 1936x1048 的屏幕定的。矮屏（1366x768 工作区仅约 728px）
-    ///   连 1.0 都放不下，故再加一道**高度约束**：可用高度越矮，环压得越小。
-    ///   见 RingMaxScaleForHeight —— 它把「按宽度算出的比例」再按可用高夹一次。
-    private const double RingMaxScale = 1.3;
-
-    /// 环在「矮屏」下的最小比例。
-    ///   这个常量仅为兼容保留，当前**不再参与计算**（见 UpdateRingScaleByWidthOnly）。
-    private const double RingMinScale = 0.62;
-
-    /// 本页尺寸变化 → 重算圆环比例。
-    ///   关闭也抖、点不动」）：
-    ///   我上一版让环比例同时受**可用高度**约束，于是形成**布局反馈环** ——
-    ///     环变大 ⇒ 内容变高 ⇒ 超出视口 ⇒ 出现滚动条 ⇒ 可用宽变小 ⇒ 重算比例 ⇒ 环变小
-    ///     ⇒ 内容变矮 ⇒ 滚动条消失 ⇒ 宽度恢复 ⇒ 环又变大 ⇒ 无限往复
-    ///   现在：环比例**只由宽度决定**（宽度变化不影响内容高度，因此不构成环），
-    ///   高度不足时由外层的 ScrollViewer 正常滚动兜底 —— 宁可滚动，也不要抖动。
-    ///   这也修掉了「顺带点不动」：不再有反复重设尺寸的事件循环。
+    // Typography uses effective window pixels; card rows reserve room for its
+    // native reflow without scaling the full page or rasterizing the interface.
     private void OnPageSizeChanged(object sender, SizeChangedEventArgs e)
+    { StopConnectionSplash(); UpdateHomeViewport(e.NewSize.Width, e.NewSize.Height); }
+
+    private void OnChartFitSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        try
-        {
-            // 只依赖宽度。页面宽 = 左列(hero 卡所在) + 间距 14 + 右栏 372，
-            // 故 hero 卡宽 = 页面宽 - 372 - 14。
-            if (e.NewSize.Width <= 1) return;
-            double cardW = e.NewSize.Width - 372 - 14;
-            if (cardW <= 1) return;
-            UpdateRingScaleByWidthOnly(cardW);
-        }
-        catch { }
+        if (e.NewSize.Width <= 1 || e.NewSize.Height <= 1) return;
+        ChartCanvas.Width = e.NewSize.Width; ChartCanvas.Height = e.NewSize.Height;
+        RedrawChart();
     }
 
-    private void OnHeroCardSizeChanged(object sender, SizeChangedEventArgs e)
+    private void UpdateHomeViewport(double width, double height)
     {
-        try
+        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 1 || height <= 1) return;
+        var compact = height < 680;
+        var scale = Ui.AdaptiveText.Scale;
+        ConfigureCoreRows(true);
+        ConfigureHomeSiteRows(compact || width < 1200 ? 3 : 2);
+        HomeSiteGrid.RowSpacing = compact || width < 1200 ? 2 : 3;
+        HomeGrid.RowSpacing = HomeGrid.ColumnSpacing = compact ? 10 : 12;
+        RightRailCol.Width = new GridLength(1, GridUnitType.Star);
+        // Match the prototype's rows; scaling their whitespace with the font
+        // made the node surface oversized and squeezed the traffic chart.
+        HomeGrid.RowDefinitions[0].Height = new GridLength(compact ? 146 : Math.Max(264, Math.Ceiling(147 * scale + 72)));
+        HomeGrid.RowDefinitions[2].Height = new GridLength(compact ? 72 : 88);
+        HomeGrid.RowDefinitions[3].Height = new GridLength(compact ? 130 : height >= 840 ? 224 : 168);
+        HeroCard.Padding = new Thickness(compact ? 12 : scale > 1.1 ? 24 : 28);
+        ConnectionHeroLayout.RowSpacing = 0;
+        ConnectionTimeHost.Margin = new Thickness(0);
+        if (HomeSiteViewport.Parent is Grid healthLayout && healthLayout.Parent is Border healthCard)
         {
-            double cardW = e.NewSize.Width;
-            if (cardW <= 1) return;
-            UpdateRingScaleByWidthOnly(cardW);
+            healthCard.Padding = new Thickness(compact ? 14 : 18, compact ? 8 : 14, compact ? 14 : 18, compact ? 8 : 14);
+            healthLayout.RowSpacing = compact ? 2 : 8;
         }
-        catch { }
-    }
-
-    /// 按 hero 卡宽重算环比例。**只看宽度**，不读 ActualHeight ——
-    /// 读高度会构成「改尺寸 → 改高度 → 再改尺寸」的反馈环（见 OnPageSizeChanged 的注释）。
-    /// 注意宽度本身也受滚动条影响（出现滚动条会少约 12px），但那只会让环略微变小、
-    /// 不会再反向放大，且每次变化都收敛（scale 变化小于 0.01 时直接返回），因此不会震荡。
-    private void UpdateRingScaleByWidthOnly(double cardW)
-    {
-        if (cardW <= 1) return;
-        double inner = Math.Max(1, cardW - 52);   // 减去卡片左右 padding 26+26
-        double scale = Math.Clamp(inner / RingReferenceCardWidth, 1.0, RingMaxScale);
-
-        if (Math.Abs(_ringScale - scale) < 0.01) return;
-        _ringScale = scale;
-
-        // Viewbox 目标尺寸（会把内部 236 的环内容等比放大并按该尺寸占位）
-        RingBox.Width = RingBaseSize * scale;
-        RingBox.Height = RingBaseSize * scale;
-        // 命中层叠在 Viewbox 外层，必须跟着放大，否则环边缘点不动
-        RingHit.Width = RingBaseSize * scale;
-        RingHit.Height = RingBaseSize * scale;
+        foreach (var child in HomeSiteGrid.Children.OfType<Grid>())
+        {
+            child.MinHeight = compact ? 18 : 20;
+            foreach (var text in child.Children.OfType<TextBlock>()) Ui.AdaptiveText.SetBaseSize(text, compact ? 10.5 : 12);
+        }
+        Ui.AdaptiveText.SetBaseSize(RingTimeText, compact ? 30 : 44);
+        Ui.AdaptiveText.SetBaseSize(RingStateText, compact ? 15 : 18);
+        Ui.AdaptiveText.SetBaseHeight(RingHit, compact ? 30 : 48);
+        ConnectionHeroLayout.RowDefinitions[6].Height = new GridLength(Math.Ceiling(Ui.ResponsiveViewport.FontSize(compact ? 30 : 48, scale)));
+        CurrentNodeCard.Padding = new Thickness(compact ? 14 : 18, compact ? 10 : 18, compact ? 14 : 18, HeroCard.Padding.Bottom);
+        FloatBallRow.Height = ConnectionHeroLayout.RowDefinitions[6].Height.Value;
+        SelNodeName.MaxLines = compact ? 1 : 2;
+        CurrentNodeLayout.RowSpacing = 0;
+        CurrentNodeHost.Margin = new Thickness(0, compact ? 5 : 8, 0, 0);
+        NodeMetaHost.Margin = new Thickness(0, compact ? 2 : 8, 0, 0);
+        Ui.AdaptiveText.SetBaseSize(SelNodeName, compact ? 13 : 14);
+        Ui.AdaptiveText.SetBaseSize(SelHint, compact ? 10.5 : 11.5);
+        Ui.AdaptiveText.SetBaseSize(KernelHint, compact ? 10 : 11);
+        Ui.AdaptiveText.SetBaseSize(HeroLat, compact ? 10 : 11);
+        Ui.AdaptiveText.SetBaseSize(HeroProto, compact ? 10 : 11);
+        Ui.AdaptiveText.SetBaseSize(HeroTransport, compact ? 10 : 11);
+        Ui.AdaptiveText.SetBaseSize(HeroEndpoint, compact ? 10 : 11);
+        KernelHint.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        ModeCard.Padding = NetworkCard.Padding = new Thickness(14, compact ? 6 : 10, 14, compact ? 6 : 10);
+        TunModeDescription.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        CoreCard.Padding = new Thickness(16, compact ? 8 : 12, 16, compact ? 8 : 12);
+        CoreRows.RowSpacing = compact ? 4 : 10;
+        if (CoreHeaderHost.Parent is Grid coreLayout) coreLayout.RowSpacing = compact ? 6 : 12;
+        foreach (var item in CoreRows.Children)
+        {
+            if (item is TextBlock label) Ui.AdaptiveText.SetBaseSize(label, compact ? 11 : 13);
+            else if (item is Panel panel) foreach (var child in panel.Children) if (child is TextBlock value) Ui.AdaptiveText.SetBaseSize(value, compact ? 11 : 12.5);
+        }
     }
 
     /// 语义：
@@ -589,18 +544,20 @@ public sealed partial class ConnectionPage : UserControl
         }
     }
 
-    /// 代价：窗口更宽时左栏会相应变宽 —— 这是「铺满宽窗口」的必然结果，
     private void OnHomeGridSizeChanged(object sender, SizeChangedEventArgs e)
+        => UpdateHomeViewport(e.NewSize.Width, e.NewSize.Height);
+
+    private void OnFloatBallSettingChanged() => DispatcherQueue.TryEnqueue(() =>
     {
-        try
-        {
-            if (Math.Abs(RightRailCol.Width.Value - 372) > 0.5)
-                RightRailCol.Width = new GridLength(372);
-        }
-        catch { }
+        if (!App.IsShuttingDown) FloatBallSwitch.IsOn = AppState.State.FloatingTrafficEnabled;
+    });
+
+    private void OnFloatBallToggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || FloatBallSwitch.IsOn == AppState.State.FloatingTrafficEnabled) return;
+        FloatingTrafficService.SetEnabled(FloatBallSwitch.IsOn);
     }
 
-    private double _ringScale = 1.0;
 
     private void OnChartSizeChanged(object sender, Microsoft.UI.Xaml.SizeChangedEventArgs e)
     {
@@ -621,106 +578,34 @@ public sealed partial class ConnectionPage : UserControl
         _resizeDebounce.Start();
     }
 
-    private (DateTime Time, double Dn, double Up, int LvDn, int LvUp)?[]? _colInfo;
 
     private void RedrawChart()
     {
-        // 防抖窗口期内跳过（拖拽进行中），松手后的防抖 Tick 会补一次完整重排
-        if (_resizeDebounce is { IsRunning: true }) return;
-
-        // 此时若照常重绘，下面那句 Math.Max(200, ...) 会兜底成 200px 宽，
-        // 算出 cols ≈ 17，于是 EnsureCells 把方块池**重建**为 17 列（删 2×2×8 个、建 17×8 个）；
-        // 等页面重新可见、宽度回到 ~1340px，cols 变回 ~120，池子又被**整体重建一次**
-        //（先 Remove 掉全部旧 Rectangle，再新建 2×120×8 ≈ 1900 个）。
-        // 而这一大段工作全发生在 UI 线程上、正好落在用户看到切换的那一刻。
-        // 修法：隐藏期间干脆不画 —— 看不见的重绘没有意义，且能避免池子被降级重建。
-        // 保留 _layoutDirty=true，等宽度恢复后一次性按真实尺寸建池。
-        if (ChartCanvas.ActualWidth <= 1) return;
-
-        // 画布真实尺寸（不再经 Viewbox 拉伸，方块永远正方）
-        double plotW = Math.Max(200, ChartCanvas.ActualWidth - PlotLeft - 8);
-        double plotH = Math.Max(80, ChartCanvas.ActualHeight - 12);
-
-        int cols = Math.Max(8, (int)((plotW - PlotLeft) / (CellGap + CellSize)));
-        EnsureCells(cols, plotH);
-
-        // 每列 = SlotSeconds 秒时间片（取片内最大速度）；散点标记：只在档位对应的高度亮一个方块，
-        // 同流量永远同一行（Y 轴固定 8 档不跳动），旧列从左侧滑出。
-        int n = _dnHist.Count;
-        // 复用同一块列信息数组：本方法每秒跑一次，原实现每次 new 一个 108 项可空元组数组
-        // （约 4.3KB/秒，约 15.5MB/小时的 gen0 垃圾）。只有列数变化（窗口缩放）时才重建。
-        if (_colInfo == null || _colInfo.Length != cols)
-            _colInfo = new (DateTime Time, double Dn, double Up, int LvDn, int LvUp)?[cols];
-        else
-            Array.Clear(_colInfo, 0, cols);
-        var info = _colInfo;
-        if (_sessionStart is { } ss && n > 0)
-        {
-            int latestSlotS = (int)((_times[^1] - ss).TotalSeconds / SlotSeconds);
-            int firstCol = latestSlotS - cols + 1;
-            for (int i = 0; i < n; i++)
-            {
-                int s = (int)((_times[i] - ss).TotalSeconds / SlotSeconds);
-                int c = s - firstCol;
-                if (c < 0 || c >= cols) continue;
-                if (info[c] is { } cur)
-                    info[c] = (cur.Time, Math.Max(cur.Dn, _dnHist[i]), Math.Max(cur.Up, _upHist[i]), 0, 0);
-                else
-                    info[c] = (_times[i], _dnHist[i], _upHist[i], 0, 0);
-            }
-            for (int c = 0; c < cols; c++)
-                if (info[c] is { } v)
-                    info[c] = (v.Time, v.Dn, v.Up, LevelOf(v.Dn, DnThresholds), LevelOf(v.Up, UpThresholds));
-        }
-        _colInfo = info;
-
-        for (int c = 0; c < cols; c++)
-        {
-            int lvDn = info[c]?.LvDn ?? 0;
-            int lvUp = info[c]?.LvUp ?? 0;
-            for (int r = 0; r < ChartRows; r++)
-            {
-                int cellIdx = c * ChartRows + r;
-                if (cellIdx >= _dnCells.Count) break;
-                // 散点标记：只亮档位对应的那一格（第 lv 格），其余暗；
-                // Fill 同值跳过，避免每秒对两千多个方块重复写依赖属性。
-                int shownDn = (lvDn > 0 && r == lvDn - 1) ? lvDn : 0;
-                int shownUp = (lvUp > 0 && r == lvUp - 1) ? lvUp : 0;
-                if (_dnLvCache![cellIdx] != shownDn)
-                {
-                    _dnCells[cellIdx].Fill = DnBrushes[shownDn];
-                    _dnLvCache[cellIdx] = shownDn;
-                }
-                if (_upLvCache![cellIdx] != shownUp)
-                {
-                    _upCells[cellIdx].Fill = UpBrushes[shownUp];
-                    _upLvCache[cellIdx] = shownUp;
-                }
-            }
-        }
-
+        if (!IsPageVisible() || _resizeDebounce is { IsRunning: true }) return;
+        var width = ChartViewport.ActualWidth; var height = ChartViewport.ActualHeight;
+        if (width <= 1 || height <= 1) return;
+        var start = Math.Max(0, _dnHist.Count - 24);
+        double ceiling = 1024;
+        for (var i = start; i < _dnHist.Count; i++) ceiling = Math.Max(ceiling, Math.Max(_dnHist[i], _upHist[i]));
+        ceiling *= 1.12;
+        DownloadCurve.Data = Ui.TrafficLineGeometry.Build(_dnHist, start, width, height, ceiling, false);
+        DownloadArea.Data = Ui.TrafficLineGeometry.Build(_dnHist, start, width, height, ceiling, true);
+        UploadCurve.Data = Ui.TrafficLineGeometry.Build(_upHist, start, width, height, ceiling, false);
+        RefreshHomeLog();
     }
 
     private void OnChartPointerMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
-        if (_colInfo == null) { ChartTip.Visibility = Visibility.Collapsed; return; }
-        var pos = e.GetCurrentPoint(ChartCanvas).Position;
-        int c = (int)((pos.X - PlotLeft) / (CellGap + CellSize));
-        if (c < 0 || c >= _colInfo.Length || _colInfo[c] is not { } v)
-        {
-            ChartTip.Visibility = Visibility.Collapsed;
-            return;
-        }
-        TipTime.Text = "时间 " + v.Time.ToString("HH:mm:ss");
-        TipDn.Text = $"↓ 下载 {HumanRate(v.Dn)}（第 {v.LvDn} 档）";
-        TipUp.Text = $"↑ 上传 {HumanRate(v.Up)}（第 {v.LvUp} 档）";
-
-        ChartTip.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
-        double left = pos.X + 12;
-        if (left + ChartTip.ActualWidth > ChartCanvas.ActualWidth) left = pos.X - ChartTip.ActualWidth - 12;
-        Microsoft.UI.Xaml.Controls.Canvas.SetLeft(ChartTip, left);
-        Microsoft.UI.Xaml.Controls.Canvas.SetTop(ChartTip, Math.Max(0, pos.Y - 40));
+        if (_times.Count == 0 || ChartViewport.ActualWidth <= 1) return;
+        var p = e.GetCurrentPoint(ChartCanvas).Position;
+        var start = Math.Max(0, _times.Count - 120);
+        var index = Math.Clamp(_times.Count - 1 - (int)Math.Round((ChartViewport.ActualWidth - p.X) / (ChartViewport.ActualWidth / Math.Max(1, _times.Count - start - 1))), start, _times.Count - 1);
+        TipTime.Text = _times[index].ToString("HH:mm:ss");
+        TipDn.Text = "下载 " + UsageTracker.Format((long)_dnHist[index]) + "/s";
+        TipUp.Text = "上传 " + UsageTracker.Format((long)_upHist[index]) + "/s";
         ChartTip.Visibility = Visibility.Visible;
+        Canvas.SetLeft(ChartTip, Math.Max(0, Math.Min(p.X, ChartViewport.ActualWidth - 150)));
+        Canvas.SetTop(ChartTip, Math.Max(0, p.Y - 55));
     }
 
     private void OnChartPointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
@@ -782,6 +667,7 @@ public sealed partial class ConnectionPage : UserControl
         else
         {
             StopRingStoryboards();
+        StopConnectionSplash();
         }
     }
 
@@ -789,7 +675,7 @@ public sealed partial class ConnectionPage : UserControl
     {
         try { _ringPulseSb?.Stop(); } catch { }
         try { _ringBreathSb?.Stop(); } catch { }
-        _ringVisualState = -1;
+
     }
 
     private static string HumanRate(double bps)
@@ -809,20 +695,17 @@ public sealed partial class ConnectionPage : UserControl
     ///   此前拨开若未提权，会强行走 RelaunchElevated() 重启全程序 —— 用户以为
     ///   "只是打开一个开关"，实际整个程序被重启，观感就是「打开就关不掉了」。
     ///   现在改为纯设置项：拨动只记录意图（AppState.UseTun）并落盘，不再重启程序。
-    ///   已连接时拨动必须重载内核才生效。这里保留 ReloadForSettingsAsync ——
-    ///   否则用户拨到 off 之后 TUN 仍在接管路由，那才是真的「关不掉」。
-    ///   重载失败/未连接时只保存设置，不报错（下次连接自然生效）。
+    ///   已连接时只切换 TUN 接管层，保留节点内核与连接；未连接时保存下次连接的选择。
     private async void OnTunToggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
         try
         {
             bool want = TunSwitch.IsOn;
-            AppState.State.UseTun = want;
-            AppState.Save();
-
             if (want && !ConnectionService.IsElevated)
             {
+                AppState.State.UseTun = want;
+                AppState.Save();
                 var dlg = new ContentDialog
                 {
                     Title = "TUN 模式需要管理员权限",
@@ -839,12 +722,12 @@ public sealed partial class ConnectionPage : UserControl
                     ConnectionService.RelaunchElevated();
                     return;
                 }
+                return;
             }
-
-            // 已连接时立即重载内核，让开关真正生效（关闭 TUN 会连带拆除网卡与路由，
-            // 见 ConnectionService.TeardownTunNetwork）。未连接时无需动作。
-            if (ConnectionService.IsConnected)
-                _ = ConnectionService.ReloadForSettingsAsync();
+            var changed = await ConnectionService.SetTunEnabledAsync(want);
+            if (!changed.Ok) ConnectionService.NotifyUser(changed.Error ?? "切换 TUN 失败");
+            AppState.Save();
+            RefreshConnUi();
         }
         catch (Exception ex)
         {
@@ -1183,80 +1066,21 @@ public sealed partial class ConnectionPage : UserControl
 
     private void UpdateStatusRing()
     {
-        //   可见时由 ApplyPageVisibility 重新进入本方法，按当前连接状态恢复。
-        if (!IsPageVisible()) { StopRingStoryboards(); return; }
-
-        try
+        var on = ConnectionService.IsConnected; var connecting = ConnectionService.IsConnecting && !on;
+        RingHit.Content = connecting ? "连接中…" : on ? "断开连接" : "连接";
+        RingHit.Background = on ? GetThemeBrush("NeoAccentSoft", Colors.Transparent) : Transparent;
+        RingHit.BorderBrush = GetThemeBrush(on ? "NeoAccentLine" : "NeoOutline", Colors.Gray);
+        RingHit.Foreground = GetThemeBrush(on ? "NeoAccent" : "NeoText1", Colors.White);
+        RingHit.FontWeight = FontWeights.SemiBold;
+        RingHit.IsEnabled = !ConnectionService.IsConnecting;
+        ConnectionDot.Fill = GetThemeBrush(on ? "NeoGreen" : connecting ? "RingBlue" : "NeoText3", Colors.Gray);
+        if (on && _lastSuccessEpoch != ConnectionService.SessionEpoch)
         {
-            bool connecting = ConnectionService.IsConnecting && !ConnectionService.IsConnected;
-            bool on = ConnectionService.IsConnected;
-
-            // 阶段没变就不重启动画（否则连接中每秒多次刷新会把「充能」反复归零）
-            int desired = connecting ? 1 : (on ? 2 : 0);
-            if (desired == _ringVisualState) return;
-            _ringVisualState = desired;
-
-            EnsureRingStoryboards();
-
-            if (connecting)
-            {
-                //   「连接只做呼吸灯效果，其他的不需要」「连接中有一个点绕着转，不是很好」
-                //   → 去掉充能弧与绕行亮点，只让外发光 + 环心柔光一起缓慢呼吸；
-                //     环本身不画弧、不旋转，状态由中心文字「连接中…」表达。
-                _ringPulseSb?.Stop();
-                RingPulse.Visibility = Visibility.Visible;
-                RingPulse.Opacity = 0;
-
-                RingArc.Visibility = Visibility.Collapsed;
-                RingGlow.Visibility = Visibility.Visible;
-                RingGlow.Opacity = 0;
-
-                _ringBreathSb?.Begin();
-                PlayRingFill(false);
-            }
-            else if (on)
-            {
-                _ringBreathSb?.Stop();
-
-                RingArcRotate.Angle = 0;
-                RingPulse.Visibility = Visibility.Visible;
-                _ringPulseSb?.Begin();
-
-                // 已连接保留外发光（呼吸的柔光），但比连接中更淡
-                RingGlow.Visibility = Visibility.Visible;
-                RingGlow.Opacity = 0.35;
-
-                // 只在「刚连上」时播放生长 + 波纹 + 填充，避免每次刷新都重播
-                if (!_ringConnectedAnimDone)
-                {
-                    _ringConnectedAnimDone = true;
-                    PlayRingGrow();
-                    PlayRingWaves();
-                }
-                else
-                {
-                    RingArc.Visibility = Visibility.Visible;
-                    RingArc.Opacity = 1;
-                    ApplyRingDash(0);   // 已在连接态：保持闭环
-                }
-                PlayRingFill(true);
-            }
-            else
-            {
-                _ringBreathSb?.Stop();
-                _ringPulseSb?.Stop();
-                _ringConnectedAnimDone = false;
-
-                RingGlow.Visibility = Visibility.Collapsed;
-                RingGlow.Opacity = 0;
-                RingPulse.Visibility = Visibility.Visible;
-                RingPulse.Opacity = 0;
-                PlayRingFill(false);
-                if (RingArc.Visibility == Visibility.Visible) PlayRingRetract();
-                else RingArc.Visibility = Visibility.Collapsed;
-            }
+            _lastSuccessEpoch = ConnectionService.SessionEpoch;
+            if (IsPageVisible()) PlayConnectionSplash();
         }
-        catch { }
+        if (!IsPageVisible()) StopConnectionSplash();
+        RefreshHomeLog();
     }
 
     /// 建立两套无限 Storyboard（只建一次）：
@@ -1317,8 +1141,68 @@ public sealed partial class ConnectionPage : UserControl
         _ringBreathSb = sb;
     }
 
+    private void OnNetworkHealthChanged()
+    {
+        if (App.IsShuttingDown) return;
+        try
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!App.IsShuttingDown) RefreshNetworkHealthUi();
+            });
+        }
+        catch { }
+    }
+
+    private void OnNetworkDetailsClicked(object sender, RoutedEventArgs e)
+        => OpenNetworkDiagnosticsRequested?.Invoke(false);
+
+    private void OnCurrentExitChanged()
+    {
+        if (App.IsShuttingDown) return;
+        DispatcherQueue.TryEnqueue(() => { if (!App.IsShuttingDown) RefreshCurrentExitUi(); });
+    }
+
+    private void RefreshCurrentExitUi()
+    {
+        var exit = CurrentExitService.Current;
+        var valid = ConnectionService.IsConnected && exit.Epoch == ConnectionService.SessionEpoch;
+        ExitRegionText.Text = !ConnectionService.IsConnected ? "—" : !valid ? "待检测" : exit.IsRunning ? "检测中…"
+            : exit.Result.Confirmed ? Ui.CurrentExitDisplay.Region(exit.Result.Country) + " · " + exit.Result.Ip : "未确认";
+        ToolTipService.SetToolTip(ExitRegionText, valid
+            ? exit.Result.Detail + (exit.Result.Confirmed ? "\n" + exit.Result.Source + "\n" + exit.Result.Route.Path : "") : null);
+    }
+
+    private async void OnCheckNetworkClicked(object sender, RoutedEventArgs e)
+    {
+        if (NetworkDiagnosticsService.Current.IsRunning) { NetworkDiagnosticsService.Cancel(); return; }
+        try { await NetworkDiagnosticsService.RunAsync(); }
+        catch (Exception ex) { ConnectionFailed?.Invoke(this, "连通性检测失败：" + ex.GetType().Name); }
+    }
+
+    private void RefreshNetworkHealthUi()
+    {
+        var snapshot = NetworkDiagnosticsService.Current;
+        var valid = ConnectionService.IsConnected && snapshot.Epoch == ConnectionService.SessionEpoch;
+        var summary = Ui.ConnectivityDisplay.Summarize(snapshot.Results.Select(r => r.State).ToArray(), valid, snapshot.IsRunning, snapshot.CompletedAt.HasValue);
+        NetworkHealthText.Text = summary.Percentage;
+        NetworkHealthText.Foreground = summary.Complete && summary.Passed == summary.Total ? GetThemeBrush("NeoGreen", Colors.Green) : GetThemeBrush("NeoText2", Colors.Gray);
+        NetworkHealthDetailText.Text = !ConnectionService.IsConnected ? "连接后检测" : !valid ? "待检测" : snapshot.IsRunning ? $"检测中 {summary.Finished}/{summary.Total}" : summary.Complete ? $"通过 {summary.Passed}/{summary.Total}" : "检测未完成";
+        NetworkCheckButton.IsEnabled = ConnectionService.IsConnected;
+        NetworkCheckButton.Content = valid && snapshot.IsRunning ? "停止" : "检测网络";
+        for (var i = 0; i < _homeSiteResults.Count; i++)
+        {
+            var result = valid ? snapshot.Results.FirstOrDefault(r => r.Target == NetworkDiagnosticTargets.All[i]) : null;
+            var value = _homeSiteResults[i];
+            value.Text = Ui.ConnectivityDisplay.Site(result?.State);
+            value.Foreground = result?.State == "可达" ? GetThemeBrush("NeoGreen", Colors.Green) : result?.State == "失败" ? GetThemeBrush("NeoRed", Colors.Red) : GetThemeBrush("NeoText3", Colors.Gray);
+        }
+    }
+
     private void RefreshConnUi()
     {
+        RefreshNetworkHealthUi();
+        FloatBallSwitch.IsOn = AppState.State.FloatingTrafficEnabled;
         if (_mode != AppState.State.ProxyMode)
             SetMode(AppState.State.ProxyMode);
 
@@ -1371,11 +1255,12 @@ public sealed partial class ConnectionPage : UserControl
         TunSwitch.IsOn = AppState.State.UseTun;
         _syncing = false;
 
+        RefreshCurrentExitUi();
         RingStateText.Text = ConnectionService.IsConnecting && !on ? "连接中…" : (on ? "已连接" : "未连接");
         RingStateText.Foreground = ConnectionService.IsConnecting && !on
             ? GetThemeBrush("RingBlue", Color.FromArgb(255, 0x7C, 0xC4, 0xFF))
             : on
-                ? GetThemeBrush("NeoGreen", Color.FromArgb(255, 0x16, 0xA3, 0x4A))
+                ? GetThemeBrush("NeoText1", Colors.White)
                 : GetThemeBrush("NeoText3", Color.FromArgb(255, 0x8E, 0x8E, 0x96));
 
         if (node != null)
@@ -1411,17 +1296,18 @@ public sealed partial class ConnectionPage : UserControl
         var flagKey = node == null ? "other" : AppState.GuessFlag(node.Name);
         Ui.FlagPainter.Draw(SelFlag, flagKey);
 
-        KernelHint.Text = fixedExit != null ? "" : KernelSupport.Describe(node);
-        SelNodeName.Text = fixedExit != null ? "出口：" + fixedExit.Name : (node?.Name ?? "未选择节点");
+        KernelHint.Text = fixedExit != null ? "" : KernelSupport.Describe(node)
+            + (string.IsNullOrWhiteSpace(node?.SourceSubscription) ? "" : " · " + node.SourceSubscription);
+        SelNodeName.Text = fixedExit != null ? "出口：" + Ui.NodeDisplayName.WithoutFlag(fixedExit.Name) : Ui.NodeDisplayName.WithoutFlag(node?.Name ?? "未选择节点");
         SelHint.Text = fixedExit != null
             ? "固定出口 · 入口 " + ConnectionService.FixedExitEntries + " 条（切换入口不影响出口）"
             : on && selected != null && connected != null
                 && !ReferenceEquals(selected, connected) && selected.Name != connected.Name
-                ? "已选择「" + selected.Name + "」，点击圆环重连后生效"
+                ? "已选择「" + selected.Name + "」，点击连接按钮应用"
                 : node == null
                     ? "去节点页选择一个"
                     : displayDelay > 0
-                        ? $"延迟 {(displayDelay <= 800 ? "低" : displayDelay <= 2000 ? "中" : "高")}"
+                        ? $"{NodeGrouper.RegionDisplay(AppState.GuessFlag(node.Name))} · 延迟 {displayDelay} ms"
                         : displayDelay == -1
                             ? "延迟超时"
                             : "";
@@ -1440,80 +1326,11 @@ public sealed partial class ConnectionPage : UserControl
         catch { return url.Trim(); }
     }
 
-    /// uiverse 参考 `glass-radio-group` 的动效语言）。
-    /// 与旧实现的区别：旧的是三个 Border 各自硬切背景色（无中间态、无滑动）；
-    /// 现在背景只有 SegGlider 一块，靠 TranslateTransform 在 0 / 1/3 / 2/3 位置间滑动。
-    /// glider 宽度 = (根宽 - 2×间距) / 3，与三段的实际宽度一致（ColumnSpacing=3，两处间隙共 6）。
-    /// 缓动：参考的 cubic-bezier(0.37, 1.95, 0.66, 0.56) 有「过冲后回弹」特征，
-    ///       WinUI 里对应的最接近项是 BackEase（EaseOut），Amplitude 控制过冲幅度。
-    ///       x1=0.37/y1=1.95 的过冲较强，取 Amplitude≈0.45 逼近（0.5 会晃得过头）。
-    private void SlideGlider(int index, bool animate)
-    {
-        try
-        {
-            if (ModeSegRoot == null || SegGlider == null) return;
+    // The source fades each selected segment's fill; it has no travelling or
+    // overshooting slider. Retain the XAML glider name only for compatibility.
+    private readonly Microsoft.UI.Xaml.Media.Animation.Storyboard?[] _modeFades = new Microsoft.UI.Xaml.Media.Animation.Storyboard?[3];
 
-            double total = ModeSegRoot.ActualWidth;
-            if (total <= 1)
-            {
-                //   原写法是「宽度还没测出来就 DispatcherQueue.TryEnqueue(() => SlideGlider(...))」，
-                //   但控件未完成布局时 ActualWidth 会**一直是 0**，于是每投递一次又投递一次 ——
-                //   （日志最后一行是「等待 OnRootLoaded 显示窗口」，进程不响应抓图）。
-                //   修法：不做自投递重试，改为**只登记一次待办**，由 SizeChanged 在真正拿到宽度时补做。
-                _gliderPendingIndex = index;
-                return;
-            }
-
-            const double gapTotal = 6.0;              // ColumnSpacing=3，两处
-            double w = Math.Max(1, (total - gapTotal) / 3.0);
-            const double gap = 3.0;
-            double targetX = index * (w + gap);
-
-            SegGlider.Width = w;
-            _gliderPendingIndex = -1;
-
-            if (!animate)
-            {
-                SegGliderShift.X = targetX;
-                return;
-            }
-
-            var sb = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
-            var an = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-            {
-                From = SegGliderShift.X,
-                To = targetX,
-                Duration = TimeSpan.FromMilliseconds(420),
-                EasingFunction = new Microsoft.UI.Xaml.Media.Animation.BackEase
-                {
-                    EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut,
-                    Amplitude = 0.45,
-                },
-            };
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(an, SegGliderShift);
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(an, "X");
-            sb.Children.Add(an);
-            sb.Begin();
-        }
-        catch { }
-    }
-
-    /// 宽度未就绪时的待办索引（-1 = 无待办）。
-    /// 由 SizeChanged 在真正拿到宽度后补做一次定位，替代原来的自投递重试（那会死循环）。
-    private int _gliderPendingIndex = -1;
-
-    private void OnModeSegRootSizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        try
-        {
-            // 尺寸变化时：若有待办就补做；否则重算宽度（窗口缩放后 glider 要跟着变宽/移位）
-            int idx = _gliderPendingIndex >= 0
-                ? _gliderPendingIndex
-                : (_mode switch { "global" => 1, "direct" => 2, _ => 0 });
-            if (e.NewSize.Width > 1) SlideGlider(idx, false);
-        }
-        catch { }
-    }
+    private void OnModeSegRootSizeChanged(object sender, SizeChangedEventArgs e) { }
 
     private void OnModeTapped(object sender, TappedRoutedEventArgs e)
     {
@@ -1529,11 +1346,12 @@ public sealed partial class ConnectionPage : UserControl
 
     private void SetMode(string mode)
     {
+        var animate = _modeSegmentReady && _mode != mode && Ui.PrototypeMotion.Enabled;
         _mode = mode;
         var text2 = GetThemeBrush("NeoText2", ActualTheme == ElementTheme.Dark
             ? Color.FromArgb(255, 0x9A, 0xA1, 0xAC)
             : Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        var onText = ActualTheme == ElementTheme.Dark ? OnTextDark : OnTextLight;
+        var onText = GetThemeBrush("NeoText1", Colors.White);
 
         // 文字颜色/字重仍按选中态切换（背景统一交给 SegGlider 滑动块）
         ApplyText(SegRuleText, mode == "rule", text2, onText);
@@ -1541,10 +1359,26 @@ public sealed partial class ConnectionPage : UserControl
         ApplyText(SegDirectText, mode == "direct", text2, onText);
 
         int idx = mode switch { "global" => 1, "direct" => 2, _ => 0 };
-        // 首次（布局未就绪）不带动画直接定位，之后滑动带过冲回弹
-        bool animate = _modeSegmentReady;
+        SegGlider.Visibility = Visibility.Collapsed;
+        TextBlock[] labels = [SegRuleText, SegGlobalText, SegDirectText];
+        for (var i = 0; i < labels.Length; i++)
+        {
+            // Parent is still null during InitializeComponent/constructor work.
+            var segment = ModeSegRoot.Children.OfType<Grid>().First(child => Grid.GetColumn(child) == i);
+            var brush = segment.Background as SolidColorBrush ?? new SolidColorBrush(Colors.Transparent);
+            var current = brush.Color; _modeFades[i]?.Stop(); _modeFades[i] = null; brush.Color = current;
+            segment.Background = brush; segment.CornerRadius = new CornerRadius(13);
+            var target = i == idx ? (ActualTheme == ElementTheme.Dark ? Color.FromArgb(36,255,255,255) : Color.FromArgb(24,0,0,0)) : Colors.Transparent;
+            if (!animate) { brush.Color = target; continue; }
+            var board = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+            var change = new Microsoft.UI.Xaml.Media.Animation.ColorAnimation { From = current, To = target, Duration = TimeSpan.FromMilliseconds(140) };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(change, brush);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(change, "Color");
+            board.Children.Add(change); var slot = i; _modeFades[i] = board;
+            board.Completed += (_, _) => { if (ReferenceEquals(_modeFades[slot], board)) { board.Stop(); brush.Color = target; _modeFades[slot] = null; } };
+            board.Begin();
+        }
         _modeSegmentReady = true;
-        SlideGlider(idx, animate);
 
         UpdateModeNote(mode);
     }
@@ -1569,9 +1403,5 @@ public sealed partial class ConnectionPage : UserControl
     }
 
     private static Brush GetThemeBrush(string key, Color fallback)
-    {
-        if (Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush)
-            return brush;
-        return new SolidColorBrush(fallback);
-    }
+        => ThemeUtil.Get(key, fallback);
 }

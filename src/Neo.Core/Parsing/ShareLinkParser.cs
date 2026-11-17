@@ -17,6 +17,7 @@ public static class ShareLinkParser
             if (link.StartsWith("vless://", StringComparison.OrdinalIgnoreCase)) return ParseVless(link);
             if (link.StartsWith("trojan://", StringComparison.OrdinalIgnoreCase)) return ParseTrojan(link);
             if (link.StartsWith("ss://", StringComparison.OrdinalIgnoreCase)) return ParseShadowsocks(link);
+            if (link.StartsWith("ssr://", StringComparison.OrdinalIgnoreCase)) return ParseShadowsocksR(link);
             if (link.StartsWith("hysteria2://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("hy2://", StringComparison.OrdinalIgnoreCase)) return ParseHysteria2(link);
             if (link.StartsWith("tuic://", StringComparison.OrdinalIgnoreCase)) return ParseTuic(link);
@@ -25,8 +26,9 @@ public static class ShareLinkParser
             if (link.StartsWith("anytls://", StringComparison.OrdinalIgnoreCase)) return ParseAnyTls(link);
             if (link.StartsWith("wireguard://", StringComparison.OrdinalIgnoreCase)
                 || link.StartsWith("wg://", StringComparison.OrdinalIgnoreCase)) return ParseWireGuard(link);
-            // naiveproxy：naive+https://user:pass@host:port（naive+quic 暂只当 https 处理不了，明确不认）。
-            if (link.StartsWith("naive+https://", StringComparison.OrdinalIgnoreCase)) return ParseNaive(link);
+            // Naive HTTPS 与 QUIC 保留独立传输标记，不能把 QUIC 当成 HTTPS。
+            if (link.StartsWith("naive+https://", StringComparison.OrdinalIgnoreCase)
+                || link.StartsWith("naive+quic://", StringComparison.OrdinalIgnoreCase)) return ParseNaive(link);
             if (link.StartsWith("socks://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase) ||
                 link.StartsWith("socks5h://", StringComparison.OrdinalIgnoreCase)) return ParseSocks(link);
@@ -212,6 +214,32 @@ public static class ShareLinkParser
         return node;
     }
 
+    private static NodeItem? ParseShadowsocksR(string link)
+    {
+        var decoded = TryB64Decode(link["ssr://".Length..]);
+        if (decoded == null) return null;
+        var queryAt = decoded.IndexOf("/?", StringComparison.Ordinal);
+        var authority = queryAt < 0 ? decoded.TrimEnd('/') : decoded[..queryAt];
+        var parts = new string[6];
+        for (var i = 5; i > 0; i--)
+        {
+            var colon = authority.LastIndexOf(':'); if (colon < 0) return null;
+            parts[i] = authority[(colon + 1)..]; authority = authority[..colon];
+        }
+        parts[0] = authority;
+        if (!int.TryParse(parts[1], out var port) || port is < 1 or > 65535) return null;
+        var password = TryB64Decode(parts[5]);
+        if (password == null || parts[2].Length == 0 || parts[3].Length == 0 || parts[4].Length == 0) return null;
+        var q = ParseQuery(queryAt < 0 ? "" : decoded[(queryAt + 2)..]);
+        string Value(string key) => TryB64Decode(G(q, key)) ?? "";
+        var node = new NodeItem { Protocol = NodeProtocol.ShadowsocksR, Server = StripBrackets(parts[0]),
+            Port = port, Password = password, Method = parts[3], Name = Value("remarks") };
+        node.Extras["ssr_protocol"] = parts[2]; node.Extras["ssr_obfs"] = parts[4];
+        node.Extras["ssr_protocol_param"] = Value("protoparam"); node.Extras["ssr_obfs_param"] = Value("obfsparam");
+        if (node.Name.Length == 0) node.Name = "SSR " + node.EndPoint;
+        return node.IsValid ? node : null;
+    }
+
     private static NodeItem? ParseHysteria2(string link)
     {
         var body = link[(link.IndexOf("://", StringComparison.Ordinal) + 3)..];
@@ -289,7 +317,8 @@ public static class ShareLinkParser
     {
         try
         {
-            var body = link[("naive+https://".Length)..];
+            var quic = link.StartsWith("naive+quic://", StringComparison.OrdinalIgnoreCase);
+            var body = link[(link.IndexOf("://", StringComparison.Ordinal) + 3)..];
             var uri = new Uri("https://" + body);
             var user = Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[0]);
             var pass = uri.UserInfo.Contains(':') ? Uri.UnescapeDataString(uri.UserInfo.Split(':', 2)[1]) : "";
@@ -305,6 +334,7 @@ public static class ShareLinkParser
                 Sni = OrNull(G(q, "sni")) ?? StripBrackets(uri.Host),
                 Name = Uri.UnescapeDataString(uri.Fragment.TrimStart('#')),
             };
+            if (quic) node.Extras["naive_transport"] = "quic";
             if (node.Name.Length == 0) node.Name = "naive " + node.EndPoint;
             return node.IsValid && !string.IsNullOrEmpty(node.Username) ? node : null;
         }

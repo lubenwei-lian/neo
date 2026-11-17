@@ -1,0 +1,36 @@
+/* 柱状图三版：渐变锚定整图高度 */
+.chart{position:relative;height:104px;display:flex;align-items:flex-end;gap:5px;padding-top:14px}
+.chart i{display:block;flex:1;min-width:0;position:relative;
+  background-image:linear-gradient(180deg,#FF6B6B 0%,#F0A93B 44%,#5AA9FF 100%);
+  background-repeat:no-repeat;
+  background-position:bottom;
+  background-size:100% 104px;      /* 锚定整张图：柱子只露出自己那一段 */
+  border-radius:3px 3px 2px 2px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.18);
+  transform-origin:bottom;
+  opacity:.78;
+  transition:opacity .16s linear;
+  cursor:default;
+}
+.chart i:hover{opacity:1}
+
+/* B2 胶囊：居中一根细条 */
+.chart i.pill{flex:1;border-radius:999px;max-width:9px;margin:0 auto;
+  background-size:100% 104px}
+
+/* B3 峰值标签 */
+.chart i.peak{overflow:visible}
+.ptag{position:absolute;left:50%;top:-15px;transform:translateX(-50%);
+  font-size:9.5px;color:var(--NeoText2);white-space:nowrap;font-variant-numeric:tabular-nums;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06);
+  padding:1px 5px;border-radius:7px}
+
+.axis{display:flex;justify-content:space-between;font-size:9.5px;color:var(--NeoText3);margin-top:7px}
+.foot{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--NeoText3);margin-top:8px}
+.legend{display:flex;align-items:center;gap:6px;font-size:10px}
+.legend i{width:22px;height:6px;border-radius:3px;display:inline-block;
+  background:linear-gradient(90deg,#5AA9FF,#F0A93B,#FF6B6B)}
+
+.ph2 em{font-style:normal}
+code{font-family:var(--mono);font-size:10.5px;color:var(--NeoText2);background:rgba(255,255,255,.05);
+  padding:1px 5px;border-radius:5px}

@@ -14,9 +14,13 @@ public static class LocalPorts
     public const int FixedClashApi = 21811;
     /// <summary>naive.exe 辅助进程的 socks 监听端口（前置内核通过 socks 出站接它；固定、不对用户开放）。</summary>
     public const int NaiveListen = 21812;
+    public const int AuxiliaryHttp = 21813;
+    public const int AuxiliaryApi = 21814;
 
-    public static int Socks { get; private set; } = DefaultSocks;
-    public static int Http { get; private set; } = DefaultHttp;
+    private sealed record Ports(int Socks, int Http);
+    private static Ports _ports = new(DefaultSocks, DefaultHttp);
+    public static int Socks => Volatile.Read(ref _ports).Socks;
+    public static int Http => Volatile.Read(ref _ports).Http;
 
     /// <summary>
     /// 当前活跃内核所在槽位（0/1）。无感切换时两个槽位交替使用：
@@ -49,6 +53,14 @@ public static class LocalPorts
     /// <summary>校验并应用；返回错误文案（null = 成功）。</summary>
     public static string? TryApply(int socks, int http)
     {
+        var error = Validate(socks, http);
+        if (error != null) return error;
+        Volatile.Write(ref _ports, new Ports(socks, http));
+        return null;
+    }
+
+    public static string? Validate(int socks, int http)
+    {
         if (socks < 1024 || socks > 65535) return "SOCKS 端口需在 1024–65535";
         if (http < 1024 || http > 65535) return "HTTP 端口需在 1024–65535";
         if (socks == http) return "SOCKS 与 HTTP 端口不能相同";
@@ -56,7 +68,7 @@ public static class LocalPorts
         var reserved = new[]
         {
             FixedStatsApi, FixedStatsApi + 100, FixedStatsApi + 101,
-            FixedClashApi, FixedClashApi + 10, NaiveListen,
+            FixedClashApi, FixedClashApi + 10, NaiveListen, AuxiliaryHttp, AuxiliaryApi,
         };
         if (reserved.Contains(socks) || reserved.Contains(http))
             return $"不能占用保留端口（统计 {FixedStatsApi}+ / Clash API {FixedClashApi}+ / 槽位 / naive {NaiveListen}）";
@@ -71,14 +83,11 @@ public static class LocalPorts
             return "端口会与槽位统计/Clash 保留端口冲突（socks/http +100/+110）";
         if (derived.Distinct().Count() != derived.Length)
             return "SOCKS/HTTP 端口的槽位派生值互相冲突（两个端口相差 10/100/110 会被拒绝）";
-        Socks = socks;
-        Http = http;
         return null;
     }
 
     public static void Reset()
     {
-        Socks = DefaultSocks;
-        Http = DefaultHttp;
+        Volatile.Write(ref _ports, new Ports(DefaultSocks, DefaultHttp));
     }
 }

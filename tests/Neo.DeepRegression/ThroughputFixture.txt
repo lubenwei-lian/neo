@@ -1,0 +1,51 @@
+using (var socksListener = new TcpListener(IPAddress.Loopback, LocalPorts.Socks))
+using (var throughputCancel = new CancellationTokenSource())
+using (var fixtureCancel = new CancellationTokenSource(TimeSpan.FromSeconds(22)))
+{
+    socksListener.Start();
+    var headerSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var fixture = Task.Run(async () =>
+    {
+        try
+        {
+            using var socket = await socksListener.AcceptTcpClientAsync(fixtureCancel.Token);
+            await using var stream = socket.GetStream();
+            var greeting = new byte[2]; await stream.ReadExactlyAsync(greeting, fixtureCancel.Token);
+            await stream.ReadExactlyAsync(new byte[greeting[1]], fixtureCancel.Token);
+            await stream.WriteAsync(new byte[] { 5, 0 }, fixtureCancel.Token);
+            var request = new byte[4]; await stream.ReadExactlyAsync(request, fixtureCancel.Token);
+            var addressSize = request[3] switch
+            {
+                1 => 4, 4 => 16,
+                3 => await OneByte(stream, fixtureCancel.Token),
+                _ => throw new InvalidOperationException("Unexpected SOCKS address")
+            };
+            await stream.ReadExactlyAsync(new byte[addressSize + 2], fixtureCancel.Token);
+            await stream.WriteAsync(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 0 }, fixtureCancel.Token);
+            var header = new List<byte>();
+            while (header.Count < 8192)
+            {
+                header.Add((byte)await OneByte(stream, fixtureCancel.Token));
+                if (header.Count >= 4 && header[^4] == 13 && header[^3] == 10 && header[^2] == 13 && header[^1] == 10) break;
+            }
+            await stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 131072\r\nConnection: close\r\n\r\nx"), fixtureCancel.Token);
+            headerSent.TrySetResult();
+            await Task.Delay(Timeout.Infinite, fixtureCancel.Token);
+        }
+        catch (OperationCanceledException) { }
+    });
+    var throughput = ThroughputUnderTest.Run(throughputCancel.Token);
+    await headerSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    await throughput.WaitAsync(TimeSpan.FromSeconds(11));
+    var finishedWithinBudget = throughput.IsCompleted;
+    throughputCancel.Cancel();
+    var canceledOnRequest = false;
+    try { await throughput.WaitAsync(TimeSpan.FromSeconds(3)); }
+    catch (OperationCanceledException) { canceledOnRequest = true; }
+    fixtureCancel.Cancel(); await fixture;
+    Check("D11", "stalled body terminates within its read budget", finishedWithinBudget && !canceledOnRequest,
+        new { responseHeadersAndOneByteDelivered = true, declaredHttpTimeoutSeconds = 12, declaredReadLoopBudgetMs = 8000,
+            observedStallSeconds = stopwatch.Elapsed.TotalSeconds, finishedWithinBudget, canceledOnRequest,
+            onlySourceAdaptation = "Target URL changed to HTTP loopback SOCKS fixture" });
+}

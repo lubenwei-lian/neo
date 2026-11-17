@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
@@ -562,35 +563,48 @@ public sealed class PortRelay : IDisposable
 
     private async Task PumpBothAsync(TcpClient client, TcpClient backend, CancellationToken ct)
     {
+        using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         try
         {
-            var up = PumpAsync(client.GetStream(), backend.GetStream(), ct);
-            var down = PumpAsync(backend.GetStream(), client.GetStream(), ct);
-            await Task.WhenAny(up, down).ConfigureAwait(false);
-            //   FTP、部分游戏/长轮询）。原实现立即 Dispose 会截断；这里给另一方向最多 5 秒
-            //   把剩余数据吐完再收尾，超时则按原行为关闭。
-            try { await Task.WhenAll(up, down).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-            catch { }
+            // 先缓存两个流；第一方向可能同步读到 EOF 并传播 FIN。
+            var clientStream = client.GetStream();
+            var backendStream = backend.GetStream();
+            var up = PumpAsync(clientStream, backendStream, connectionCts);
+            var down = PumpAsync(backendStream, clientStream, connectionCts);
+            // TCP 半关闭只结束一个方向。另一个方向允许继续响应，直到 EOF、错误或会话取消。
+            await Task.WhenAll(up, down).ConfigureAwait(false);
         }
         catch { }
     }
 
     /// <summary>单向搬运；结束方向对端 Shutdown(Send)，让另一端读到 EOF 后自然收尾。</summary>
-    private static async Task PumpAsync(NetworkStream from, NetworkStream to, CancellationToken ct)
+    private static async Task PumpAsync(NetworkStream from, NetworkStream to, CancellationTokenSource connectionCts)
     {
-        var buf = new byte[16 * 1024];
+        var ct = connectionCts.Token;
+        var bufferSize = 16 * 1024;
+        var buf = ArrayPool<byte>.Shared.Rent(bufferSize);
+        var fullReads = 0;
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                var n = await from.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
+                var n = await from.ReadAsync(buf.AsMemory(0, bufferSize), ct).ConfigureAwait(false);
                 if (n <= 0) break;
                 await to.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
+                // 短连接保持小缓冲；持续大流量才扩容，降低大下载的搬运次数。
+                if (bufferSize < 64 * 1024 && n == bufferSize && ++fullReads >= 4)
+                {
+                    var larger = ArrayPool<byte>.Shared.Rent(64 * 1024);
+                    ArrayPool<byte>.Shared.Return(buf, clearArray: true);
+                    buf = larger; bufferSize = 64 * 1024;
+                }
             }
         }
-        catch { }
+        catch { try { connectionCts.Cancel(); } catch { } }
         finally
         {
+            // 代理内容可能含凭据；回收前清空，避免被池的下一个使用者读到。
+            ArrayPool<byte>.Shared.Return(buf, clearArray: true);
             try { to.Socket?.Shutdown(SocketShutdown.Send); } catch { }
         }
     }

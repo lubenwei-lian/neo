@@ -26,7 +26,7 @@ public enum NodeProtocol
     MihomoConfig,
 
     /// <summary>
-    /// WireGuard（sing-box 的 endpoints 形态；xray 不支持 WG 出站）。
+    /// WireGuard（Neo 当前通过 sing-box 的 endpoints 形态生成配置）。
     /// 分享链接：wireguard://&lt;私钥&gt;@host:port?publickey=...&amp;address=... 或整份 .conf。
     /// </summary>
     WireGuard,
@@ -44,6 +44,9 @@ public enum NodeProtocol
     /// Extras["config_path"] = 保存的 JSON 路径；Extras["engine"] = "xray" / "sing-box"。
     /// </summary>
     CustomConfig,
+
+    /// <summary>ShadowsocksR sharing links and Clash SSR nodes, carried by mihomo.</summary>
+    ShadowsocksR,
 }
 
 public sealed class NodeItem
@@ -84,7 +87,7 @@ public sealed class NodeItem
     public string? ShortId { get; set; }
     public string? SpiderX { get; set; }
     public bool AllowInsecure { get; set; }
-    /// <summary>本次运行期强制放宽证书校验（连接前探测到服务端证书不受信时置位，不写回配置）。</summary>
+    /// <summary>显式运行期证书例外；测速和展示文案不得自动置位。</summary>
     public bool ForceInsecure { get; set; }
     /// <summary>本次运行是否已做过证书探测（避免每次连接都起临时内核）。</summary>
     public bool TlsChecked { get; set; }
@@ -189,7 +192,7 @@ public sealed class NodeItem
     /// <summary>
     /// 该节点是否用到 xray 专有能力（sing-box 1.14 不支持，实测见台账）：
     /// mKCP / xhttp 传输、VLESS 后量子加密、REALITY pqv、证书名校验 vcn。
-    /// TUN 模式固定跑 sing-box ⇒ 这类节点在 TUN 下必须明确拒绝，不能静默降级成「能连上但走错传输」。
+    /// TUN 下仍由 Xray 保留原传输，sing-box 只提供前置 TUN 接入，不能降级协议。
     /// </summary>
     public bool RequiresXray =>
         Network.ToLowerInvariant() is "kcp" or "xhttp"
@@ -198,13 +201,16 @@ public sealed class NodeItem
         || !string.IsNullOrEmpty(VerifyPeerCertByName);
 
     /// <summary>
-    /// 该节点是否必须走 sing-box（xray 无法承载）：
+    /// 该节点是否必须走 Neo 已实现的 sing-box 配置路径（不代表 Xray 所有版本均不支持）：
     /// anytls、ss SIP003 插件、h2（xray 26 已移除 h2/quic）、hy2 gecko、
     /// 以及「无 TLS 的明文 VLESS」——xray 26 实测直接拒绝启动（见台账 F1）。
     /// 注意：hysteria2 / tuic 恒走 sing-box，由调用方另行判断，不在此列。
     /// </summary>
     public bool RequiresSingBox =>
         Protocol is NodeProtocol.AnyTls or NodeProtocol.WireGuard
+        // 当前内置 Xray 已移除 allowInsecure；没有可用的证书 pin 时走 sing-box。
+        || ((AllowInsecure || ForceInsecure) && (Security == "tls" || Protocol == NodeProtocol.Trojan)
+            && !(CertSha256 is { Length: 64 } && CertSha256.All(char.IsAsciiHexDigit)))
         || (Protocol is NodeProtocol.Shadowsocks && !string.IsNullOrEmpty(Plugin))
         || Network.ToLowerInvariant() is "h2"
         || GeckoMinPacketSize.HasValue || GeckoMaxPacketSize.HasValue

@@ -29,9 +29,9 @@ public static class RealDelayTester
     //   RealPingBatchAsync 原先把全部节点（最多 68 个）一次性打出去 → 容易被判异常流量。
     //   改为：同时最多 BatchMaxConcurrency 条 + 相邻节点启动错峰 BatchStaggerBaseMs ± 抖动。
     //
-    //   批量路径再去掉「预热请求」（只发一次计时请求，延迟口径按首字节时间）。
-    //   连接数仍受控，预期总耗时降到原来的 1/3–1/4。
-    /// <summary>批量真连测速时，同时在跑的节点探测数上限（10，保守但比 4 快）。</summary>
+    //   批量路径保留预热后的延迟口径，启动、预热与计时共用单节点预算。
+    //   并发仍受控，不以抬高显示延迟换取更快的测速完成时间。
+    /// <summary>出口检测等批量探测同时运行的节点数上限。</summary>
     //   数字放大（实测同一节点 110ms 与 1385ms），排序因此不可信。降到 6 后总耗时可接受
     //   （68 节点约 30～40s），换来与常见客户端（v2rayN）可比的稳定读数。
     private const int BatchMaxConcurrency = 6;
@@ -88,10 +88,7 @@ public static class RealDelayTester
         => (await RealPingDetailedAsync(node, runtimeDir, timeoutMs, ct).ConfigureAwait(false)).Ms;
 
     /// <summary>
-    /// 两阶段真连测速：
-    ///   1) 按节点声明的证书策略严格测；
-    ///   2) 只有内核明确报证书不受信、且该方案允许放宽（UDP 类）时，才放宽一次重测，并写明原因。
-    /// 超时/失败时根据传输层给出可解释的说明（UDP 被限、证书不受信等）。
+    /// 按节点显式证书策略测速；失败仅记录证书/传输诊断，不自动创建安全例外。
     /// </summary>
     public static async Task<RealPingResult> RealPingDetailedAsync(NodeItem node, string runtimeDir,
         int timeoutMs = DefaultTimeoutMs, CancellationToken ct = default)
@@ -105,15 +102,6 @@ public static class RealDelayTester
         if (ms > 0)
         {
             note = null;
-        }
-        else if (first.CertFailed && plan.RelaxTlsOnCertFailure && !node.AllowInsecure)
-        {
-            Log($"测速：节点「{node.Name}」证书不受信（{plan.Reason}），放宽校验后重测");
-            var second = await RealPingOnceAsync(node, runtimeDir, effectiveTimeout, plan.Attempts, relaxTls: true, ct).ConfigureAwait(false);
-            ms = second.Ms;
-            note = ms > 0
-                ? "证书放宽"
-                : plan.Transport == DelayTransport.Udp ? "证书放宽后仍超时（UDP 可能被限制）" : "证书放宽后仍失败";
         }
         else if (first.CertFailed)
         {
@@ -151,11 +139,21 @@ public static class RealDelayTester
         int timeoutMs, int attempts, bool relaxTls, CancellationToken ct, string? urlOverride = null)
     {
         if (!node.IsValid) return (-1, false);
-        if (node.IsClashPassthrough || node.IsCustomConfig || node.IsNaive) return (0, false);
+        if (node.IsClashPassthrough || node.IsCustomConfig) return (0, false);
+
+        // The timeout covers kernel startup and all HTTP targets together, rather
+        // than restarting a full timeout for every warmup, URL and retry attempt.
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutMs = Math.Max(1, timeoutMs);
+        budget.CancelAfter(timeoutMs);
+        var elapsed = Stopwatch.StartNew();
+        var probeToken = budget.Token;
 
         bool useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
             || (node.RequiresSingBox && !node.RequiresXray));
-        var exe = Path.Combine(runtimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
+        var auxiliary = AuxiliaryCorePlan.Needed(node, false);
+        var engine = auxiliary ? (node.IsNaive ? "naive" : "mihomo") : useSingBox ? "sing-box" : "xray";
+        var exe = Path.Combine(runtimeDir, engine + ".exe");
         if (!File.Exists(exe))
         {
             Log($"单节点测速失败（本机原因，非节点问题）：内核不存在 {exe}", isError: true);
@@ -164,23 +162,26 @@ public static class RealDelayTester
 
         var port = FreePort();
         var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-realtest-{port}-{Guid.NewGuid():N}.json");
+        var auxiliaryDir = cfgPath + ".work";
         CoreProcess? core = null;
         var tail = new ConcurrentQueue<string>();
         var started = false;
         try
         {
-            var cfg = useSingBox
+            var plan = auxiliary ? AuxiliaryCorePlan.Create(node, port, FreePort(), FreePort()) : null;
+            var cfg = plan?.Config ?? (useSingBox
                 ? SingBoxConfigBuilder.BuildTest(node, port, relaxTls)
-                : XrayConfigBuilder.BuildTest(node, port);
-            await File.WriteAllTextAsync(cfgPath, cfg, ct);
-            core = new CoreProcess(exe, runtimeDir);
+                : XrayConfigBuilder.BuildTest(node, port));
+            await File.WriteAllTextAsync(cfgPath, cfg, probeToken);
+            if (auxiliary) Directory.CreateDirectory(auxiliaryDir);
+            core = new CoreProcess(exe, auxiliary ? auxiliaryDir : runtimeDir);
             core.LogLine += line => AppendTail(tail, line);
-            core.Start(cfgPath);
+            core.Start(cfgPath, plan?.Arguments(cfgPath, auxiliaryDir));
 
             var ready = false;
             for (var i = 0; i < 40 && !ready; i++)
             {
-                ct.ThrowIfCancellationRequested();
+                probeToken.ThrowIfCancellationRequested();
                 if (!core.IsRunning)
                 {
                     Log($"单节点测速失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
@@ -189,14 +190,14 @@ public static class RealDelayTester
                 try
                 {
                     using var probe = new TcpClient();
-                    using var pcts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    using var pcts = CancellationTokenSource.CreateLinkedTokenSource(probeToken);
                     pcts.CancelAfter(250);
                     await probe.ConnectAsync("127.0.0.1", port, pcts.Token);
                     ready = true;
                 }
-                catch when (!ct.IsCancellationRequested)
+                catch when (!probeToken.IsCancellationRequested)
                 {
-                    await Task.Delay(120, ct);
+                    await Task.Delay(120, probeToken);
                 }
             }
             if (!core.IsRunning)
@@ -219,52 +220,20 @@ public static class RealDelayTester
             };
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
-            if (urlOverride != null)
-            {
-                try
-                {
-                    var swUrl = Stopwatch.StartNew();
-                    using var respUrl = await http.GetAsync(urlOverride, HttpCompletionOption.ResponseHeadersRead, ct);
-                    swUrl.Stop();
-                    var codeUrl = (int)respUrl.StatusCode;
-                    return (codeUrl is >= 200 and < 400 ? (int)swUrl.ElapsedMilliseconds : -1, TailHasCertError(tail));
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { return (-1, TailHasCertError(tail)); }
-            }
-
-            var best = int.MaxValue;
-            foreach (var url in ProbeUrls)
-            {
-                try { using var warm = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                catch { }
-
-                for (var attempt = 0; attempt < Math.Max(1, attempts); attempt++)
-                {
-                    try
-                    {
-                        var sw = Stopwatch.StartNew();
-                        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                        sw.Stop();
-                        var code = (int)resp.StatusCode;
-                        if (code is 200 or 204)
-                        {
-                            var ms = (int)sw.ElapsedMilliseconds;
-                            if (ms < best) best = ms;
-                            if (best <= SlowEnoughMs) return (best, false);
-                        }
-                    }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-                    catch { }
-                }
-                if (best < int.MaxValue) return (best, false);
-            }
-            return (-1, TailHasCertError(tail));
+            // Retain warmed HTTP latency for the node list. Startup, warmup and
+            // measured requests share one budget; explicit availability probes need no warmup.
+            var remaining = timeoutMs - (int)elapsed.ElapsedMilliseconds;
+            var ms = await DelayHttpProbe.MeasureAsync(http,
+                urlOverride != null ? new[] { urlOverride } : ProbeUrls,
+                urlOverride != null ? 1 : attempts, remaining, ct,
+                () => TailHasCertError(tail), acceptRedirects: urlOverride != null,
+                warmup: urlOverride == null, stopAtMs: SlowEnoughMs).ConfigureAwait(false);
+            return (ms, TailHasCertError(tail));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return (-1, TailHasCertError(tail));
+            if (!started) Log("单节点测速失败（本机原因）：临时内核未能在单节点预算内启动", isError: true);
+            return (started ? -1 : BatchFailed, TailHasCertError(tail));
         }
         catch (OperationCanceledException)
         {
@@ -283,6 +252,7 @@ public static class RealDelayTester
         {
             core?.Stop();
             try { File.Delete(cfgPath); } catch { }
+            try { if (Directory.Exists(auxiliaryDir)) Directory.Delete(auxiliaryDir, true); } catch { }
         }
     }
 
@@ -416,7 +386,7 @@ public static class RealDelayTester
     ///   避免弱网/大量死节点时拖到 1 分半、UI 停在半路。可用性复核有自己独立的 6s 预算，不共用。
     /// <summary>
     /// 真连测速入口（兼容旧签名）。实际调度在 DelayTestRunner：
-    /// 进度驱动、按 TCP/UDP 数量决定先后、两组测完再统一重试失败节点（首测 + 4 次重试）。
+    /// 进度驱动、按 TCP/UDP 数量决定先后、默认首测后仅对暂时失败的节点补测一次。
     /// timeoutMs 参数已废弃（单节点超时由 DelayTestPlanner 决定：TCP 9s / UDP 15s）。
     /// </summary>
     public static Task<IReadOnlyDictionary<NodeItem, int>> RealPingBatchAsync(
@@ -424,8 +394,9 @@ public static class RealDelayTester
         int timeoutMs = 0, Action<NodeItem, int>? onResult = null, CancellationToken ct = default,
         bool availabilityRecheck = false,
         Action<IReadOnlyCollection<NodeItem>>? onUsableChecked = null,
-        Action<DelayTestProgress>? onProgress = null)
-        => DelayTestRunner.RunAsync(nodes, runtimeDir, onResult, ct, availabilityRecheck, onUsableChecked, onProgress);
+        Action<DelayTestProgress>? onProgress = null,
+        DelayTestOptions? options = null)
+        => DelayTestRunner.RunAsync(nodes, runtimeDir, onResult, ct, availabilityRecheck, onUsableChecked, onProgress, options);
 
     private static async Task<int> PingViaSocksAsync(int port, int timeoutMs, CancellationToken ct)
     {
@@ -559,89 +530,147 @@ public static class RealDelayTester
         }
     }
 
-    /// 出口位置检测：每个节点走自己的 socks 入口请求 Cloudflare trace，读出**真实出口国家**（ISO 小写）。
-    /// 与批量测速同一套做法（一个临时内核 + 每节点独立 socks 端口），避免逐个起进程。
-    /// 只覆盖 xray 承载的协议；hy2/tuic（sing-box）暂不参与（返回空）。
+    /// <summary>Only explicit node configurations can be tested without selecting or reconnecting the live session.</summary>
+    public static bool CanDetectExitLocation(NodeItem node) => node.IsValid
+        && !node.IsClashPassthrough && !node.IsCustomConfig
+        && (AuxiliaryCorePlan.Needed(node, false) || KernelSupport.Of(node) != KernelSupportKind.Other);
+
+    /// <summary>At most one temporary core per engine; every ingress routes exclusively to its own node.</summary>
     public static async Task<IReadOnlyDictionary<NodeItem, (string Country, string Ip)>> DetectExitLocationsAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir, int timeoutMs = 10000,
-        Action<NodeItem, string, string>? onResult = null, CancellationToken ct = default)
+        Action<NodeItem, string, string>? onResult = null, CancellationToken ct = default,
+        Action<NodeItem, string>? onFailure = null)
     {
         var result = new ConcurrentDictionary<NodeItem, (string Country, string Ip)>();
-        var xrayNodes = nodes.Where(n => n.IsValid
-            && n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC)
-            && !(n.RequiresSingBox && !n.RequiresXray)).ToList();
-        if (xrayNodes.Count == 0) return result;
-
-        var ports = AllocPorts(xrayNodes.Count);
-        var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-geotest-{ports[0]}-{Guid.NewGuid():N}.json");
-        CoreProcess? core = null;
-        var tail = new ConcurrentQueue<string>();
-        try
+        using var concurrency = new SemaphoreSlim(BatchMaxConcurrency);
+        bool UseSingBox(NodeItem n) => KernelRouter.Apply(n, KernelSupport.Of(n) == KernelSupportKind.SingBoxOnly);
+        var candidates = nodes.Where(CanDetectExitLocation).Distinct().ToArray();
+        var groups = candidates.Where(n => !AuxiliaryCorePlan.Needed(n, false)).GroupBy(UseSingBox).ToArray();
+        var standardTasks = groups.Select(async group =>
         {
-            await File.WriteAllTextAsync(cfgPath, XrayConfigBuilder.BuildTestBatch(xrayNodes, ports), ct);
-            core = new CoreProcess(Path.Combine(runtimeDir, "xray.exe"), runtimeDir);
-            core.LogLine += line => AppendTail(tail, line);
-            core.Start(cfgPath);
-            await Task.Delay(1200, ct);
-            if (!core.IsRunning)
+            var testNodes = group.ToArray();
+            var ports = AllocPorts(testNodes.Length);
+            var engine = group.Key ? "sing-box" : "xray";
+            var cfgPath = Path.Combine(Path.GetTempPath(), $"neo-realtest-geotest-{ports[0]}-{Guid.NewGuid():N}.json");
+            using var core = new CoreProcess(Path.Combine(runtimeDir, engine + ".exe"), runtimeDir);
+            var tail = new ConcurrentQueue<string>(); core.LogLine += line => AppendTail(tail, line);
+            try
             {
-                Log($"出口位置检测失败（本机原因，非节点问题）：内核启动后立即退出。内核日志尾部：{TailText(tail)}", isError: true);
-                return result;
+                var json = group.Key ? SingBoxConfigBuilder.BuildTestBatch(testNodes, ports)
+                    : XrayConfigBuilder.BuildTestBatch(testNodes, ports);
+                await File.WriteAllTextAsync(cfgPath, json, ct).ConfigureAwait(false);
+                core.Start(cfgPath);
+                var ready = await ProxyReadiness.WaitAsync(() => core.IsRunning, ports[0], ports[0],
+                    TimeSpan.FromSeconds(4), ct).ConfigureAwait(false);
+                if (!ready) throw new InvalidOperationException("临时内核未能就绪：" + TailText(tail));
+                await Parallel.ForEachAsync(Enumerable.Range(0, testNodes.Length),
+                    new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = BatchMaxConcurrency },
+                    async (i, token) =>
+                    {
+                        await concurrency.WaitAsync(token).ConfigureAwait(false);
+                        try
+                        {
+                            var (country, ip, detail) = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, token).ConfigureAwait(false);
+                            if (country.Length > 0)
+                            {
+                                result[testNodes[i]] = (country, ip);
+                                onResult?.Invoke(testNodes[i], country, ip);
+                            }
+                            else
+                            {
+                                onFailure?.Invoke(testNodes[i], detail);
+                                Log($"出口位置检测未确认：{testNodes[i].Name} · {detail}", isError: true);
+                            }
+                        }
+                        finally { concurrency.Release(); }
+                    }).ConfigureAwait(false);
             }
-
-            // 出口位置检测同样是「一个临时内核 + 每节点独立 socks 端口」的批量路径，
-            // 一并限制并发上限（不做 200ms 错峰：它是静默后台任务、且有 90s 总超时预算）。
-            await Parallel.ForEachAsync(Enumerable.Range(0, xrayNodes.Count),
-                new ParallelOptions
-                {
-                    CancellationToken = ct,
-                    MaxDegreeOfParallelism = BatchMaxConcurrency,
-                },
-                async (i, ict) =>
-                {
-                    var (country, ip) = await QueryExitCountryViaSocksAsync(ports[i], timeoutMs, ict);
-                    result[xrayNodes[i]] = (country, ip);
-                    onResult?.Invoke(xrayNodes[i], country, ip);
-                });
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log($"出口位置检测失败（{engine} 本机原因）：[{ex.GetType().Name}] {ex.Message}", isError: true);
+                foreach (var node in testNodes.Where(n => !result.ContainsKey(n)))
+                    onFailure?.Invoke(node, engine + " 出口检测临时内核失败，请查看日志");
+            }
+            finally
+            {
+                core.Stop();
+                try { File.Delete(cfgPath); } catch { }
+            }
+        });
+        var auxiliaryTasks = candidates.Where(n => AuxiliaryCorePlan.Needed(n, false)).Select(async node =>
         {
-            Log($"出口位置检测失败（本机原因）：[{ex.GetType().Name}] {ex.Message}", isError: true);
-        }
-        finally
-        {
-            core?.Stop();
-            try { File.Delete(cfgPath); } catch { }
-        }
+            await concurrency.WaitAsync(ct).ConfigureAwait(false);
+            var dir = Path.Combine(Path.GetTempPath(), "neo-realtest-geotest-aux-" + Guid.NewGuid().ToString("N"));
+            CoreProcess? core = null;
+            try
+            {
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                budget.CancelAfter(Math.Max(1, timeoutMs));
+                var port = FreePort();
+                var plan = AuxiliaryCorePlan.Create(node, port, FreePort(), FreePort());
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "config.json");
+                await File.WriteAllTextAsync(path, plan.Config, budget.Token).ConfigureAwait(false);
+                core = new CoreProcess(Path.Combine(runtimeDir, plan.Engine + ".exe"), dir);
+                core.Start(path, plan.Arguments(path, dir));
+                if (!await ProxyReadiness.WaitAsync(() => core.IsRunning, port, port, TimeSpan.FromSeconds(4), budget.Token,
+                    negotiateSocks: plan.Engine != "naive").ConfigureAwait(false))
+                    throw new InvalidOperationException("辅助内核入口未就绪");
+                var (country, ip, detail) = await QueryExitCountryViaSocksAsync(port, timeoutMs, budget.Token).ConfigureAwait(false);
+                if (country.Length > 0) { result[node] = (country, ip); onResult?.Invoke(node, country, ip); }
+                else onFailure?.Invoke(node, detail);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { onFailure?.Invoke(node, ex is OperationCanceledException ? "出口检测超时，可补测" : "辅助内核检测失败：" + ex.Message); }
+            finally
+            {
+                core?.Stop();
+                try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+                concurrency.Release();
+            }
+        });
+        await Task.WhenAll(standardTasks.Concat(auxiliaryTasks)).ConfigureAwait(false);
         return result;
     }
 
     /// Cloudflare trace 的 loc= 行就是 Cloudflare 判定的出口国家代码。
-    private static async Task<(string Country, string Ip)> QueryExitCountryViaSocksAsync(int socksPort, int timeoutMs, CancellationToken ct)
+    internal static async Task<(string Country, string Ip, string Detail)> QueryExitCountryViaSocksAsync(
+        int socksPort, int timeoutMs, CancellationToken ct, HttpMessageHandler? transport = null)
     {
-        try
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(Math.Max(1, timeoutMs));
+        using var handler = transport ?? new SocketsHttpHandler
         {
-            using var handler = new SocketsHttpHandler
+            Proxy = new WebProxy(new Uri($"socks5://127.0.0.1:{socksPort}")),
+            UseProxy = true, AllowAutoRedirect = false, UseCookies = false,
+            ConnectTimeout = TimeSpan.FromMilliseconds(Math.Max(1, timeoutMs)),
+        };
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var failures = new List<string>();
+        foreach (var host in new[] { "cp.cloudflare.com", "www.cloudflare.com" })
+        {
+            ct.ThrowIfCancellationRequested();
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+            attempt.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(1, timeoutMs / 2)));
+            try
             {
-                Proxy = new WebProxy(new Uri($"socks5://127.0.0.1:{socksPort}")),
-                UseProxy = true,
-                ConnectTimeout = TimeSpan.FromMilliseconds(timeoutMs),
-                PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-            };
-            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
-            var text = await http.GetStringAsync("http://cp.cloudflare.com/cdn-cgi/trace", ct);
-            var country = "";
-            var ip = "";
-            foreach (var line in text.Split('\n'))
-            {
-                var t = line.Trim();
-                if (t.StartsWith("loc=", StringComparison.Ordinal)) country = t[4..].Trim().ToLowerInvariant();
-                else if (t.StartsWith("ip=", StringComparison.Ordinal)) ip = t[3..].Trim();
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/cdn-cgi/trace");
+                request.Headers.CacheControl = new() { NoCache = true, NoStore = true };
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, attempt.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode) { failures.Add($"{host}：HTTP {(int)response.StatusCode}"); continue; }
+                await response.Content.LoadIntoBufferAsync(8192, attempt.Token).ConfigureAwait(false);
+                var parsed = CurrentExitProbe.ParseTrace(await response.Content.ReadAsStringAsync(attempt.Token).ConfigureAwait(false));
+                if (parsed is { } exit) return (exit.Country, exit.Ip, "");
+                failures.Add(host + "：未返回有效的公网 IP 与地区");
             }
-            return (country, ip);
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) { failures.Add(host + "：请求超时"); }
+            catch (HttpRequestException ex) { failures.Add(host + "：连接失败（" + ex.HttpRequestError + "）"); }
+            catch (IOException) { failures.Add(host + "：响应读取失败"); }
+            if (budget.IsCancellationRequested) break;
         }
-        catch { }
-        return ("", "");
+        ct.ThrowIfCancellationRequested();
+        return ("", "", string.Join("；", failures));
     }
 }

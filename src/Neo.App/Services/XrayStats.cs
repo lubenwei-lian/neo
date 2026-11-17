@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using Neo.Core;
+using Neo.Core.Core;
 
 namespace Neo.App.Services;
 
@@ -19,72 +20,116 @@ public static class XrayStats
 
     private static bool _warnedFallback;
     private static bool _warnedShapeMismatch;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> GrpcRetryAt = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, long> ResponsiveAt = new();
 
-    public static Snapshot? Query()
+    /// <summary>API 活性独立于流量聚合结果：空闲/未知 tag 不能被误判成进程卡死。</summary>
+    public static bool IsResponsive(int? apiPort = null)
+    {
+        var port = apiPort ?? LocalPorts.CoreStatsApi;
+        var started = Stopwatch.GetTimestamp();
+        _ = Query(port);
+        return ResponsiveAt.TryGetValue(port, out var completed) && completed >= started;
+    }
+
+    public static Snapshot? Query(int? apiPort = null)
     {
         try
         {
-            var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
-            if (!File.Exists(exe)) { Diag("xray.exe 不存在：" + exe); return null; }
-
-            using var p = Process.Start(new ProcessStartInfo
+            var port = apiPort ?? LocalPorts.CoreStatsApi;
+            string? txt = null;
+            IReadOnlyList<XrayStatsClient.Counter>? counters = null;
+            if (!GrpcRetryAt.TryGetValue(port, out var retryAt) || DateTime.UtcNow.Ticks >= retryAt)
             {
-                FileName = exe,
-                ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{Neo.Core.LocalPorts.CoreStatsApi}" },
-                RedirectStandardOutput = true,
-                // 必须重定向 stderr 并异步读空：不重定向时子进程继承的是 GUI 进程（WinExe）的
-                // 无效 stderr 句柄，内核一写告警就可能失败/阻塞；重定向了却不读，管道写满同样卡住。
-                // 读到的 stderr 同时留作失败诊断（见 Diag）。
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (p == null) { Diag("Process.Start 返回 null"); return null; }
-
-            //   整个采样线程（以及调用它的后台循环）被永久挂住。
-            //   改为异步读 + 3 秒总超时，超时即 Kill 并返回 null。
-            var readTask = p.StandardOutput.ReadToEndAsync();
-            // 与 stdout 并行把 stderr 读完丢弃：既防管道写满阻塞，也留作失败诊断。
-            var errTask = p.StandardError.ReadToEndAsync();
-            //   这里挂一个只观察异常的续体，保证任何路径都不会变成 UnobservedTaskException。
-            _ = errTask.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
-            if (!readTask.Wait(TimeSpan.FromSeconds(3)))
-            {
-                try { p.Kill(entireProcessTree: true); } catch { }
-                Diag("读 stdout 超时 3 秒（子进程可能卡住）");
-                return null;
+                try
+                {
+                    counters = XrayStatsClient.QueryAsync(port).GetAwaiter().GetResult();
+                    GrpcRetryAt.TryRemove(port, out _);
+                }
+                catch (Exception ex)
+                {
+                    if (GrpcRetryAt.Count > 32) GrpcRetryAt.Clear();
+                    GrpcRetryAt[port] = DateTime.UtcNow.AddSeconds(30).Ticks;
+                    LogBus.App($"统计直读暂不可用，30 秒内使用 CLI 兼容路径：{ex.GetType().Name}", "Debug");
+                }
             }
-
-            string txt;
-            try { txt = readTask.Result; }
-            catch
+            if (counters == null)
             {
-                // 读取失败（进程被杀/管道断开）：同样收尾，避免留下僵尸进程。
-                try { p.Kill(entireProcessTree: true); } catch { }
-                Diag("读 stdout 失败（进程被杀/管道断开）");
-                return null;
-            }
-            try { p.WaitForExit(2000); } catch { }
+                var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
+                if (!File.Exists(exe)) { Diag("xray.exe 不存在：" + exe); return null; }
 
-            if (string.IsNullOrWhiteSpace(txt))
-            {
-                var err = "";
-                try { if (errTask.Wait(500)) err = errTask.Result; } catch { }
-                Diag($"stdout 为空（exit={(p.HasExited ? p.ExitCode : -1)}，stderr={Clip(err)}）");
-                return null;
-            }
+                using var p = Process.Start(new ProcessStartInfo
+                {
+                    FileName = exe,
+                    ArgumentList = { "api", "statsquery", $"--server=127.0.0.1:{port}" },
+                    RedirectStandardOutput = true,
+                    // 必须重定向 stderr 并异步读空：不重定向时子进程继承的是 GUI 进程（WinExe）的
+                    // 无效 stderr 句柄，内核一写告警就可能失败/阻塞；重定向了却不读，管道写满同样卡住。
+                    // 读到的 stderr 同时留作失败诊断（见 Diag）。
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                });
+                if (p == null) { Diag("Process.Start 返回 null"); return null; }
 
-            using var doc = JsonDocument.Parse(txt);
-            if (!doc.RootElement.TryGetProperty("stat", out var arr)) return null;
+                //   整个采样线程（以及调用它的后台循环）被永久挂住。
+                //   改为异步读 + 3 秒总超时，超时即 Kill 并返回 null。
+                var readTask = p.StandardOutput.ReadToEndAsync();
+                _ = readTask.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
+                // 与 stdout 并行把 stderr 读完丢弃：既防管道写满阻塞，也留作失败诊断。
+                var errTask = p.StandardError.ReadToEndAsync();
+                //   这里挂一个只观察异常的续体，保证任何路径都不会变成 UnobservedTaskException。
+                _ = errTask.ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
+                if (!readTask.Wait(TimeSpan.FromSeconds(3)))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    Diag("读 stdout 超时 3 秒（子进程可能卡住）");
+                    return null;
+                }
+
+                try { txt = readTask.Result; }
+                catch
+                {
+                    // 读取失败（进程被杀/管道断开）：同样收尾，避免留下僵尸进程。
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    Diag("读 stdout 失败（进程被杀/管道断开）");
+                    return null;
+                }
+                if (!p.WaitForExit(2000))
+                {
+                    try { p.Kill(entireProcessTree: true); } catch { }
+                    Diag("统计 CLI 已关闭 stdout 但仍未退出，已停止兼容进程");
+                    return null;
+                }
+
+                if (string.IsNullOrWhiteSpace(txt))
+                {
+                    var err = "";
+                    try { if (errTask.Wait(500)) err = errTask.Result; } catch { }
+                    Diag($"stdout 为空（exit={(p.HasExited ? p.ExitCode : -1)}，stderr={Clip(err)}）");
+                    return null;
+                }
+                // 只有 CLI 兼容输出需要 JSON；gRPC 计数直接参与下方汇总。
+                using var doc = JsonDocument.Parse(txt);
+                if (!doc.RootElement.TryGetProperty("stat", out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
+                var parsed = new List<XrayStatsClient.Counter>(arr.GetArrayLength());
+                foreach (var item in arr.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("name", out var nameEl)) continue;
+                    parsed.Add(new XrayStatsClient.Counter(nameEl.GetString() ?? "", ReadValue(item)));
+                }
+                counters = parsed;
+            }
+            if (ResponsiveAt.Count > 32) ResponsiveAt.Clear();
+            ResponsiveAt[port] = Stopwatch.GetTimestamp();
 
             long outUp = 0, outDown = 0;
             long inUp = 0, inDown = 0;
             var outMatched = 0;
 
-            foreach (var item in arr.EnumerateArray())
+            foreach (var item in counters)
             {
-                if (!item.TryGetProperty("name", out var nameEl)) continue;
-                var name = nameEl.GetString() ?? "";
+                var name = item.Name;
 
                 if (TryParse(name, "outbound>>>", out var outTag, out var outDir))
                 {
@@ -93,7 +138,7 @@ public static class XrayStats
                     // 两者相加会把流量翻倍，故只计 chain 段（用户实际收发）。
                     if (outTag.StartsWith("hop", StringComparison.OrdinalIgnoreCase)) continue;
                     outMatched++;
-                    var val = ReadValue(item);
+                    var val = item.Value;
                     if (outDir == "uplink") outUp += val; else outDown += val;
                     continue;
                 }
@@ -101,7 +146,7 @@ public static class XrayStats
                 if (TryParse(name, "inbound>>>", out var inTag, out var inDir))
                 {
                     if (!ProxyInTags.Contains(inTag)) continue;
-                    var val = ReadValue(item);
+                    var val = item.Value;
                     if (inDir == "uplink") inUp += val; else inDown += val;
                 }
             }
@@ -127,7 +172,7 @@ public static class XrayStats
                 _warnedShapeMismatch = true;
                 LogBus.App("流量统计：内核统计数据中没有可识别的代理流量，统计已暂停（请反馈日志）", "Warning");
             }
-            Diag($"无可用统计条目（条目数={arr.GetArrayLength()}，outMatched={outMatched}，inUp={inUp}，inDown={inDown}）");
+            Diag($"无可用统计条目（条目数={counters.Count}，outMatched={outMatched}，inUp={inUp}，inDown={inDown}）");
             return null;
         }
         catch (Exception ex)

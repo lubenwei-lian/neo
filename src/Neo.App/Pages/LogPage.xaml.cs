@@ -14,10 +14,15 @@ namespace Neo.App.Pages;
 public sealed partial class LogPage : UserControl
 {
     private string _level = "All";
+    private string _keyword = "";
     private bool _autoScroll = true;
     private const int MaxLogRows = 2000;
     private bool _loaded;
-    private readonly List<LogEntry> _pending = new();
+    private const int MaxPendingLines = 4000;
+    private readonly object _pendingGate = new();
+    private readonly Queue<LogEntry> _pending = new();
+    private bool _flushRequested;
+    private bool _released;
     private readonly DispatcherQueueTimer _flush;
 
     public LogPage()
@@ -38,14 +43,18 @@ public sealed partial class LogPage : UserControl
     }
 
 
-    private void OnLevelClick(object sender, RoutedEventArgs e)
+    private void OnLevelSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is Button { Tag: string tag })
-        {
-            _level = tag;
-            UpdateChips();
-            Rebuild();
-        }
+        if (!_loaded) return;
+        _level = (LevelFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "All";
+        Rebuild();
+    }
+
+    private void OnSearchChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!_loaded) return;
+        _keyword = SearchBox.Text.Trim();
+        Rebuild();
     }
 
     private void OnAutoScrollClick(object sender, RoutedEventArgs e)
@@ -59,6 +68,12 @@ public sealed partial class LogPage : UserControl
     private void OnClearClick(object sender, RoutedEventArgs e)
     {
         LogBus.Clear();
+        lock (_pendingGate)
+        {
+            _pending.Clear();
+            _flushRequested = false;
+            _flush.Stop();
+        }
         Rebuild();
     }
 
@@ -97,15 +112,32 @@ public sealed partial class LogPage : UserControl
     {
         // 退出中不再投递：DispatcherQueue 正在销毁，投递会以
         // RPC_E_WRONG_THREAD 的 fail-fast 终止进程（不可捕获）。
-        if (App.IsShuttingDown) return;
-        DispatcherQueue.TryEnqueue(() =>
+        lock (_pendingGate)
         {
-            if (App.IsShuttingDown) return;
-            // 高频日志逐条 Add+ScrollIntoView 会打爆 UI 线程并反复触发虚拟化重建，
-            // 改为缓冲后 150ms 批量刷一次，滚动只在每批结束做一次。
-            _pending.Add(e);
-            if (!_flush.IsRunning) _flush.Start();
-        });
+            if (App.IsShuttingDown || _released) return;
+            // 显示缓冲与 LogBus 内存历史同样有界；文件日志仍由 LogBus 独立保存。
+            if (_pending.Count >= MaxPendingLines) _pending.Dequeue();
+            _pending.Enqueue(e);
+            if (_flushRequested) return;
+            _flushRequested = true;
+        }
+        // 整个突发只投递一次。计时器运行期间，新日志只入缓冲，不逐条唤醒 UI。
+        if (!DispatcherQueue.TryEnqueue(() =>
+        {
+            lock (_pendingGate)
+            {
+                if (App.IsShuttingDown || _released)
+                {
+                    _pending.Clear();
+                    _flushRequested = false;
+                    return;
+                }
+                if (!_flush.IsRunning) _flush.Start();
+            }
+        }))
+        {
+            lock (_pendingGate) _flushRequested = false;
+        }
     }
 
     private void FlushPending()
@@ -120,15 +152,23 @@ public sealed partial class LogPage : UserControl
             return;
         }
 
-        if (_pending.Count == 0) { _flush.Stop(); return; }
-
-        // 换出缓冲，避免刷的过程与入队互相穿插
-        var batch = new List<LogEntry>(_pending);
-        _pending.Clear();
+        List<LogEntry> batch;
+        lock (_pendingGate)
+        {
+            if (_released || _pending.Count == 0)
+            {
+                _flush.Stop();
+                _flushRequested = false;
+                return;
+            }
+            batch = new List<LogEntry>(_pending);
+            _pending.Clear();
+            // 保持已唤醒标记；重复计时器在下一拍排空，空闲后才允许新的 UI 投递。
+        }
 
         foreach (var e in batch)
         {
-            if (Match(e)) LogList.Items.Add(e);
+            if (Match(e)) LogList.Items.Add(new Neo.App.Ui.LogDisplayRow(e));
         }
 
         // 超容量整块修剪（保留最新 2000 条），修剪频率随批量稀释
@@ -140,15 +180,21 @@ public sealed partial class LogPage : UserControl
             LogList.ScrollIntoView(LogList.Items[^1]);
     }
 
-    private bool Match(LogEntry e) => _level == "All" || e.Level == _level;
+    private bool Match(LogEntry e) => (_level == "All" || e.Level == _level)
+        && (_keyword.Length == 0 || e.Text.Contains(_keyword, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>退出时停掉本页刷新计时器（Exit 后它会继续触发并写 XAML）。</summary>
     /// <summary>空闲释放：退订日志流 + 停刷新计时器（日志页的条目最多，释放收益明显）。</summary>
     public void Release()
     {
         try { LogBus.Appended -= OnAppended; } catch { }
+        lock (_pendingGate)
+        {
+            _released = true;
+            _pending.Clear();
+            _flushRequested = false;
+        }
         try { _flush.Stop(); } catch { }
-        try { _pending.Clear(); } catch { }
     }
 
     public void StopTimers()
@@ -184,7 +230,7 @@ public sealed partial class LogPage : UserControl
             keep.RemoveRange(0, keep.Count - MaxLogRows);
 
         LogList.Items.Clear();
-        foreach (var e in keep) LogList.Items.Add(e);
+        foreach (var e in keep) LogList.Items.Add(new Neo.App.Ui.LogDisplayRow(e));
 
         UpdateEmpty();
         if (_autoScroll && LogList.Items.Count > 0)
@@ -192,25 +238,11 @@ public sealed partial class LogPage : UserControl
     }
 
     private void UpdateEmpty()
-        => EmptyHint.Visibility = LogList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-
-    private void UpdateChips()
     {
-        Apply(ChipAll, _level == "All");
-        Apply(ChipDebug, _level == "Debug");
-        Apply(ChipInfo, _level == "Info");
-        Apply(ChipWarn, _level == "Warning");
-        Apply(ChipError, _level == "Error");
-        Apply(ChipScroll, _autoScroll);
+        EmptyHint.Visibility = LogList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CountText.Text = $"{LogList.Items.Count} 条记录";
+        FileText.Text = "实时记录 · 完整历史可通过导出查看";
     }
 
-    private static void Apply(Button chip, bool on)
-    {
-        var accent = ThemeUtil.Get("NeoAccent", Color.FromArgb(255, 0x25, 0x63, 0xEB));
-        var onText = ThemeUtil.Get("NeoOnAccent", Colors.White);
-        var text2 = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        chip.Background = on ? accent : new SolidColorBrush(Colors.Transparent);
-        chip.Foreground = on ? onText : text2;
-        chip.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
-    }
+    private void UpdateChips() => ChipScroll.IsChecked = _autoScroll;
 }

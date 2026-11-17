@@ -45,7 +45,7 @@ public static class KernelHashCache
         {
             lock (Gate)
             {
-                return Load().TryGetValue(Key(owner, repo, tag, asset), out var sha) ? sha : null;
+                return Load().TryGetValue(Key(owner, repo, tag, asset), out var sha) && IsDigest(sha) ? sha : null;
             }
         }
         catch { return null; }
@@ -55,11 +55,11 @@ public static class KernelHashCache
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(sha) || sha.Length != 64) return;
+            if (!IsDigest(sha)) return;
             lock (Gate)
             {
                 var map = Load();
-                map[Key(owner, repo, tag, asset)] = sha.Trim().ToLowerInvariant();
+                map[Key(owner, repo, tag, asset)] = sha!.Trim().ToLowerInvariant();
                 // 只保留最近 200 条（一条 ~100B，200 条 = 20KB），避免无限增长。
                 if (map.Count > 200)
                 {
@@ -73,4 +73,5 @@ public static class KernelHashCache
 
     private static string Key(string owner, string repo, string tag, string asset)
         => $"{owner}/{repo}@{tag}/{asset}".ToLowerInvariant();
+    private static bool IsDigest(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 }

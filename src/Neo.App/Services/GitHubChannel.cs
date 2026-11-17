@@ -5,7 +5,7 @@ using System.Net.Http;
 namespace Neo.App.Services;
 
 /// <summary>一个 GitHub release 资产（文件名 + 下载 URL + 体积）。</summary>
-public sealed record GhAsset(string Name, string DownloadUrl, long SizeBytes);
+public sealed record GhAsset(string Name, string DownloadUrl, long SizeBytes, string? Sha256 = null);
 
 /// GitHub 发布信息获取 —— **走非 API 通道，避开匿名 REST 配额**。
 ///   匿名的 `api.github.com` 只有 **60 次/小时** 配额，用尽后一律
@@ -332,7 +332,9 @@ public static class GitHubChannel
             {
                 try
                 {
-                    using var client = new HttpClient(handler) { Timeout = Timeout };
+                    // Large releases exceed 600 KB of HTML. The short tag-check
+                    // budget can expire while reading a perfectly valid listing.
+                    using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(35) };
                     client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "neo-update-check");
                     using var resp = await client.GetAsync($"https://github.com/{owner}/{repo}/releases/expanded_assets/{tag}", token);
                     if (!resp.IsSuccessStatusCode) return null;
@@ -366,7 +368,19 @@ public static class GitHubChannel
             {
                 var name = Uri.UnescapeDataString(raw);
                 if (!list.Any(a => a.Name == name))
-                    list.Add(new GhAsset(name, $"https://github.com/{owner}/{repo}/releases/download/{tag}/{raw}", 0));
+                {
+                    // GitHub renders the official digest in this asset's own
+                    // <li>. Never borrow a digest from a neighbouring asset.
+                    var rowEnd = html.IndexOf("</li>", e, StringComparison.OrdinalIgnoreCase);
+                    var nextAsset = html.IndexOf(prefix, e, StringComparison.OrdinalIgnoreCase);
+                    string? sha = null;
+                    if (rowEnd >= e && (nextAsset < 0 || nextAsset > rowEnd))
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(html[e..rowEnd], @"sha256:([0-9a-fA-F]{64})(?![0-9a-fA-F])");
+                        if (match.Success) sha = match.Groups[1].Value.ToLowerInvariant();
+                    }
+                    list.Add(new GhAsset(name, $"https://github.com/{owner}/{repo}/releases/download/{tag}/{raw}", 0, sha));
+                }
             }
             idx = e > hit ? e : hit + prefix.Length;
         }

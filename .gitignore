@@ -16,6 +16,8 @@ runtime/*
 
 # 临时
 *.log
+__pycache__/
+*.py[cod]
 
 # 启动器构建中间产物
 tools/launcher/*.res
@@ -25,6 +27,8 @@ doc/内核补丁-20261018/*.orig-official*
 # 本地任务产物（审计/修复台账、临时构建证据），不入库
 _work/
 planning/
+/design-qa.md
+/docs/releases/*-acceptance-*.md
 
 # ==== 开源发布：内部资料不入库（本机保留，不上传） ====
 AGENTS.md

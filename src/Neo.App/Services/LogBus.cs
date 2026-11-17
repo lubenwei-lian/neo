@@ -3,6 +3,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 using Neo.Core;
+using Neo.Core.Diagnostics;
 using Windows.UI;
 
 namespace Neo.App.Services;
@@ -54,12 +55,33 @@ public static class LogBus
     private static readonly object FileGate = new();
     private static readonly List<LogEntry> _lines = new();
     private static bool _cleaned;
+    private static readonly BufferedLogWriter<LogEntry> Writer = new(PersistBatch);
+    private static long _reportedDrops;
+
+    /// <summary>退出/导出前等待本次调用之前已排队的日志写入，超时会明确返回 false。</summary>
+    public static bool Flush(TimeSpan timeout) => Writer.FlushAsync(timeout).GetAwaiter().GetResult();
+    public static Task<bool> FlushAsync(TimeSpan timeout) => Writer.FlushAsync(timeout);
+    public static long DroppedFileLines => Writer.Dropped;
+    public static long FailedFileBatches => Writer.FailedBatches;
 
     public static event Action<LogEntry>? Appended;
 
     public static IReadOnlyList<LogEntry> Snapshot()
     {
         lock (Gate) return _lines.ToArray();
+    }
+
+    public static LogEntry? Latest { get { lock (Gate) return _lines.Count == 0 ? null : _lines[^1]; } }
+
+    public static IReadOnlyList<LogEntry> TailSnapshot(int count)
+    {
+        lock (Gate)
+        {
+            var length = Math.Clamp(count, 0, _lines.Count);
+            var tail = new LogEntry[length];
+            _lines.CopyTo(_lines.Count - length, tail, 0, length);
+            return tail;
+        }
     }
 
     public static void Clear()
@@ -85,19 +107,26 @@ public static class LogBus
 
     public static void Core(string raw)
     {
-        var s = raw.ToLowerInvariant();
+        bool Contains(string token) => raw.Contains(token, StringComparison.OrdinalIgnoreCase);
         //   sing-box 崩溃时打的是 "FATAL[0000] ..."，会被判成 Info 并被 warning 级门控吞掉 ——
         //   现在 FATAL / PANIC 一律按 Error（Error 级别绕过节流，永远落盘），
         //   sing-box 的 ERRO[ 也归到 Error。
-        var level = s.Contains("[error]") || s.Contains("fatal") || s.Contains("fata[") || s.Contains("panic") || s.Contains("erro[")
+        var level = Contains("[error]") || Contains("fatal") || Contains("fata[") || Contains("panic") || Contains("erro[")
             ? "Error"
-            : s.Contains("[warning]") || s.Contains("[warn]") || s.Contains("warn[") ? "Warning"
-            : s.Contains("[debug]") || s.Contains("debu[") ? "Debug"
+            : Contains("[warning]") || Contains("[warn]") || Contains("warn[") ? "Warning"
+            : Contains("[debug]") || Contains("debu[") ? "Debug"
             : "Info";
-        var key = CoreKey(raw);
-        var count = _coreSeen.AddOrUpdate(key, 1, (_, v) => v + 1);
-        if (_coreSeen.Count > 5000) _coreSeen.Clear();   // 兜底，避免极端情况下无限增长
-        if (count > 1 && !_repeatMilestones.Contains(count)) return;
+        // 默认 warning 级别下大量连接 INFO 行无需做正则归一化和去重字典更新。
+        if (!Enabled(level, fromCore: true)) return;
+        // 崩溃信息不能按进程生命周期的重复次数丢弃；每次 Error 都保留。
+        var count = 1;
+        if (level != "Error")
+        {
+            var key = CoreKey(raw);
+            count = _coreSeen.AddOrUpdate(key, 1, (_, v) => v + 1);
+            if (_coreSeen.Count > 5000) _coreSeen.Clear();
+            if (count > 1 && !_repeatMilestones.Contains(count)) return;
+        }
         Add(new LogEntry
         {
             Time = DateTime.Now,
@@ -184,27 +213,32 @@ public static class LogBus
                 _lines.RemoveRange(0, _lines.Count - MaxLines);
         }
 
-        //   在轮转/删除交界处会互相踩（IOException 被 catch 吞掉 → 丢日志行）。
+        Writer.Write(e, critical: e.Level == "Error");
+        Appended?.Invoke(e);
+    }
+
+    private static void PersistBatch(IReadOnlyList<LogEntry> entries)
+    {
         lock (FileGate)
         {
-            try
+            if (!_cleaned)
             {
-                if (!_cleaned)
-                {
-                    _cleaned = true;
-                    CleanupOldLogs();
-                }
-
-                var file = Path.Combine(NeoPaths.LogDir, $"neo-{DateTime.Now:yyyyMMdd}.log");
-                //   再继续写新文件。
-                RotateIfTooLarge(file);
-                var body = e.Display.Replace(Environment.NewLine, Environment.NewLine + "   ");
-                File.AppendAllText(file, body + Environment.NewLine);
+                _cleaned = true;
+                CleanupOldLogs();
             }
-            catch { }
+            foreach (var group in entries.GroupBy(e => e.Time.Date))
+            {
+                var file = Path.Combine(NeoPaths.LogDir, $"neo-{group.Key:yyyyMMdd}.log");
+                RotateIfTooLarge(file);
+                var body = string.Join(Environment.NewLine, group.Select(e =>
+                    e.Display.Replace(Environment.NewLine, Environment.NewLine + "   "))) + Environment.NewLine;
+                var dropped = Writer.Dropped;
+                var previous = Interlocked.Exchange(ref _reportedDrops, dropped);
+                if (dropped > previous)
+                    body += $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}-WARN 日志队列已满，跳过 {dropped - previous} 条普通文件日志（错误日志始终保留）{Environment.NewLine}";
+                File.AppendAllText(file, body);
+            }
         }
-
-        Appended?.Invoke(e);
     }
 
     ///   · 删除超过 30 天的所有 neo-*.log（含轮转出来的 `.1.log` —— 旧实现只认

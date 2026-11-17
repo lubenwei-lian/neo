@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>CS0436;CS0067;CS0649;CS0414</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Neo.App/Services/SessionIntent.cs" Link="Source/SessionIntent.cs" />
+    <Compile Include="../../src/Neo.App/Services/ConnectionService.KernelUpdate.cs" Link="Production/ConnectionService.KernelUpdate.cs" />
+    <Compile Include="../../src/Neo.App/Services/ConnectionService.Tun.cs" Link="Production/ConnectionService.Tun.cs" />
+    <Compile Remove="ConnectionUnderTest.g.cs;ProxyUnderTest.g.cs;ThroughputUnderTest.g.cs;CoreStateUnderTest.g.cs;GuardUnderTest.g.cs" />
+    <Compile Include="ConnectionUnderTest.g.cs;ProxyUnderTest.g.cs;ThroughputUnderTest.g.cs;CoreStateUnderTest.g.cs;GuardUnderTest.g.cs" />
+    <ProjectReference Include="../../src/Neo.Core/Neo.Core.csproj" Aliases="global,RealCore" />
+    <Compile Include="../../src/Neo.App/Services/AppState.cs" Link="Production/AppState.cs" />
+    <Compile Include="../../src/Neo.App/Services/FailoverService.cs" Link="Production/FailoverService.cs" />
+    <Compile Include="../../src/Neo.App/Services/NetworkHealthService.cs" Link="Production/NetworkHealthService.cs" />
+    <Compile Include="../../src/Neo.App/Services/DelayCache.cs" Link="Production/DelayCache.cs" />
+    <Compile Include="../../src/Neo.App/Services/StatsSampler.cs" Link="Production/StatsSampler.cs" />
+    <Compile Include="../../src/Neo.App/Services/CoreStats.cs" Link="Production/CoreStats.cs" />
+    <Compile Include="../../src/Neo.App/Services/UsageTracker.cs" Link="Production/UsageTracker.cs" />
+  </ItemGroup>
+  <Target Name="ExtractSource" BeforeTargets="BeforeBuild">
+    <Exec Command="python &quot;$(MSBuildThisFileDirectory)prepare.py&quot;" />
+  </Target>
+</Project>

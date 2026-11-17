@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Numerics;
 using Microsoft.UI.Composition;
@@ -12,27 +12,8 @@ using Windows.UI;
 
 namespace Neo.App.Ui;
 
-/// 带入场动效的下拉列表，替代 MenuFlyout。
-/// 为什么不能用 MenuFlyout：
-///   MenuFlyout 的出现动效由 WinUI 主题模板里的 MenuFlyoutPresenterStyle 决定，
-///   应用侧能干预的只有 RequestedTheme（neo 目前只做了这一件，见 MainWindow.ApplyFlyoutTheme）。
-///   观感就是用户说的「直接一帧出现」。
-/// 为什么用 Composition 而不是 XAML Storyboard：
-///   Composition 动画跑在合成器线程上，起止由合成器保证；而 Storyboard 走 UI 线程，
-///   先置 opacity=0 再 Begin 之间可能插进一帧，且反复 Begin 会叠加多条永不回收的动画
-///   （本项目已有前车之鉴，见 MainWindow 的 _brushAnims 注释）。
-///   Composition 的 StartAnimation 对同名属性是覆盖语义，不存在堆积。
-///   · 时长 220 ms：介于 WinUI 标准档 ControlFastAnimationDuration(167 ms) 与
-///     ControlNormalAnimationDuration(250 ms) 之间 —— 弹层比整页切换更短、更「跟手」。
-///   · 曲线 cubic-bezier(0,0,0,1) = Fluent「Fast Out, Slow In」，
-///   · 位移 12 px + 缩放 0.97→1：Material 3 容器变换语义（容器从来源方向微微展开，
-///     而不是凭空出现）。
-///   · 列表项错峰 18 ms/项、封顶 7 项（约 126 ms）：60+ 个节点时逐项延迟不能线性放大，
-///     否则最后一项要等 1 秒才出现。
-///   初版继承 UserControl 并把卡片设为 Content。结果 UserControl 已把该元素认作自己的
-///   内容树，再赋给 Popup.Child 时 WinUI 抛 ArgumentException「Value does not fall within
-///   the expected range」（栈顶为 Popup.set_Child；隔离实例日志 19:00:46 抓到完整堆栈）。
-///   改为普通类、由 Popup 独占持有卡片即根治。
+/// Native anchored menu. Appearance and single 130ms entrance follow styles.css
+/// plus surface.css. Flyout owns positioning, light dismissal and focus.
 public sealed class PopupList
 {
     private readonly StackPanel _stack = new() { Spacing = 1 };
@@ -48,8 +29,9 @@ public sealed class PopupList
     {
         // 弹层盖在页面内容上，必须**完全不透**：否则玻璃透明度调高时，
         // 底下的节点列表/流量图会透上来，菜单看不清（用户实测反馈）。
-        // 应用固定暗色主题，这里用不透明的固定底色，不跟随 GlassTuner 的缩放。
-        var glass = new SolidColorBrush(Color.FromArgb(0xFF, 0x12, 0x16, 0x1D));
+        // Only the rounded inner card paints the surface. A second, opaque
+        // presenter background would expose a square behind its corners.
+        var glass = ThemeUtil.Get("NeoPopupSurface", Color.FromArgb(0xFF, 0x24, 0x24, 0x29));
         var line = ThemeUtil.Get("NeoGlassBorder", Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
 
         _scroll = new ScrollViewer
@@ -62,11 +44,11 @@ public sealed class PopupList
 
         _card = new Border
         {
-            CornerRadius = new CornerRadius(10),
+            CornerRadius = new CornerRadius(20),
             BorderThickness = new Thickness(1),
             BorderBrush = line,
             Background = glass,
-            Padding = new Thickness(5),
+            Padding = new Thickness(6),
             Child = _scroll,
         };
 
@@ -89,8 +71,8 @@ public sealed class PopupList
         _flyout.FlyoutPresenterStyle = BuildPresenterStyle();
         _flyout.Opened += (_, _) =>
         {
-            PlayEnter();
-            PlayStagger();
+            if (PrototypeMotion.Enabled) PlayEnter(); else ResetRowAnimations();
+            // Source menu has one 130ms entrance; no per-item delay.
         };
         _flyout.Closed += (_, _) =>
         {
@@ -103,9 +85,9 @@ public sealed class PopupList
     private static Style BuildPresenterStyle()
     {
         var style = new Style(typeof(FlyoutPresenter));
-        // 用不透明底色兜底：Flyout 是独立弹层窗口，如果这里留透明，
-        // 窗口后面的页面内容会直接透上来（高透明档位尤其明显）。
-        style.Setters.Add(new Setter(Control.BackgroundProperty, new SolidColorBrush(Color.FromArgb(0xFF, 0x0F, 0x12, 0x18))));
+        // The card stays opaque; the host must stay transparent at its corners.
+        style.Setters.Add(new Setter(Control.BackgroundProperty, new SolidColorBrush(Microsoft.UI.Colors.Transparent)));
+        style.Setters.Add(new Setter(Control.CornerRadiusProperty, new CornerRadius(20)));
         style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(0)));
         style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
         style.Setters.Add(new Setter(Control.MinWidthProperty, 0d));
@@ -117,13 +99,12 @@ public sealed class PopupList
     /// <summary>加入一个可点条目；返回 Button 便于调用方进一步定制。</summary>
     public Button AddItem(string text, string? glyph = null, Action? onClick = null, bool enabled = true)
     {
-        var label = new TextBlock
+        var label = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
             Text = text,
-            FontSize = 12.5,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
-        };
+        }, 12.5);
 
         var row = new StackPanel
         {
@@ -145,34 +126,34 @@ public sealed class PopupList
 
         var btn = new Button
         {
+            Style = Application.Current.Resources["NeoPillButton"] as Style,
             Content = row,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(7),
+            CornerRadius = new CornerRadius(18),
             Padding = new Thickness(10, 7, 10, 7),
             IsEnabled = enabled,
             MinHeight = 0,
         };
+        PillShape.SetEnabled(btn, true);
 
         if (onClick != null) btn.Click += (_, _) => onClick();
         btn.Click += (_, _) => Close();
-        HookHover(btn);
         AddRow(btn);
         return btn;
     }
 
     /// <summary>不可点的说明行（对应原来 IsEnabled=false 的 MenuFlyoutItem）。</summary>
     public void AddDisabled(string text)
-        => AddRow(new TextBlock
+        => AddRow(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
             Text = text,
-            FontSize = 12,
             Margin = new Thickness(11, 8, 11, 8),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.66,
-        });
+        }, 12));
 
     /// <summary>分隔线（对应 MenuFlyoutSeparator）。</summary>
     public void AddSeparator()
@@ -200,20 +181,6 @@ public sealed class PopupList
         catch { }
     }
 
-    /// <summary>与 MenuFlyoutItem 的默认悬停表现对齐（本类自带背景，不依赖外部模板）。</summary>
-    private static void HookHover(Button b)
-    {
-        var brush = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        b.Background = brush;
-        b.PointerEntered += (_, _) =>
-        {
-            if (!b.IsEnabled) return;
-            if (ThemeUtil.Get("NeoAccentSoft", Color.FromArgb(0x24, 0x5A, 0xA9, 0xFF)) is SolidColorBrush accent)
-                brush.Color = accent.Color;
-        };
-        b.PointerExited += (_, _) => brush.Color = Microsoft.UI.Colors.Transparent;
-    }
-
     public void Close()
     {
         try { _flyout.Hide(); } catch { }
@@ -233,6 +200,11 @@ public sealed class PopupList
     {
         var root = target.XamlRoot;
         if (root == null) return;
+        // A Flyout can be reused after a theme change and lives in its own
+        // visual root. Resolve the opaque surface for the current anchor.
+        _card.RequestedTheme = target.ActualTheme;
+        _card.Background = ThemeUtil.Get("NeoPopupSurface", Color.FromArgb(0xFF, 0x24, 0x24, 0x29));
+        _card.BorderBrush = ThemeUtil.Get("NeoHairline", Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF));
 
         // 宽度：与目标行同宽（MenuFlyout 的观感），但不得超出窗口可用宽度。
         double want = Math.Max(200, width);
@@ -249,13 +221,17 @@ public sealed class PopupList
         //   下面这行是本次修复的关键：把「可见高度」直接设成滚动区高度。
         //   _scroll 自身高度靠内容撑开（最多 maxHeight），而 _card 又包着它，
         //   因此只要约束 _scroll 就不会溢出。
-        var below = Math.Max(0, root.Size.Height - (target.TransformToVisual(null).TransformPoint(new Point(0, 0)).Y + target.ActualHeight + 4));
-        double avail = Math.Max(120, Math.Min(maxHeight, below - 12));
-        _scroll.MaxHeight = avail;
-
-        var placement = below >= 160
-            ? FlyoutPlacementMode.BottomEdgeAlignedLeft
-            : FlyoutPlacementMode.TopEdgeAlignedLeft;
+        var anchor = target.TransformToVisual(null).TransformPoint(new Point(0, 0));
+        var below = Math.Max(0, root.Size.Height - (anchor.Y + target.ActualHeight + 4));
+        var above = Math.Max(0, anchor.Y - 4);
+        var openBelow = below >= 160 || below >= above;
+        _scroll.MaxHeight = Math.Max(40, Math.Min(maxHeight, (openBelow ? below : above) - 26));
+        // Near the right edge, align to the anchor's right instead of letting
+        // the platform clamp the menu flush against the window boundary.
+        var alignRight = anchor.X + _card.Width > root.Size.Width - 12;
+        var placement = openBelow
+            ? alignRight ? FlyoutPlacementMode.BottomEdgeAlignedRight : FlyoutPlacementMode.BottomEdgeAlignedLeft
+            : alignRight ? FlyoutPlacementMode.TopEdgeAlignedRight : FlyoutPlacementMode.TopEdgeAlignedLeft;
 
         _flyout.ShowAt(target, new FlyoutShowOptions
         {
@@ -301,13 +277,13 @@ public sealed class PopupList
             var compositor = visual.Compositor;
 
             var ease = compositor.CreateCubicBezierEasingFunction(
-                new Vector2(0f, 0f), new Vector2(0f, 1f));
+                new Vector2(0f, 0f), new Vector2(.58f, 1f));
 
-            visual.Offset = new Vector3(0f, 12f, 0f);
-            visual.Scale = new Vector3(0.97f, 0.97f, 1f);
+            visual.Offset = new Vector3(0f, -4f, 0f);
+            visual.Scale = new Vector3(.985f, .985f, 1f);
             visual.Opacity = 0f;
 
-            var dur = TimeSpan.FromMilliseconds(220);
+            var dur = TimeSpan.FromMilliseconds(130);
 
             var offset = compositor.CreateVector3KeyFrameAnimation();
             offset.Duration = dur;
@@ -318,7 +294,7 @@ public sealed class PopupList
             scale.InsertKeyFrame(1f, Vector3.One, ease);
 
             var opacity = compositor.CreateScalarKeyFrameAnimation();
-            opacity.Duration = TimeSpan.FromMilliseconds(150);
+            opacity.Duration = TimeSpan.FromMilliseconds(130);
             opacity.InsertKeyFrame(1f, 1f);
 
             visual.StartAnimation("Offset", offset);
@@ -328,23 +304,4 @@ public sealed class PopupList
         catch { }
     }
 
-    /// <summary>列表项逐项淡入。索引超过 7 后共用同一延迟 —— 长列表不能线性放大总时长。</summary>
-    private void PlayStagger()
-    {
-        try
-        {
-            for (int i = 0; i < _rows.Count; i++)
-            {
-                var v = ElementCompositionPreview.GetElementVisual(_rows[i]);
-                v.Opacity = 0f;
-
-                var op = v.Compositor.CreateScalarKeyFrameAnimation();
-                op.Duration = TimeSpan.FromMilliseconds(140);
-                op.DelayTime = TimeSpan.FromMilliseconds(18 * Math.Min(i, 7));
-                op.InsertKeyFrame(1f, 1f);
-                v.StartAnimation("Opacity", op);
-            }
-        }
-        catch { }
-    }
 }

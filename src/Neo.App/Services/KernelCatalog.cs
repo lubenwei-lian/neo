@@ -37,7 +37,8 @@ public static class KernelCatalog
         new(CoreEngine.Naive, "naive", "naive.exe", "klzgrad", "naiveproxy", false),
     ];
 
-    private static readonly Dictionary<CoreEngine, string?> VersionCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<CoreEngine, string?> VersionCache = new();
+    private static readonly object[] VersionGates = All.Select(_ => new object()).ToArray();
 
     public static CoreEngineSpec Get(CoreEngine e) => All.First(s => s.Engine == e);
 
@@ -49,11 +50,17 @@ public static class KernelCatalog
     }
 
     /// <summary>
-    /// 读内核版本（缓存）。xray/sing-box 的版本由 ConnectionService 统一探测并缓存，
-    /// 这里只补 mihomo；三条路径的口径一致（取输出里第一个 semver）。
+    /// 所有界面和更新检查共用此版本缓存。主动检查可重新探测，避免一次启动失败永久显示未知。
+    /// 每个内核串行探测；只从成功退出的版本输出识别，避免误取环境或错误信息中的数字。
     /// </summary>
-    public static string? ReadVersion(CoreEngine e)
+    public static string? ReadVersion(CoreEngine e, bool refresh = false)
     {
+        lock (VersionGates[(int)e]) return ReadVersionCore(e, refresh);
+    }
+
+    private static string? ReadVersionCore(CoreEngine e, bool refresh)
+    {
+        if (refresh) VersionCache.TryRemove(e, out _);
         if (VersionCache.TryGetValue(e, out var cached)) return cached;
         string? ver = null;
         try
@@ -63,7 +70,7 @@ public static class KernelCatalog
             {
                 var args = e switch
                 {
-                    CoreEngine.Xray => "-version",
+                    CoreEngine.Xray => "version",
                     CoreEngine.SingBox => "version",
                     CoreEngine.Naive => "--version",
                     _ => "-v",
@@ -81,12 +88,31 @@ public static class KernelCatalog
                 using var p = Process.Start(psi);
                 if (p != null)
                 {
-                    var so = p.StandardOutput.ReadToEnd();
-                    var se = p.StandardError.ReadToEnd();
-                    p.WaitForExit(4000);
-                    var text = (so + "\n" + se).Trim();
-                    var m = Regex.Match(text, @"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)");
-                    if (m.Success) ver = m.Groups[1].Value;
+                    Neo.Core.Core.KillOnCloseJob.Attach(p, out _);
+                    try
+                    {
+                        // Drain both pipes concurrently; timeout must cover reads too, not just
+                        // WaitForExit after synchronous ReadToEnd has already blocked forever.
+                        var stdout = p.StandardOutput.ReadToEndAsync();
+                        var stderr = p.StandardError.ReadToEndAsync();
+                        if (Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(4)) && p.WaitForExit(1000) && p.ExitCode == 0)
+                        {
+                            var text = (stdout.Result + "\n" + stderr.Result).Trim();
+                            var prefix = e switch
+                            {
+                                CoreEngine.Xray => @"Xray\s+",
+                                CoreEngine.SingBox => @"sing-box\s+version\s+",
+                                CoreEngine.Mihomo => @"Mihomo(?:\s+Meta)?\s+",
+                                _ => @"(?:naive\s+)?",
+                            };
+                            var m = Regex.Match(text, @"^\s*" + prefix + @"v?(\d+(?:\.\d+){2,3}(?:-[0-9A-Za-z.]+)?)", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+                            if (m.Success) ver = m.Groups[1].Value;
+                        }
+                    }
+                    finally
+                    {
+                        if (!p.HasExited) { try { p.Kill(entireProcessTree: true); p.WaitForExit(2000); } catch { } }
+                    }
                 }
             }
         }
@@ -95,7 +121,11 @@ public static class KernelCatalog
         return ver;
     }
 
-    public static void ResetVersion(CoreEngine e) => VersionCache.Remove(e);
+    public static void ResetVersion(CoreEngine e)
+    {
+        lock (VersionGates[(int)e]) VersionCache.TryRemove(e, out _);
+    }
+    public static string? CachedVersion(CoreEngine e) => VersionCache.TryGetValue(e, out var value) ? value : null;
 
     /// <summary>设置页展示用：已安装 → 版本号；未安装 → 明确写「未安装」。</summary>
     public static string Describe(CoreEngine e)

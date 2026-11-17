@@ -12,6 +12,7 @@ public static class FailoverService
 
     private static CancellationTokenSource? _cts;
     private static Task? _loop;
+    private static readonly SemaphoreSlim CheckGate = new(1, 1);
     private static volatile bool _failoverInProgress;
     //   否则 failover 可能在几秒后把会话自动连回来。
     private static CancellationTokenSource? _inflight;
@@ -34,7 +35,11 @@ public static class FailoverService
                 _lastGiveUpAt = DateTime.MinValue;
                 Start();
             }
-            else if (!_failoverInProgress) Stop();
+            else
+            {
+                NetworkHealthService.Reset();
+                if (!_failoverInProgress) Stop();
+            }
         };
         HookSystemEvents();
         if (ConnectionService.IsConnected) Start();
@@ -68,7 +73,7 @@ public static class FailoverService
         {
             System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += (_, e) =>
             {
-                if (e.IsAvailable) RequestImmediateCheck("网络已恢复");
+                RequestImmediateCheck(e.IsAvailable ? "网络已恢复" : "网络已断开");
             };
             //   它的出现与消失必然触发 NetworkAddressChanged。旧实现无条件当成
             //   「网络地址已变化」→ 每次连接 TUN 都会立刻打印一条「立即复查节点连通性」，
@@ -86,21 +91,12 @@ public static class FailoverService
         }
     }
 
-    /// 依据两条独立信号（任一命中即认为与我方 TUN 相关）：
-    ///   ① 系统里存在名为 neo-tun 的适配器（TUN 会话进行中）；
-    ///   ② 距上次连接/断开 TUN 在 5 秒内（网卡创建/销毁瞬间的窗口）。
-    /// 两者都只在「我们刚动过网络」时成立，不会掩盖用户换 WiFi / 插网线等真实变化
-    /// （那些情况下 neo-tun 通常不存在，且已过窗口期）。
-    /// 用 try/catch 兜底：判定失败时**返回 false**（宁可多探一次，也不要漏掉真实变化）。
+    /// 只忽略刚创建/销毁 TUN 的短窗口；网卡长期存在不代表真实网络没有变化。
     private static bool IsLikelyOurTunChange()
     {
         try
         {
             if ((DateTime.Now - _lastTunEventAt).TotalSeconds < 5) return true;
-            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (string.Equals(ni.Name, "neo-tun", StringComparison.OrdinalIgnoreCase)) return true;
-            }
         }
         catch { /* 判定失败按「不是我们」处理，宁多探不漏判 */ }
         return false;
@@ -119,6 +115,9 @@ public static class FailoverService
             if (!ConnectionService.IsConnected) return;
             if ((DateTime.Now - _lastWakeCheckAt).TotalSeconds < 10) return;
             _lastWakeCheckAt = DateTime.Now;
+            NodeQualityHistory.Shared.Clear();
+            var epoch = ConnectionService.SessionEpoch;
+            var sessionToken = _cts?.Token ?? CancellationToken.None;
 
             LogBus.App($"{reason} — 立即复查节点连通性");
             _ = Task.Run(async () =>
@@ -126,9 +125,10 @@ public static class FailoverService
                 try
                 {
                     // 给网络栈一点恢复时间，否则刚唤醒必然探测失败、白白消耗一次失败计数
-                    await Task.Delay(TimeSpan.FromSeconds(3));
-                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                    await CheckOnceAsync(cts.Token);
+                    await Task.Delay(TimeSpan.FromSeconds(3), sessionToken);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(sessionToken);
+                    cts.CancelAfter(TimeSpan.FromSeconds(30));
+                    await CheckQueuedAsync(cts.Token, expectedEpoch: epoch, waitForGate: true);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex)
@@ -169,13 +169,45 @@ public static class FailoverService
 
     private static void Start()
     {
-        if (_loop is { IsCompleted: false }) return;
-        _cts = new CancellationTokenSource();
+        var epoch = ConnectionService.SessionEpoch;
+        var fresh = NetworkHealthService.BeginSession(epoch);
+        if (_loop is { IsCompleted: false })
+        {
+            if (fresh)
+            {
+                _failStreak = 0;
+                _lastTrafficAt = DateTime.MinValue;
+                var token = _cts?.Token ?? CancellationToken.None;
+                _ = CheckNewSessionAsync(epoch, token);
+            }
+            return;
+        }
+        var cts = new CancellationTokenSource();
+        _cts = cts;
         _failStreak = 0;
         _reportedForeignProxy = false;
-        _loop = Task.Run(() => LoopAsync(_cts.Token));
+        _lastTrafficAt = DateTime.MinValue;
+        _loop = Task.Run(() => LoopAsync(cts.Token));
         // 一旦接线断了，日志里同样是一片安静——沉默无法区分「正常」和「根本没跑」。
-        LogBus.App($"自动故障转移已启动（每 30 秒探活一次，目标 {ProbeTargets.Length} 个）");
+        LogBus.App("网络可用检测已启动（连接后立即检测；正常每 30 秒复查，异常时 8 秒复测；自动切换遵循设置）");
+    }
+
+    private static async Task CheckNewSessionAsync(int epoch, CancellationToken ct)
+    {
+        try { await Task.Run(() => CheckQueuedAsync(ct, expectedEpoch: epoch, waitForGate: true), ct); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { LogBus.App($"连接后网络检测异常：{ex.GetType().Name}", "Warning"); }
+    }
+
+    /// <summary>与自动检查共用串行入口；手动检测只更新结果，不累计自动切换次数。</summary>
+    public static async Task CheckNetworkNowAsync(CancellationToken ct = default)
+    {
+        if (!ConnectionService.IsConnected || App.IsShuttingDown) return;
+        var epoch = ConnectionService.SessionEpoch;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts?.Token ?? CancellationToken.None);
+        budget.CancelAfter(TimeSpan.FromSeconds(15));
+        await Task.Run(() => CheckQueuedAsync(budget.Token, expectedEpoch: epoch, waitForGate: true,
+            allowFailover: false), budget.Token).ConfigureAwait(false);
     }
 
     /// 用户主动断开 / 退出程序时调用：清掉「放弃后重连」的待办与计数。
@@ -201,12 +233,13 @@ public static class FailoverService
         _cts = null;
         _loop = null;
         _failStreak = 0;
+        NetworkHealthService.Reset();
         //   旧实现 Cancel 后立刻 Dispose：循环可能还停在 Task.Delay / RunOnUiAsync 上，
         //   下一轮访问 token 时抛 ObjectDisposedException，把「正常停止」变成后台异常。
         //   现在等循环真正退出后再释放（fire-and-forget，不阻塞同步调用方）。
         try { cts?.Cancel(); } catch { }
         DisposeCtsWhenLoopExits(cts, loop);
-        if (wasRunning) LogBus.App("自动故障转移已停止（断开连接）");
+        if (wasRunning) LogBus.App("网络检测与自动故障转移已停止（断开连接）");
     }
 
     /// 循环已结束 → 立即释放；仍在跑 → 挂一个 continuation，退出后释放，
@@ -236,6 +269,7 @@ public static class FailoverService
         _cts = null;
         _loop = null;
         _failStreak = 0;
+        NetworkHealthService.Reset();
 
         try { cts?.Cancel(); } catch { }
         if (wasRunning && loop != null)
@@ -245,18 +279,20 @@ public static class FailoverService
         }
         DisposeCtsWhenLoopExits(cts, loop);
 
-        if (wasRunning) LogBus.App("自动故障转移已停止（断开连接）");
+        if (wasRunning) LogBus.App("网络检测与自动故障转移已停止（断开连接）");
     }
 
     private static async Task LoopAsync(CancellationToken ct)
     {
         try
         {
+            await CheckOnceAsync(ct);
             while (!ct.IsCancellationRequested)
             {
                 // 两次失败之间的 30 秒 + 10 秒超时，用户实际要卡 40～50 秒才能等到切换；
                 // 失败一次后 8 秒就复测，真断线时总等待缩到 15～20 秒，误判也能更快被纠正。
-                var wait = _failStreak > 0 ? 8 : 30;
+                var health = NetworkHealthService.Current;
+                var wait = _failStreak > 0 || health.Status is NetworkHealthStatus.Limited or NetworkHealthStatus.Unavailable ? 8 : 30;
                 await Task.Delay(TimeSpan.FromSeconds(wait), ct);
                 if (ct.IsCancellationRequested) break;
                 //   放弃切换后连接本来就是断的（TUN 模式会先断开再试备选），旧逻辑在这里 break，
@@ -276,15 +312,37 @@ public static class FailoverService
     /// 避免两条路径各写一份逻辑导致行为不一致。
     private static async Task CheckOnceAsync(CancellationToken ct)
     {
+        try { await CheckQueuedAsync(ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // 单轮检测异常不能让整个会话从此停止检测。
+            LogBus.App($"网络检测本轮异常，下轮继续：[{ex.GetType().Name}] {ex.Message}", "Warning");
+        }
+    }
+
+    private static async Task CheckQueuedAsync(CancellationToken ct, int? expectedEpoch = null,
+        bool waitForGate = false, bool allowFailover = true)
+    {
+        if (waitForGate) await CheckGate.WaitAsync(ct);
+        else if (!await CheckGate.WaitAsync(0, ct)) return;
+        try
+        {
+            if (expectedEpoch.HasValue && expectedEpoch.Value != ConnectionService.SessionEpoch) return;
+            await CheckCoreOnceAsync(ct, allowFailover);
+        }
+        finally { CheckGate.Release(); }
+    }
+
+    private static async Task CheckCoreOnceAsync(CancellationToken ct, bool allowFailover)
+    {
+        if (ct.IsCancellationRequested || App.IsShuttingDown) return;
         if (!ConnectionService.IsConnected)
         {
-            await TryReconnectAfterGiveUpAsync(ct);
+            if (allowFailover) await TryReconnectAfterGiveUpAsync(ct);
             return;
         }
-        if (!AppState.State.FailoverEnabled) { _failStreak = 0; return; }
-        if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 60) return;
-        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
-
+        var epoch = ConnectionService.SessionEpoch;
         // 自动修复系统代理：
         //   · 只在「已连接 + 非 TUN + 设置里开关打开」时检查；
         //   · 只在代理设置本来指向 neo 自己的端口、或被清空时才恢复；
@@ -292,16 +350,37 @@ public static class FailoverService
         //   · 用户主动断开/退出时循环已先 Stop()，这里不会跑。
         try
         {
-            if (!ConnectionService.IsTunSession && !SystemProxy.IsEnabled && AppState.State.AutoRepairSystemProxy)
+            if (!ConnectionService.IsTunSession && !SystemProxy.IsEffective && AppState.State.AutoRepairSystemProxy)
             {
-                var own = "127.0.0.1:" + Neo.Core.LocalPorts.Socks;
                 var cur = SystemProxy.CurrentServer;
-                bool isOurs = string.IsNullOrWhiteSpace(cur) || string.Equals(cur, own, StringComparison.OrdinalIgnoreCase);
+                bool isOurs = string.IsNullOrWhiteSpace(cur)
+                    || LocalProxySettings.IsOwnedServer(cur, LocalPorts.Socks, LocalPorts.Http);
                 if (isOurs)
                 {
-                    SystemProxy.Enable(own);
-                    LogBus.App("自动修复：系统代理被关闭（原设置指向本机 " + own + "），已重新开启；如是你手动关的，可在设置里关掉「自动修复系统代理」", "Warning");
-                    IncidentLog.Record("auto-repair", "系统代理被关闭（原设置指向本机），已自动恢复");
+                    var repairEpoch = ConnectionService.SessionEpoch;
+                    await RunOnUiAsync(() =>
+                    {
+                        // 投递之后可能已经断开/切换，必须在实际写入前再检查。
+                        if (ct.IsCancellationRequested || repairEpoch != ConnectionService.SessionEpoch
+                            || !ConnectionService.IsConnected || ConnectionService.IsTunSession || App.IsShuttingDown
+                            || !AppState.State.AutoRepairSystemProxy || SystemProxy.IsEffective) return;
+                        var current = SystemProxy.CurrentServer;
+                        if (!string.IsNullOrWhiteSpace(current)
+                            && !LocalProxySettings.IsOwnedServer(current, LocalPorts.Socks, LocalPorts.Http)) return;
+                        if (!SystemProxy.Enable(LocalProxySettings.Server, repair: true))
+                        {
+                            if (!_reportedForeignProxy)
+                            {
+                                _reportedForeignProxy = true;
+                                LogBus.App("系统代理未实际生效，自动修复未获 Windows/代理所有权确认；请检查其他代理程序或手动重连", "Warning");
+                                ConnectionService.NotifyUser("系统代理未实际生效，自动修复失败；请检查其他代理程序或手动重连");
+                            }
+                            return;
+                        }
+                        _reportedForeignProxy = false;
+                        LogBus.App("自动修复：Windows 实际系统代理未生效，已恢复并核验 neo 的 HTTP/HTTPS/SOCKS 配置", "Warning");
+                        IncidentLog.Record("auto-repair", "系统代理实际配置不一致，已恢复并核验");
+                    });
                 }
                 else if (!_reportedForeignProxy)
                 {
@@ -313,14 +392,32 @@ public static class FailoverService
         }
         catch { }
 
-        //   探活只打 3 个目标（google / cloudflare / telegram），个别站点不可达并不等于节点坏了；
+        if (ct.IsCancellationRequested || !ConnectionService.IsConnected || App.IsShuttingDown
+            || epoch != ConnectionService.SessionEpoch) return;
+
+        //   多服务商 HTTPS 204 回退；普通模式分别验证 HTTP 与 SOCKS，TUN 验证系统路由。
+        //   单个目标或单条路径失败不等于整个节点失联。
         //   用户正在刷网页（有明显流量）却被切走，就是「刷着刷着突然断网几秒」的来源之一。
         //   有流量时阈值放宽到 4 次、无流量时 3 次（见下方阈值说明）；按 8–10 秒探活周期，
         //   真断流约 24–32 秒触发切换 —— 换来的是一天几十次误切的大幅减少。
         var recentBytes = TakeTrafficDelta();
         var hadTraffic = recentBytes > 60 * 1024;
+        var measuredKey = ConnectionService.ConnectedNode is { } activeNode ? AppState.NodeKey(activeNode) : null;
 
-        if (await ProbeAsync(ct))
+        var result = await NetworkHealthService.CheckAsync(epoch, ct);
+        if (result == null) return;
+        if (!allowFailover) return;
+        var healthy = result.Available;
+        if (ct.IsCancellationRequested || !AppState.State.FailoverEnabled || !ConnectionService.IsConnected
+            || epoch != ConnectionService.SessionEpoch)
+        {
+            if (!AppState.State.FailoverEnabled) _failStreak = 0;
+            return;
+        }
+        if ((DateTime.Now - _lastSwitchAt).TotalSeconds < 60) return;
+        if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
+        if (measuredKey != null) NodeQualityHistory.Shared.RecordHealth(measuredKey, healthy);
+        if (healthy)
         {
             _failStreak = 0;
             await MaybeCheckThroughputAsync(recentBytes, ct);
@@ -384,6 +481,7 @@ public static class FailoverService
         if ((DateTime.Now - _lastGiveUpAt).TotalSeconds < GiveUpRetrySeconds) return;
         if (!AppState.State.FailoverEnabled) return;
 
+        var epoch = ConnectionService.SessionEpoch;
         var node = AppState.CurrentNode;
         if (node == null) return;
 
@@ -402,7 +500,13 @@ public static class FailoverService
         {
             try
             {
-                (ok, err) = await RunOnUiAsync(() => ConnectionService.ConnectAsync(node));
+                (ok, err) = await RunOnUiAsync(() =>
+{
+    if (ct.IsCancellationRequested || !AppState.State.FailoverEnabled || App.IsShuttingDown
+        || _lastGiveUpAt == DateTime.MinValue)
+        return Task.FromResult((false, (string?)"自动重连已取消"));
+    return ConnectionService.ConnectAsync(node, expectedEpoch: epoch, ct: ct);
+});
             }
             catch (Exception ex)
             {
@@ -424,81 +528,10 @@ public static class FailoverService
         _lastGiveUpAt = DateTime.MinValue;
         _lastSwitchAt = DateTime.Now;
         _failStreak = 0;
-        AppState.SetCurrentNode(node);
         var msg = $"已重新连接节点「{node.Name}」，故障转移恢复待命";
         LogBus.App(msg, "Warning");
         IncidentLog.Record("failover", msg);
         Switched?.Invoke(msg);
-    }
-
-    // 多目标探活：任一可达即视为节点健康。
-    //   ① 省流量：单次 HTTPS 探活含端到端 TLS 握手约 32 KB（收 26KB + 发 6KB）。
-    //      按 30 秒 × 2 目标 = 每小时 240 次，折算 **约 5.2 GB/月**。
-    //      明文 HTTP 省掉那层握手，单次降到 KB 以下量级。
-    //      注意：仍**穿代理**发起（否则测不出"节点能不能转发流量"），只是不做端到端 TLS。
-    //      （例：proxy4 明文HTTP 连续结果 活,死,活,死,活）。说明节点本身在剧烈抖动，
-    //      **单次探测结果不可靠** —— 因此必须保留「多目标 + 连续失败 2 次才切换」的现有设计，
-    //      并把 google 系目标留在列表里做交叉印证，而不是简化成某一个"最准"的目标。
-    // telegram 仍是用户真实常用目标，作为第二判据比再找一个 google 系目标更有意义。
-    // 已知局限：候选节点的延迟验证走 RealDelayTester，它仍只打 google/generate_204
-    //（沿用既定口径，未改动）；若 google 对整条链路不可达，备选会被全部判死。
-    private static readonly string[] ProbeTargets =
-    {
-        "https://www.google.com/generate_204",
-        "http://cp.cloudflare.com/generate_204",
-        "https://api.telegram.org/",
-        "http://www.gstatic.com/generate_204",
-    };
-
-    // 并行探测：串行会让两个目标的超时叠加（最坏 20s），并行最坏仍是单次超时。
-    private static Task<bool> ProbeAsync(CancellationToken ct) => ProbeAsync(ProbeTargets, ct);
-
-    // 目标列表作为参数，便于对「全部目标都不可达」这一关键分支做验证（该分支决定是否触发切换）。
-    private static async Task<bool> ProbeAsync(IReadOnlyList<string> targets, CancellationToken ct)
-    {
-        var tasks = targets.Select(t => ProbeOneAsync(t, ct)).ToList();
-        try
-        {
-            while (tasks.Count > 0)
-            {
-                var done = await Task.WhenAny(tasks);
-                tasks.Remove(done);
-                if (await done) return true;
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        return false;
-    }
-
-    private static async Task<bool> ProbeOneAsync(string url, CancellationToken ct)
-    {
-        try
-        {
-            using var handler = new SocketsHttpHandler
-            {
-                Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
-                UseProxy = true,
-                // 超时太长只会让用户多等；真慢到 5 秒还没响应的链路，切走反而更好。
-                ConnectTimeout = TimeSpan.FromSeconds(4),
-                // 不跟随重定向：telegram 根路径就是 302，跟下去会白拉一次请求、拉长探测时间
-                AllowAutoRedirect = false,
-            };
-            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
-            using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            // 204/200 与 telegram 的 302 都算通，只要拿到有效 HTTP 响应即证明链路可用
-            return (int)resp.StatusCode is >= 200 and < 400;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static DateTime _lastTrafficAt = DateTime.MinValue;
@@ -534,6 +567,7 @@ public static class FailoverService
     /// <summary>吞吐抽检计数（每 10 轮探活做一次，约 5 分钟）。</summary>
     private static int _probeTick;
     private static int _slowThroughputStreak;
+    private static int _throughputEpoch = -1;
 
     /// <summary>
     /// 定期「塞一点流量」测真实吞吐：探活只能证明节点还能转发，证明不了「有带宽」。
@@ -543,6 +577,12 @@ public static class FailoverService
     /// </summary>
     private static async Task MaybeCheckThroughputAsync(long recentBytes, CancellationToken ct)
     {
+        var epoch = ConnectionService.SessionEpoch;
+        var measuredKey = ConnectionService.ConnectedNode is { } activeNode ? AppState.NodeKey(activeNode) : null;
+        if (_throughputEpoch != epoch)
+        {
+            _throughputEpoch = epoch; _probeTick = 0; _slowThroughputStreak = 0;
+        }
         if (++_probeTick < 10) return;
         if (_probeTick % 10 != 0) return;
         if (recentBytes > 300 * 1024)
@@ -552,7 +592,10 @@ public static class FailoverService
         }
 
         var bps = await MeasureThroughputAsync(ct);
+        if (ct.IsCancellationRequested || epoch != ConnectionService.SessionEpoch
+            || !ConnectionService.IsConnected || !AppState.State.FailoverEnabled) return;
         if (bps < 0) return;   // 测量失败：探活已经判过，不重复叠加
+        if (measuredKey != null) NodeQualityHistory.Shared.RecordThroughput(measuredKey, bps);
         var kb = bps / 1024.0;
         if (bps < 30 * 1024)
         {
@@ -578,6 +621,8 @@ public static class FailoverService
     {
         try
         {
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(TimeSpan.FromSeconds(12));
             using var handler = new SocketsHttpHandler
             {
                 Proxy = new WebProxy($"socks5://127.0.0.1:{LocalPorts.Socks}"),
@@ -587,16 +632,18 @@ public static class FailoverService
             using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
             using var resp = await http.GetAsync(
                 "https://speed.cloudflare.com/__down?bytes=131072",
-                HttpCompletionOption.ResponseHeadersRead, ct);
+                HttpCompletionOption.ResponseHeadersRead, budget.Token);
             if (!resp.IsSuccessStatusCode) return -1;
 
+            using var bodyBudget = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+            bodyBudget.CancelAfter(TimeSpan.FromSeconds(8));
             var sw = System.Diagnostics.Stopwatch.StartNew();
             long total = 0;
             var buf = new byte[16 * 1024];
-            await using var s = await resp.Content.ReadAsStreamAsync(ct);
+            await using var s = await resp.Content.ReadAsStreamAsync(bodyBudget.Token);
             while (sw.ElapsedMilliseconds < 8000)
             {
-                var n = await s.ReadAsync(buf, ct);
+                var n = await s.ReadAsync(buf, bodyBudget.Token);
                 if (n <= 0) break;
                 total += n;
             }
@@ -615,6 +662,8 @@ public static class FailoverService
 
     private static async Task FailoverAsync(CancellationToken loopCt)
     {
+        if (loopCt.IsCancellationRequested || !AppState.State.FailoverEnabled || App.IsShuttingDown) return;
+        var intent = new SessionIntent(ConnectionService.SessionEpoch);
         using var own = CancellationTokenSource.CreateLinkedTokenSource(loopCt);
         own.CancelAfter(TimeSpan.FromMinutes(3));
         _inflight = own;
@@ -628,8 +677,14 @@ public static class FailoverService
             {
                 disconnectedForTunTest = true;
                 LogBus.App("故障转移：先断开失联节点（TUN 模式避免测试流量绕行），随后直接实测候选", "Warning");
-                try { await RunOnUiAsync(() => ConnectionService.Disconnect("故障转移触发断开")); }
-                catch (Exception ex) { LogBus.App($"故障转移：断开时异常（忽略继续）：[{ex.GetType().Name}] {ex.Message}", "Warning"); }
+                var reset = await RunOnUiAsync(() =>
+                {
+                    if (!ConnectionService.DisconnectIfCurrent(intent.Epoch, "failover TUN probe", out var next))
+                        return Task.FromResult((false, (string?)null));
+                    intent.Advance(intent.Epoch, next);
+                    return Task.FromResult((true, (string?)null));
+                });
+                if (!reset.Item1) return;
                 //   可能在网卡/路由还在时测候选，3 个候选会被残留 TUN 路由全部判死。
                 //   这里等拆除任务结束（最多 12 秒），再做候选探测。
                 try
@@ -641,7 +696,7 @@ public static class FailoverService
                         await Task.Delay(2500, ct);
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (TimeoutException) { LogBus.App("故障转移：TUN 拆除超时，仍按直连网络测候选", "Warning"); }
+                catch (TimeoutException) { LogBus.App("TUN 拆除尚未完成，本轮故障转移已取消", "Warning"); return; }
             }
 
             var current = AppState.CurrentNode;
@@ -653,13 +708,14 @@ public static class FailoverService
             // 切到别的地区虽然能用，但出口 IP 变了，用户会察觉「怎么跳去美国了」。
             var currentRegion = NodeGrouper.RegionOf(current?.Name ?? "");
             var candidates = AppState.Nodes
+                .Where(n => n.IsValid)
                 .Where(n => !SameNode(n, current))
                 //   这些节点在 TUN 下会被 ConnectionService 直接拒绝，留在候选里只会白白消耗 3 次尝试机会。
                 .Where(n => !(AppState.State.UseTun && n.RequiresXray))
                 .OrderBy(n => !string.IsNullOrEmpty(currentRegion)
                               && string.Equals(NodeGrouper.RegionOf(n.Name), currentRegion, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
                 .ThenBy(n => n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC or NodeProtocol.AnyTls ? 1 : 0)
-                .ThenBy(n => n.RealDelay > 0 ? n.RealDelay : (n.RealDelay == 0 ? 100_000 : 200_000))
+                .ThenBy(n => NodeQualityHistory.Shared.Score(AppState.NodeKey(n), n.RealDelay))
                 .ToList();
 
             _failStreak = 0;
@@ -668,6 +724,7 @@ public static class FailoverService
             foreach (var cand in candidates)
             {
                 ct.ThrowIfCancellationRequested();
+                if (!AppState.State.FailoverEnabled || intent.Epoch != ConnectionService.SessionEpoch) return;
                 if (!disconnectedForTunTest && !ConnectionService.IsConnected)
                 {
                     LogBus.App("故障转移：会话已被断开，放弃本次切换", "Debug");
@@ -685,6 +742,8 @@ public static class FailoverService
                 catch (OperationCanceledException) { throw; }
                 catch { continue; }
 
+                if (intent.Epoch != ConnectionService.SessionEpoch || ct.IsCancellationRequested) return;
+                NodeQualityHistory.Shared.RecordLatency(AppState.NodeKey(cand), ms);
                 if (ms <= 0 || ms > 5000) continue;
 
                 var name = cand.Name;
@@ -693,8 +752,14 @@ public static class FailoverService
                 try
                 {
                     // 失败或场景不支持时 SwitchNodeFastAsync 内部自动回退普通重连。
-                    CoreState.Report("failover", ConnectionService.CorePid, ConnectionService.CoreKind, "failover to " + cand.Name);
-                    (ok, err) = await RunOnUiAsync(() => ConnectionService.SwitchNodeFastAsync(cand));
+                    CoreState.Report("failover", ConnectionService.CorePid, ConnectionService.CoreKind, "failover to " + cand.Name, sessionEpoch: intent.Epoch);
+                    var epoch = intent.Epoch;
+                    (ok, err) = await RunOnUiAsync(() =>
+                    {
+                        if (ct.IsCancellationRequested || !AppState.State.FailoverEnabled || App.IsShuttingDown)
+                            return Task.FromResult((false, (string?)"自动切换已取消"));
+                        return ConnectionService.SwitchNodeFastAsync(cand, expectedEpoch: epoch, ct: ct, intent: intent);
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -708,7 +773,7 @@ public static class FailoverService
                     continue;
                 }
 
-                AppState.SetCurrentNode(cand);
+                // The connection controller owns selection persistence.
                 _lastSwitchAt = DateTime.Now;
                 var msg = $"节点失联，已自动切换至「{name}」";
                 LogBus.App(msg, "Warning");
@@ -718,11 +783,13 @@ public static class FailoverService
             }
 
             //   不能干等下一轮 —— 先把原节点连回来恢复网络，下一轮探活再继续找备选。
-            if (disconnectedForTunTest && current != null)
+            if (disconnectedForTunTest && current != null && !ct.IsCancellationRequested && AppState.State.FailoverEnabled)
             {
                 try
                 {
-                    var (rok, rerr) = await RunOnUiAsync(() => ConnectionService.ConnectAsync(current, force: true));
+                    var epoch = intent.Epoch;
+                    var (rok, rerr) = await RunOnUiAsync(() => ConnectionService.ConnectAsync(current, force: true,
+                        expectedEpoch: epoch, ct: ct));
                     if (rok)
                     {
                         LogBus.App("故障转移：备选节点均不可用，已先连回原节点（网络恢复）", "Warning");
@@ -737,6 +804,7 @@ public static class FailoverService
                 }
             }
 
+            if (intent.Epoch != ConnectionService.SessionEpoch) return;
             _lastGiveUpAt = DateTime.Now;
             LogBus.App($"当前节点失联，未找到可用备用节点（{GiveUpRetrySeconds} 秒后将重试连接当前节点）", "Error");
             IncidentLog.Record("failover", $"当前节点失联且无可用备选（{GiveUpRetrySeconds} 秒后重试）");

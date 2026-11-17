@@ -17,16 +17,15 @@ public static class NaiveConfigBuilder
         if (n.Protocol is not NodeProtocol.Naive) throw new ArgumentException("不是 naive 节点");
         if (!n.IsValid) throw new ArgumentException("naive 节点无效（缺服务器/端口）");
 
-        var host = n.Server;
+        var host = n.Server.Contains(':') ? "[" + n.Server.Trim('[', ']') + "]" : n.Server;
+        var scheme = n.Extras.TryGetValue("naive_transport", out var transport) && transport == "quic" ? "quic" : "https";
         var user = Uri.EscapeDataString(n.Username ?? "");
         var pass = Uri.EscapeDataString(n.Password ?? "");
         var root = new JsonObject
         {
             ["listen"] = "socks://127.0.0.1:" + listenPort,
-            ["proxy"] = $"https://{user}:{pass}@{host}:{n.Port}",
+            ["proxy"] = $"{scheme}://{user}:{pass}@{host}:{n.Port}",
             ["log"] = "",
-            // naive 的并发 HEAD/GET 预热（官方配置项；0 表示关闭）
-            ["insecure_concurrency"] = 8,
         };
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }

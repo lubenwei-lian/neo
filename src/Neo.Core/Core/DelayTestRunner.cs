@@ -7,6 +7,11 @@ namespace Neo.Core.Core;
 /// <summary>测速阶段：先测节点多的那一类，再自动切到另一类，最后统一重试失败节点。</summary>
 public enum DelayTestPhase { Tcp, Udp, Retry, Done }
 
+/// <summary>后台调用可降低并发/重试，并在每次探测前让出前台资源；手动测速沿用默认行为。</summary>
+public sealed record DelayTestOptions(int MaxConcurrency = 6, int MaxRetries = DelayTestRunner.DefaultMaxRetries,
+    Func<CancellationToken, Task>? BeforeProbe = null,
+    Func<CancellationToken, CancellationTokenSource>? CreateProbeCancellation = null);
+
 /// <summary>进度快照：界面只需要读这个，不用自己数节点。</summary>
 public sealed record DelayTestProgress(
     DelayTestPhase Phase,
@@ -18,35 +23,38 @@ public sealed record DelayTestProgress(
     int Ok,
     int Failed,
     int Skipped,
-    string Message);
+    string Message,
+    int RetryLimit = 0);
 
 /// <summary>
 /// 进度驱动的真连测速调度器。
 ///
 ///   目标：不再用「整轮 120 秒预算」把剩余节点标成未测，而是按节点数推进，直到每个节点都有结论。
-///   顺序：TCP 组与 UDP 组比数量，多的先测；数量相同先 TCP；两组都测完后，失败/超时节点统一重试 4 轮。
-///   并发：TCP 6、UDP 4（配合错峰，避免被识别成扫描）；重试 4。
-///   超时：单节点由 DelayTestPlanner 决定（TCP 9s / UDP 15s），超时算「测完」。
+///   顺序：TCP 组与 UDP 组比数量，多的先测；数量相同先 TCP；暂时不可达节点默认补测 1 轮。
+///   并发：TCP 6、UDP 4；复测并发 4，不通过增加临时内核数量换取速度。
+///   预算：单节点启动及探测合计由 DelayTestPlanner 决定（TCP 9s / UDP 15s）。
 /// </summary>
 public static class DelayTestRunner
 {
     private const int TcpConcurrency = 6;
     private const int UdpConcurrency = 4;
     private const int RetryConcurrency = 4;
-    private const int MaxRetries = 4;
+    public const int DefaultMaxRetries = 1;
+    private const int MaxRetryRounds = 4;
 
     public static async Task<IReadOnlyDictionary<NodeItem, int>> RunAsync(
         IReadOnlyList<NodeItem> nodes, string runtimeDir,
         Action<NodeItem, int>? onResult, CancellationToken ct,
         bool availabilityRecheck,
         Action<IReadOnlyCollection<NodeItem>>? onUsableChecked,
-        Action<DelayTestProgress>? onProgress)
+        Action<DelayTestProgress>? onProgress,
+        DelayTestOptions? options = null)
     {
         var all = (nodes ?? Array.Empty<NodeItem>()).Where(n => n != null).Distinct().ToList();
         var result = new ConcurrentDictionary<NodeItem, int>();
 
         static bool IsSkipped(NodeItem n) =>
-            !n.IsValid || n.IsClashPassthrough || n.IsCustomConfig || n.IsNaive;
+            !n.IsValid || n.IsClashPassthrough || n.IsCustomConfig;
 
         var skipped = all.Where(IsSkipped).ToList();
         foreach (var s in skipped) result[s] = 0;
@@ -62,6 +70,7 @@ public static class DelayTestRunner
         var tcp = testable.Where(n => DelayTestPlanner.TransportOf(n) == DelayTransport.Tcp).ToList();
         var udp = testable.Where(n => DelayTestPlanner.TransportOf(n) == DelayTransport.Udp).ToList();
         var total = testable.Count;
+        var retries = Math.Clamp(options?.MaxRetries ?? DefaultMaxRetries, 0, MaxRetryRounds);
         var done = 0;
         var sw = Stopwatch.StartNew();
 
@@ -70,7 +79,7 @@ public static class DelayTestRunner
 
         void Report(DelayTestPhase phase, string label, int retryRound, int remaining, string message = "") =>
             onProgress?.Invoke(new DelayTestProgress(phase, label, Volatile.Read(ref done), total, retryRound,
-                remaining, OkCount(), FailCount(), skipped.Count, message));
+                remaining, OkCount(), FailCount(), skipped.Count, message, retries));
 
         async Task RunGroupAsync(List<NodeItem> group, DelayTestPhase phase, string label, int concurrency, int round)
         {
@@ -78,20 +87,32 @@ public static class DelayTestRunner
             var finished = 0;
             Report(phase, label, round, group.Count, round == 0 ? $"{label} 阶段开始（{group.Count} 个）" : "");
             await Parallel.ForEachAsync(group,
-                new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Math.Max(1, concurrency) },
+                new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Math.Clamp(options?.MaxConcurrency ?? concurrency, 1, concurrency) },
                 async (node, ict) =>
                 {
                     int ms;
-                    try
+                    while (true)
                     {
-                        ms = (await RealDelayTester.RealPingDetailedAsync(node, runtimeDir, 0, ict).ConfigureAwait(false)).Ms;
-                    }
-                    catch (OperationCanceledException) when (ict.IsCancellationRequested) { throw; }
-                    catch (Exception ex)
-                    {
-                        RealDelayTester.Logger?.Invoke(
-                            $"测速调度：节点「{node.Name}」异常，按本机失败处理：[{ex.GetType().Name}] {ex.Message}", true);
-                        ms = RealDelayTester.BatchFailed;
+                        if (options?.BeforeProbe != null) await options.BeforeProbe(ict).ConfigureAwait(false);
+                        using var probeCancellation = options?.CreateProbeCancellation?.Invoke(ict);
+                        var probeToken = probeCancellation?.Token ?? ict;
+                        try
+                        {
+                            probeToken.ThrowIfCancellationRequested();
+                            ms = (await RealDelayTester.RealPingDetailedAsync(node, runtimeDir, 0, probeToken).ConfigureAwait(false)).Ms;
+                            probeToken.ThrowIfCancellationRequested();
+                        }
+                        catch (OperationCanceledException) when (ict.IsCancellationRequested) { throw; }
+                        // Presentation suspension is not a failed node or a retry round.
+                        // The probe's finally has released its temporary kernel before we wait.
+                        catch (OperationCanceledException) when (probeToken.IsCancellationRequested) { continue; }
+                        catch (Exception ex)
+                        {
+                            RealDelayTester.Logger?.Invoke(
+                                $"测速调度：节点「{node.Name}」异常，按本机失败处理：[{ex.GetType().Name}] {ex.Message}", true);
+                            ms = RealDelayTester.BatchFailed;
+                        }
+                        break;
                     }
 
                     result[node] = ms;
@@ -119,13 +140,16 @@ public static class DelayTestRunner
         foreach (var step in order)
             await RunGroupAsync(step.Nodes, step.Phase, step.Label, step.Concurrency, 0);
 
-        for (var round = 1; round <= MaxRetries; round++)
+        for (var round = 1; round <= retries; round++)
         {
             ct.ThrowIfCancellationRequested();
-            var failing = testable.Where(n => result.TryGetValue(n, out var v) && v < 0).ToList();
+            // Repeating a missing/broken local kernel cannot establish node health.
+            // Certificate failures remain explicit and never trigger relaxed TLS.
+            var failing = testable.Where(n => result.TryGetValue(n, out var v) && v == -1
+                && n.RealDelayNote != "证书不受信").ToList();
             if (failing.Count == 0) break;
-            Log($"真连测速：失败重试 {round}/{MaxRetries}（{failing.Count} 个）");
-            await RunGroupAsync(failing, DelayTestPhase.Retry, $"重试 {round}/{MaxRetries}", RetryConcurrency, round);
+            Log($"真连测速：失败重试 {round}/{retries}（{failing.Count} 个）");
+            await RunGroupAsync(failing, DelayTestPhase.Retry, $"重试 {round}/{retries}", RetryConcurrency, round);
         }
 
         var ok = OkCount();

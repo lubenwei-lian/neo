@@ -191,24 +191,22 @@ public sealed partial class RulePage : UserControl
             BorderBrush = ThemeUtil.Get("NeoHairline", Color.FromArgb(0x12, 0x1A, 0x1D, 0x21)),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
+            Child = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
             {
                 Text = r.Kind == "ip" ? "IP" : "域名",
-                FontSize = 10,
                 Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80)),
-            },
+            }, 10),
         };
         Grid.SetColumn(kindPill, 0);
 
-        var valueText = new TextBlock
+        var valueText = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
             Text = r.Value,
-            FontSize = 12,
             Foreground = ThemeUtil.Get("NeoText1", Color.FromArgb(255, 0x1A, 0x1D, 0x21)),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(10, 0, 8, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,
-        };
+        }, 12);
         Grid.SetColumn(valueText, 1);
 
         var (actText, actFgKey, actFgFallback, actBgKey, actBgFallback) = r.Action switch
@@ -226,13 +224,12 @@ public sealed partial class RulePage : UserControl
             BorderBrush = ThemeUtil.Get("NeoHairline", Color.FromArgb(0x12, 0x1A, 0x1D, 0x21)),
             BorderThickness = new Thickness(1),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
+            Child = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
             {
                 Text = actText,
-                FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = ThemeUtil.Get(actFgKey, actFgFallback),
-            },
+            }, 10),
         };
         Grid.SetColumn(actPill, 2);
 
@@ -245,13 +242,12 @@ public sealed partial class RulePage : UserControl
             Background = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center,
-            Content = new TextBlock
+            Content = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
             {
                 Text = "\uE711",
                 FontFamily = new FontFamily("Segoe Fluent Icons"),
-                FontSize = 11,
                 Foreground = ThemeUtil.Get("NeoText3", Color.FromArgb(255, 0x98, 0xA0, 0xAA)),
-            },
+            }, 11),
         };
         del.Click += (_, _) =>
         {

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
@@ -14,9 +14,11 @@ namespace Neo.App.Pages;
 public sealed class NodeTile : INotifyPropertyChanged
 {
     public NodeItem Node { get; }
+    private readonly (string Name, NodeProtocol Protocol, string Server, int Port, string? Source, string Transport, bool Compact) _presentation;
+    internal bool PresentationMatches => _presentation == (Node.Name, Node.Protocol, Node.Server, Node.Port, Node.SourceSubscription, AppState.TransportName(Node), AppState.State.CompactLayout);
     public string NameText { get; }
     private string _metaText = "";
-    public string MetaText { get => _metaText; private set { _metaText = value; Raise(); } }
+    public string MetaText { get => _metaText; private set { if (_metaText == value) return; _metaText = value; Raise(); } }
     private string _tooltip = "";
     private string _locText = "";
     private Brush? _locBrush;
@@ -26,9 +28,9 @@ public sealed class NodeTile : INotifyPropertyChanged
     /// 位置检测带来的信息行后缀（真实出口/不符标记）；由 RefreshLocation 维护。
     private string _locMetaSuffix = "";
 
-    public string Tooltip { get => _tooltip; private set { _tooltip = value; Raise(); } }
-    public string LocText { get => _locText; private set { _locText = value; Raise(); } }
-    public Brush? LocBrush { get => _locBrush; private set { _locBrush = value; Raise(); } }
+    public string Tooltip { get => _tooltip; private set { if (_tooltip == value) return; _tooltip = value; Raise(); } }
+    public string LocText { get => _locText; private set { if (_locText == value) return; _locText = value; Raise(); Raise(nameof(LocVisibility)); } }
+    public Brush? LocBrush { get => _locBrush; private set { if (ReferenceEquals(_locBrush, value)) return; _locBrush = value; Raise(); } }
     public Visibility LocVisibility => _locText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     public string FlagKey { get; }
     public string SearchText { get; }
@@ -40,13 +42,15 @@ public sealed class NodeTile : INotifyPropertyChanged
     private Brush? _cardBorder;
     private Thickness _cardThickness = new(1);
 
-    public string DelayText { get => _delayText; private set { _delayText = value; Raise(); } }
-    public Brush? DelayBrush { get => _delayBrush; private set { _delayBrush = value; Raise(); } }
+    public string DelayText { get => _delayText; private set { if (_delayText == value) return; _delayText = value; Raise(); Raise(nameof(DelayActionLabel)); } }
+    public Brush? DelayBrush { get => _delayBrush; private set { if (ReferenceEquals(_delayBrush, value)) return; _delayBrush = value; Raise(); } }
     public Brush? CardBg { get => _cardBg; private set { _cardBg = value; Raise(); } }
     public Brush? CardBorder { get => _cardBorder; private set { _cardBorder = value; Raise(); } }
     public Thickness CardThickness { get => _cardThickness; private set { _cardThickness = value; Raise(); } }
 
     public bool IsSelected { get; private set; }
+    public Visibility SelectedVisibility => IsSelected ? Visibility.Visible : Visibility.Collapsed;
+    public string DelayActionLabel => $"重新测试{NameText}的延迟，当前{DelayText}";
     public bool IsTesting { get; private set; }
     /// <summary>排序/过滤用的「显示口径」延迟：与卡片主徽标完全一致（见 NodeItem.DisplayDelay）。</summary>
     public int RealValue => Node.DisplayDelay(AppState.State.RealDelayTestEnabled);
@@ -56,16 +60,19 @@ public sealed class NodeTile : INotifyPropertyChanged
     public NodeTile(NodeItem node)
     {
         Node = node;
-        NameText = node.Name;
+        _presentation = (node.Name, node.Protocol, node.Server, node.Port, node.SourceSubscription, AppState.TransportName(node), AppState.State.CompactLayout);
+        NameText = Neo.App.Ui.NodeDisplayName.WithoutFlag(node.Name);
         // 「真实 IP 显示」打开时卡片多一行（真实出口国家 + IP），高度 +12。
         var showReal = AppState.State.ShowRealIp;
         // 卡片固定两行（名称 + 信息行）：真实出口并入信息行，不额外加行，避免被容器裁切。
-        CardHeight = AppState.State.CompactLayout ? 58 : 66;
+        // Two text rows plus the independent latency button must fit at 100%
+        // text scale as well; 58px clipped its descent in compact mode.
+        CardHeight = AppState.State.CompactLayout ? 63 : 72;
 
         var proto = AppState.ProtocolName(node.Protocol);
         var transport = AppState.TransportName(node);
         // 卡片只留「地区 · 类型」；服务器/传输/来源/真实出口都在 Tooltip。
-        _metaBase = NodeGrouper.RegionDisplay(NodeGrouper.RegionOf(node.Name)) + " · " + proto;
+        _metaBase = proto + (string.IsNullOrEmpty(transport) ? "" : " · " + transport);
         MetaText = _metaBase;
         _fullInfo = $"{node.Name}\n{node.Server}:{node.Port}\n{proto}"
             + (string.IsNullOrEmpty(transport) ? "" : " · " + transport)
@@ -81,22 +88,24 @@ public sealed class NodeTile : INotifyPropertyChanged
 
     private void ApplyIdleColor()
     {
-        CardBg = ThemeUtil.Get("NeoGlass2", Color.FromArgb(0x85, 0xFF, 0xFF, 0xFF));
-        CardBorder = ThemeUtil.Get("NeoHairline2", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21));
+        CardBg = ThemeUtil.Get("NeoNodeSurface", Color.FromArgb(255, 0x1C, 0x1C, 0x20));
+        CardBorder = ThemeUtil.Get("NeoRim", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21));
         CardThickness = new Thickness(1);
     }
 
     private void ApplySelectedColor()
     {
-        CardBg = ThemeUtil.Get("NeoAccentSoft", Color.FromArgb(0x1A, 0x25, 0x63, 0xEB));
-        CardBorder = ThemeUtil.Get("NeoAccentLine", Color.FromArgb(0x38, 0x25, 0x63, 0xEB));
-        CardThickness = new Thickness(1.5);
+        CardBg = ThemeUtil.Get("NeoNodeSelected", Color.FromArgb(0x1A, 0x25, 0x63, 0xEB));
+        CardBorder = ThemeUtil.Get("NeoAccentLine", Color.FromArgb(0x66, 0x5A, 0xA9, 0xFF));
+        CardThickness = new Thickness(1);
     }
 
     public void SetSelected(bool on)
     {
         if (IsSelected == on) return;
         IsSelected = on;
+        Raise(nameof(IsSelected));
+        Raise(nameof(SelectedVisibility));
         if (on) ApplySelectedColor(); else ApplyIdleColor();
     }
 
@@ -150,20 +159,22 @@ public sealed class NodeTile : INotifyPropertyChanged
     private void RefreshMeta()
     {
         var meta = _metaBase;
+        var delayDetails = "";
 
         var tcp = Node.TcpDelay;
-        if (tcp > 0) meta += $" · TCP {tcp}ms";
-        else if (tcp == -1) meta += " · TCP 超时";
+        if (tcp > 0) delayDetails += $" · TCP {tcp}ms";
+        else if (tcp == -1) delayDetails += " · TCP 超时";
 
         var real = Node.RealDelay;
         var note = Node.RealDelayNote;
         var noteSuffix = string.IsNullOrEmpty(note) ? "" : $"（{note}）";
-        if (real > 0) meta += $" · 真连 {real}ms{noteSuffix}";
-        else if (real == -1) meta += " · 真连 超时" + noteSuffix;
-        else if (real == RealDelayTester.BatchFailed) meta += " · 真连 本机失败";
+        if (real > 0) delayDetails += $" · 真连 {real}ms{noteSuffix}";
+        else if (real == -1) delayDetails += " · 真连 超时" + noteSuffix;
+        else if (real == RealDelayTester.BatchFailed) delayDetails += " · 真连 本机失败";
 
         meta += _locMetaSuffix;
         MetaText = meta;
+        Tooltip = _fullInfo + delayDetails + (string.IsNullOrEmpty(Node.ExitCountry) ? "\n位置：未检测" : "\n实际出口：" + NodeGrouper.RegionDisplay(Node.ExitCountry) + " · " + Node.ExitIp + (_locMismatch ? "（与标记不符）" : ""));
     }
 
     /// <summary>回填 TCP 握手延迟测试结果（调用方保证在 UI 线程）。0=跳过（UDP/无效），不显示。</summary>
@@ -182,13 +193,20 @@ public sealed class NodeTile : INotifyPropertyChanged
         IsTesting = true;
         try
         {
-            DelayText = "● …";
+            DelayText = "测速中…";
             DelayBrush = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-            var ms = await RealDelayTester.RealPingAsync(Node, NeoPaths.RuntimeDir, ct: ct);
+            int ms;
+            if (NativeUiReview.Enabled)
+            {
+                // Isolate the network boundary while exercising the real UI action.
+                await Task.Delay(120, ct);
+                ms = Node.RealDelay > 0 ? Node.RealDelay : 50;
+            }
+            else ms = await RealDelayTester.RealPingAsync(Node, NeoPaths.RuntimeDir, ct: ct);
             SetResult(ms);
             return ms > 0;
         }
-        finally { IsTesting = false; }
+        finally { IsTesting = false; RefreshDelay(); }
     }
 
     /// 回填批量测速结果（线程安全由调用方保证在 UI 线程调用）
@@ -237,7 +255,6 @@ public sealed class NodeTile : INotifyPropertyChanged
         LocBrush = mismatch
             ? ThemeUtil.Get("NeoRed", Color.FromArgb(255, 0xDC, 0x26, 0x26))
             : ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        Raise(nameof(LocVisibility));
     }
 
     private void Raise([CallerMemberName] string? name = null)

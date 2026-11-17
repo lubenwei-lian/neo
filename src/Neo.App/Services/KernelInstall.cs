@@ -10,7 +10,7 @@ namespace Neo.App.Services;
 ///  · 覆盖用的是 File.Copy 直接写目标 —— 中断/断电会留下半个 exe，下次启动才报「内核启动失败」；
 ///    xray.exe.bak-prev 停了一个月）。
 /// 本类把这三件事收口：SHA-256 校验、先写 .new 再原子替换、启动时清理/恢复。
-public static class KernelInstall
+public static partial class KernelInstall
 {
     /// <summary>从任意文本里解析 SHA-256（兼容 Xray .dgst、常见 .sha256 与裸 hex）。</summary>
     public static bool TryParseSha256(string? text, out string hex)
@@ -43,9 +43,9 @@ public static class KernelInstall
         var tmp = target + ".new";
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             if (File.Exists(tmp)) File.Delete(tmp);
             File.Copy(newFile, tmp, true);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
 
             if (File.Exists(target))
             {
@@ -68,9 +68,8 @@ public static class KernelInstall
     ///  ② 若目标内核不存在但 .bak-prev 在（安装恰好死在替换前后），用备份恢复，避免「内核没了」。
     public static void RecoverIfNeeded()
     {
-        //   mihomo 目前只纳入安装/更新管理（未参与拨号），但同样走原子替换，
-        //   所以也要享受「清理 .new / 用 .bak-prev 恢复」这套自愈。
-        foreach (var name in new[] { "xray.exe", "sing-box.exe", "mihomo.exe" })
+        RecoverBundle();
+        foreach (var name in new[] { "xray.exe", "sing-box.exe", "mihomo.exe", "naive.exe", "libcronet.dll" })
         {
             try
             {

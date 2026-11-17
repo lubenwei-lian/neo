@@ -45,9 +45,21 @@ public static class GuardMode
     {
         _neoPid = neoPid;
         _cfg = LoadConfig();
+        var portError = LocalPorts.TryApply(_cfg.Socks, _cfg.Http);
+        if (portError != null)
+        {
+            _cfg.Socks = LocalPorts.Socks; _cfg.Http = LocalPorts.Http;
+            Log("看门狗端口配置无效，使用有效运行端口：" + portError);
+        }
         try { _neo = Process.GetProcessById(neoPid); } catch { _neo = null; }
         Log("看门狗启动 · neo PID=" + neoPid + " · 端口 " + _cfg.Socks + "/" + _cfg.Http + " · 日志目录 " + LogDir());
         _stateEvent = OpenStateEvent();
+        // The UI can exit before this helper attaches; there is then no process handle to wait on.
+        if (_neo == null || _neo.HasExited)
+        {
+            HandleNeoGone();
+            return 0;
+        }
 
         while (true)
         {
@@ -114,7 +126,7 @@ public static class GuardMode
     {
         var snap = CoreState.Read();
         Log("neo 进程已退出 · state=" + (snap?.State ?? "?") + " · corePid=" + (snap?.CorePid ?? 0));
-        DoCleanup(snap?.CorePid ?? 0, "neo 进程退出");
+        DoCleanup(snap?.NeoPid == _neoPid ? snap.CorePid : _corePid, "neo 进程退出");
         Log("清理完成，看门狗退出");
     }
 
@@ -161,15 +173,16 @@ public static class GuardMode
 
     private static void DoCleanup(int corePid, string trigger)
     {
+        if (ShouldDeferCleanup()) { Log("检测到后继 neo 实例，旧看门狗不接管其内核或网络设置"); return; }
         var listening = IsListening(_cfg.Socks) || IsListening(_cfg.Http);
         var usable = listening && ProbeProxy();
         Log("触发清理：" + trigger + " · 端口监听=" + listening + " · 功能探测=" + usable);
 
-        if (corePid > 0)
+        if (corePid > 0 && !ShouldDeferCleanup() && ConnectionService.IsRecordedGuardCore(corePid, _neoPid))
         {
             try
             {
-                var p = Process.GetProcessById(corePid);
+                using var p = Process.GetProcessById(corePid);
                 Log("残留内核进程仍在运行（PID " + corePid + "），尝试清理");
                 p.Kill(entireProcessTree: true);
                 p.WaitForExit(5000);
@@ -178,6 +191,7 @@ public static class GuardMode
             catch { }
         }
 
+        if (ShouldDeferCleanup()) { Log("后继 neo 已启动，停止旧会话清理"); return; }
         try
         {
             Log("清理残留内核进程（runtime 目录保护）");
@@ -185,19 +199,44 @@ public static class GuardMode
         }
         catch (Exception ex) { Log("清理残留内核异常：" + ex.GetType().Name + " " + ex.Message); }
 
+        if (ShouldDeferCleanup()) { Log("后继 neo 已启动，保留其系统代理"); return; }
         try
         {
+            // The UI may have exhausted its short restoration budget. A surviving guard gets
+            // another bounded retry window, using the same ownership checks and saved lease.
+            if (!SystemProxy.RestoreAfterDisconnectAsync().GetAwaiter().GetResult())
+                Log("系统代理快照仍未还原成功，保留恢复证据并继续检查实际残留端点");
             var disabled = SystemProxy.CleanupOrphaned(_cfg.Socks, _cfg.Http, _cfg.Socks + 100, _cfg.Http + 100, 10808, 10809);
             if (disabled) Log("已关闭/还原残留系统代理");
             if (SystemProxy.CleanupStaleSnapshot()) Log("已恢复残留的系统代理快照");
         }
         catch (Exception ex) { Log("处理系统代理异常：" + ex.GetType().Name + " " + ex.Message); }
 
+        if (ShouldDeferCleanup()) { Log("后继 neo 已启动，保留其网络会话"); return; }
         try { HandleTunCleanup(); }
         catch (Exception ex) { Log("TUN 清理异常：" + ex.GetType().Name + " " + ex.Message); }
 
         var left = CountLeftovers();
         Log(left == 0 ? "复查：无残留进程" : "复查：仍有 " + left + " 个残留内核进程（已记录）");
+    }
+
+    private static bool ShouldDeferCleanup()
+    {
+        var snapshot = CoreState.Read();
+        return snapshot != null && snapshot.NeoPid > 0 && snapshot.NeoPid != _neoPid
+            && IsLiveNeoInstance(snapshot.NeoPid);
+    }
+
+    private static bool IsLiveNeoInstance(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited && string.Equals(process.MainModule?.FileName,
+                Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException) { return false; }
+        catch { return true; } // Unknown owner: defer destructive cleanup.
     }
 
     private static void HandleTunCleanup()
@@ -277,7 +316,7 @@ public static class GuardMode
 
     private static void SyncCore(CoreState.Snapshot? snap)
     {
-        if (snap == null) return;
+        if (snap == null || snap.NeoPid != _neoPid) return;
         if (!IsCoreWatchedState(snap.State) || snap.CorePid <= 0)
         {
             if (_core != null) { try { _core.Dispose(); } catch { } _core = null; }

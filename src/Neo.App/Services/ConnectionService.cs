@@ -7,9 +7,20 @@ using Neo.Core.Models;
 
 namespace Neo.App.Services;
 
-public static class ConnectionService
+public static partial class ConnectionService
 {
     private static CoreProcess? _xray;
+    private static readonly object SessionStateGate = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<CoreProcess, string> CoreConfigs = new();
+
+    private static void ReleaseCore(CoreProcess? core)
+    {
+        if (core == null) return;
+        CoreStats.Finish(core);
+        if (CoreConfigs.TryRemove(core, out var path))
+            try { File.Delete(path); } catch { }
+    }
+
 
     // 用户端口的本地中继（无感切换的核心）：内核监听 21908/21909，用户仍用 21808/21809。
     private static PortRelay? _relaySocks;
@@ -79,7 +90,7 @@ public static class ConnectionService
         _relayHttp = null;
     }
 
-    /// naive 节点的辅助进程（naive.exe 只提供 socks 入口；前置 sing-box 负责 http/TUN）。
+    /// 协议辅助进程；前置 sing-box 统一管理规则、TUN 与统计。
     private static CoreProcess? _naive;
 
     /// 内核最近输出（仅内存，最近 60 行）。用途：内核秒退/崩溃时，把 FATAL 原因写进 Error 日志。
@@ -106,34 +117,10 @@ public static class ConnectionService
     /// 当前 ConnectAsync 是否由「自检自动切换」发起（该新会话不再自检，保证一轮最多切 1 次）。
     private static bool _selfCheckSwitching;
 
-    ///   会话门 —— 保证**同一时刻只有一个** ConnectAsync / Disconnect 在改内核与网络状态。
-    /// 为什么需要：ConnectAsync 原先**没有入口互斥**（第 88 行只判断「同一节点已连接」）。
-    ///   而它有 7 个调用点，其中两条在**非 UI 线程**：
-    ///     · FailoverService.cs:383  故障转移（后台探活线程）
-    ///     · ConnectionService.cs:1021  内核自动重启（Process.Exited 线程池）
-    ///   这两条与「用户手动点连接」可同时进入 → 各自 new CoreProcess 并 Start
-    ///   → 双内核抢 10808，其中一个绑定失败成为**无句柄幽灵进程**，
-    ///   Disconnect 停不掉（_xray 只记录了最后一个）→ 表现为「端口被占用 / 断不干净」。
-    /// 为什么不能用 lock(_xray)：CoreProcess 内部订阅了 Process 事件，
-    ///   在事件回调路径上加锁会与 Start/Stop 的锁形成交叉死锁（子代理提醒，我未独立验证，
-    ///   故采用**独立哨兵**而非复用对象锁）。
-    /// 语义：`WaitAsync(0)` 拿不到就**明确拒绝**并留痕，不排队 ——
-    ///   排队会让「用户点连接」被一次后台自动重启阻塞数秒，体感更差；
-    ///   调用方拿到 false 会正常走错误通道（如故障转移会判定本次候选失败）。
+    /// <summary>串行连接/切换请求；断开通过 SessionStateGate 原子撤销当前会话。</summary>
     private static readonly SemaphoreSlim SessionGate = new(1, 1);
 
-    ///   **不成立**，因为 _tunSessionActive 只在所有 early return 之后赋值；
-    ///   但它指出的**另一半**是真问题，我确认并在此修复）：
-    ///   拆除动作（TeardownTunNetwork）是按**名字/地址**匹配的：
-    ///     · 网卡：Get-NetAdapter -Name neo-tun → Remove-NetAdapter -Name neo-tun
-    ///     · 路由：NextHop -eq 172.19.0.1 或 InterfaceAlias -eq neo-tun
-    ///   **不区分是哪一次会话的对象**。而它是 fire-and-forget（Task.Run），
-    ///   与紧随其后的 ConnectAsync 无同步 —— 快速「断 → 连」时，
-    ///   后台的拆除可能删掉**新会话刚建的** neo-tun 网卡/路由，
-    ///   导致新会话失去 TUN 接管（流量泄漏 / strict_route 下直接失败）。
-    /// 修法：用一把**独立的拆除锁**把 TeardownTunNetwork 串行化，
-    ///   并记录每次拆除时的**会话序号**；启动新会话时先等上一次拆除完成。
-    ///   不能复用 SessionGate（ConnectAsync 内部会调 Disconnect，会自死锁）。
+    /// <summary>连接创建和资源拆除共用生命周期屏障；持有期间不得再等待自己的拆除任务。</summary>
     private static readonly SemaphoreSlim TeardownGate = new(1, 1);
 
     /// <summary>已完成/进行中的拆除任务，供新会话在启动前等待。</summary>
@@ -141,6 +128,7 @@ public static class ConnectionService
 
     /// </summary>
     internal static Task LastTunTeardown => _lastTeardown;
+    internal static int SessionEpoch => Volatile.Read(ref _sessionEpoch);
 
     /// <summary>当前是否已有会话操作在进行（供 UI 判断与展示）。</summary>
     public static bool IsSessionBusy => SessionGate.CurrentCount == 0;
@@ -156,6 +144,15 @@ public static class ConnectionService
     /// <summary>当前内核 PID（0 = 没有运行中的内核）。看门狗写状态时用。</summary>
     public static int CorePid => _xray?.Pid ?? 0;
 
+    internal static NetworkDiagnosticSession? CaptureDiagnosticSession()
+    {
+        lock (SessionStateGate)
+        {
+            if (!IsConnected || _xray == null || !CoreConfigs.TryGetValue(_xray, out var path)) return null;
+            return new(SessionEpoch, CoreKind, path, IsTunSession, AppState.State.ProxyMode);
+        }
+    }
+
     /// <summary>看门狗用：是否有 neo-tun 残留网卡（不论是否启用）。</summary>
     public static bool HasTunResidueForGuard() => HasTunAdapter();
 
@@ -165,13 +162,16 @@ public static class ConnectionService
     /// <summary>看门狗用：同步清理 TUN 残留（需要管理员权限）；返回是否已清理干净。</summary>
     public static bool CleanupTunResidueForGuard()
     {
+        if (!TeardownGate.Wait(0)) return false;
         try
         {
+            if (IsConnected || IsConnecting) return false;
             if (!HasTunAdapter()) return true;
-            TeardownTunNetwork();
+            TeardownTunNetwork(CaptureTunAdapterId());
             return !HasTunAdapter();
         }
         catch { return false; }
+        finally { TeardownGate.Release(); }
     }
 
     /// <summary>供看门狗/启动提醒使用：走统一的用户提示通道（状态条 + 托盘气泡）。</summary>
@@ -252,63 +252,42 @@ public static class ConnectionService
 
     public static string ConfigPath => Path.Combine(NeoPaths.DataDir, "config.json");
 
-    /// <summary>
-    /// 连接前的证书策略探测：TUIC / Hysteria2 先按分享链接声明的 allow_insecure 严格连；
-    /// 只有内核明确报证书不受信时，才把该节点标记为「本次放宽」并在日志里写明原因。
-    /// 与测速的两套方案保持一致：正常证书不受影响，自签节点不至于「能测延迟却连不上」。
-    /// </summary>
-    /// <summary>该节点是否有「可放宽的 TLS 证书校验」（TUIC/Hy2/Trojan，以及声明 tls 的 VMess/VLESS）。</summary>
-    private static bool SupportsTlsPolicy(NodeItem node)
+    /// <summary>证书策略只来自节点显式配置；测速缓存和错误文案没有授权能力。</summary>
+    private static Task ApplyTlsPolicyAsync(NodeItem node)
     {
-        if (node.IsNaive || node.IsClashPassthrough || node.IsCustomConfig) return false;
-        if (node.Protocol is NodeProtocol.WireGuard) return false;
-        if (node.Protocol is NodeProtocol.TUIC or NodeProtocol.Hysteria2 or NodeProtocol.Trojan) return true;
-        var sec = (node.Security ?? "").Trim().ToLowerInvariant();
-        return sec == "tls";
+        // Explicit node policy is authoritative; measurements never grant TLS exceptions.
+        return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// 连接前的证书策略探测（TUIC/Hysteria2 及所有走 TLS 的节点）：
-    ///   先按分享链接声明的 allow_insecure 严格连；只有内核明确报证书不受信时，
-    ///   才把该节点标记为「本次放宽」并在日志里写明原因。
-    /// 与测速的双方案一致：正常证书不受影响，自签节点不至于「能测延迟却连不上」。
-    /// </summary>
-    private static async Task ApplyTlsPolicyAsync(NodeItem node)
+    private const string ConnectionCancelled = "连接已取消：会话已改变或程序正在退出";
+    private const string ListenerBindFailure = "内核监听端口绑定失败：";
+
+    public static Task<(bool Ok, string? Error)> ConnectAsync(NodeItem node, bool force = false,
+        int? expectedEpoch = null, CancellationToken ct = default, SessionIntent? intent = null)
     {
-        try
+        var expected = expectedEpoch ?? intent?.Epoch ?? SessionEpoch;
+        var operation = intent ?? new SessionIntent(expected);
+        return Task.Run(async () =>
         {
-            if (!SupportsTlsPolicy(node)) return;
-            if (node.AllowInsecure || node.ForceInsecure) return;
-
-            var note = node.RealDelayNote ?? "";
-            if (note.Contains("证书放宽", StringComparison.Ordinal) || note.Contains("证书不受信", StringComparison.Ordinal))
+            var result = await ConnectSessionAsync(node, force, expected, ct, operation);
+            if (!result.Ok && result.Error?.StartsWith(ListenerBindFailure, StringComparison.Ordinal) == true
+                && !ct.IsCancellationRequested && !App.IsShuttingDown && operation.Epoch == SessionEpoch)
             {
-                node.ForceInsecure = true;
-                LogBus.App($"节点「{node.Name}」测速时已确认证书不受信 → 本次连接放宽校验", "Warning");
-                return;
+                LogBus.App("本地监听端口绑定失败，改用备用内核端口重试一次；保持当前节点", "Warning");
+                return await ConnectSessionAsync(node, true, operation.Epoch, ct, operation, alternateSlot: true);
             }
-
-            // 测速时严格校验都能通过，说明证书没问题，不必再起一次临时内核。
-            if (node.RealDelay > 0) return;
-            if (node.TlsChecked) return;
-            node.TlsChecked = true;
-
-            var certBad = await RealDelayTester.CertUntrustedAsync(node, NeoPaths.RuntimeDir, 6000)
-                .ConfigureAwait(false);
-            if (certBad)
-            {
-                node.ForceInsecure = true;
-                LogBus.App($"节点「{node.Name}」证书不受信 → 本次连接放宽校验（原因已记录，正常证书节点不受影响）", "Warning");
-            }
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"证书策略探测失败（按严格校验继续）：[{ex.GetType().Name}] {ex.Message}", "Warning");
-        }
+            return result;
+        });
     }
 
-    public static async Task<(bool Ok, string? Error)> ConnectAsync(NodeItem node, bool force = false)
+    private static async Task<(bool Ok, string? Error)> ConnectSessionAsync(NodeItem node, bool force,
+        int? expectedEpoch, CancellationToken ct, SessionIntent? intent, bool alternateSlot = false)
     {
+        expectedEpoch ??= intent?.Epoch;
+        if (ct.IsCancellationRequested || App.IsShuttingDown
+            || (expectedEpoch.HasValue && expectedEpoch.Value != Volatile.Read(ref _sessionEpoch)))
+            return (false, ConnectionCancelled);
+        expectedEpoch ??= SessionEpoch;
         if (!force && IsConnected && ConnectedNode != null && SameNode(ConnectedNode, node))
             return (true, null);
 
@@ -326,715 +305,672 @@ public static class ConnectionService
             LogBus.App($"连接请求被拒：已有会话操作在进行中（{node.Name}）", "Warning");
             return (false, "已有连接操作正在进行，请稍候重试");
         }
+        var lifecycleHeld = false;
+        var connectSucceeded = false;
+        int? ownedEpoch = null;
+        string? auxiliaryConfigPath = null;
         try
         {
+            if (ct.IsCancellationRequested || App.IsShuttingDown
+                || (expectedEpoch.HasValue && expectedEpoch.Value != Volatile.Read(ref _sessionEpoch)))
+                return (false, ConnectionCancelled);
             LogBus.App($"连接请求 → {node.Name}（{AppState.ProtocolName(node.Protocol)} · {node.EndPoint}）· TUN={(AppState.State.UseTun ? "开" : "关")}", "Debug");
 
             IsConnecting = true;
-            CoreState.Report("connecting", 0, CoreKind, "ConnectAsync");
             NotifyStateChanged();
-        if (AppState.State.UseTun && !IsElevated)
-            return (false, "TUN 模式需要管理员权限 — 请点击 TUN 开关并确认「以管理员重启」");
+            if (AppState.State.UseTun && !IsElevated)
+                return (false, "TUN 模式需要管理员权限 — 请点击 TUN 开关并确认「以管理员重启」");
 
-        Disconnect("连接前重置上一次会话");
-
-        CleanupOrphanCores();
-
-        //   否则后台的 Remove-NetAdapter / Remove-NetRoute 可能落在**新会话刚建好**
-        //   网卡之后，把新会话的 TUN 接管拆掉（旧代码是 fire-and-forget，无同步）。
-        //   最多等 5 秒：拆除本身会 3 秒超时，超时不阻断新会话（宁可留残留也不能连不上）。
-        try
-        {
-            var pending = _lastTeardown;
-            if (pending != null && !pending.IsCompleted)
+            if (!ResetSession("连接前重置上一次会话", expectedEpoch, null, out var connectEpoch))
+                return (false, ConnectionCancelled);
+            intent?.Advance(expectedEpoch!.Value, connectEpoch);
+            CoreState.Report("connecting", 0, CoreKind, "ConnectAsync", sessionEpoch: connectEpoch);
+            bool Cancelled() => ct.IsCancellationRequested || App.IsShuttingDown
+                || connectEpoch != Volatile.Read(ref _sessionEpoch);
+            using var connectCancellation = ct.Register(() =>
             {
-                var finished = await Task.WhenAny(pending, Task.Delay(5000)).ConfigureAwait(false);
-                if (!ReferenceEquals(finished, pending))
-                    LogBus.App("上一次 TUN 拆除仍未完成（已等 5 秒）——继续建立新会话", "Warning");
+                ResetSession("connect cancelled", connectEpoch, null, out _);
+            });
+
+            ownedEpoch = connectEpoch;
+            Task pending;
+            lock (SessionStateGate) pending = _lastTeardown;
+            await pending.WaitAsync(ct).ConfigureAwait(false);
+            await TeardownGate.WaitAsync(ct).ConfigureAwait(false);
+            lifecycleHeld = true;
+            if (Cancelled()) return (false, ConnectionCancelled);
+            CleanupOrphanCores();
+            AppState.ApplyLocalPorts();
+            if (Cancelled()) return (false, ConnectionCancelled);
+            if (alternateSlot)
+            {
+                var slot = 1 - LocalPorts.ActiveSlot;
+                var ports = new[] { LocalPorts.SlotSocks(slot), LocalPorts.SlotHttp(slot),
+                    LocalPorts.SlotStats(slot), LocalPorts.SlotClashApi(slot) };
+                if (ports.Any(p => !PortFree(p)))
+                    return (false, "备用内核监听端口尚未释放，已取消重试");
+                LocalPorts.ActiveSlot = slot;
+                LogBus.App($"启动改用备用本地端口 {LocalPorts.CoreSocks}/{LocalPorts.CoreHttp}（节点不变）", "Debug");
             }
-        }
-        catch (Exception ex) { LogBus.App($"等待上次 TUN 拆除异常：{ex.GetType().Name}", "Warning"); }
 
-        //   等满 2 秒（10×200ms）就继续。若端口仍被占着，照样去启动内核，
-        //   用户只会看到一个笼统的「内核启动失败」。现改为：等不到就明确报错并留 Error 痕。
-        if (!await WaitPortsFreeAsync())
-        {
-            var busyPort = FirstBusyPort();   
-            LogBus.App($"连接中止：本地端口 {busyPort} 仍被占用（等待 2 秒后仍未释放）", "Error");
-            return (false, $"本地端口 {busyPort} 被占用 —— 可能有残留内核或其它程序在用，请稍后重试");
-        }
-
-        if (!node.IsValid) return (false, "节点无效（缺地址或端口）");
-        await ApplyTlsPolicyAsync(node).ConfigureAwait(false);
-
-        // 上次分流数据更新时若有文件被内核占用，已暂存为 *.pending；这里在启动内核前应用，
-        // 保证「更新后连接」用到的就是新数据（否则要等下一次重启才生效）。
-        try { GeoDataUpdater.ApplyPending(); } catch { }
-
-        FixedExitActive = false;
-        FixedExitEntries = 0;
-        FixedExitName = null;
-
-        bool useTun = AppState.State.UseTun;
-
-        //   限制：暂不支持 TUN（mihomo 的 TUN 需要额外适配本项目的网卡/路由回收逻辑）；
-        //   未安装 mihomo 时明确报错并指路，而不是抛一个「内核不存在」。
-        bool useMihomo = node.Protocol == NodeProtocol.MihomoConfig;
-        string? mihomoConfigPath = null;
-        string? mihomoDataDir = null;
-        if (useMihomo)
-        {
-            if (useTun)
+            //   等满 2 秒（10×200ms）就继续。若端口仍被占着，照样去启动内核，
+            //   用户只会看到一个笼统的「内核启动失败」。现改为：等不到就明确报错并留 Error 痕。
+            if (!await WaitPortsFreeAsync())
             {
-                return (false, "Clash 直通节点暂不支持 TUN 模式 —— 请关闭 TUN，或改用拆分出来的普通节点");
+                var busyPort = FirstBusyPort();
+                LogBus.App($"连接中止：本地端口 {busyPort} 仍被占用（等待 2 秒后仍未释放）", "Error");
+                return (false, $"本地端口 {busyPort} 被占用 —— 可能有残留内核或其它程序在用，请稍后重试");
             }
-            if (!KernelCatalog.IsInstalled(CoreEngine.Mihomo))
+
+            if (!node.IsValid) return (false, "节点无效（缺地址或端口）");
+            if (Cancelled()) return (false, ConnectionCancelled);
+            await ApplyTlsPolicyAsync(node).ConfigureAwait(false);
+            if (Cancelled()) return (false, ConnectionCancelled);
+
+            // 上次分流数据更新时若有文件被内核占用，已暂存为 *.pending；这里在启动内核前应用，
+            // 保证「更新后连接」用到的就是新数据（否则要等下一次重启才生效）。
+            try { GeoDataUpdater.ApplyPending(); } catch { }
+
+            FixedExitActive = false;
+            FixedExitEntries = 0;
+            FixedExitName = null;
+
+            // The node core always serves the same local session. TUN is a separate ingress
+            // process and can be enabled/disabled without replacing this core or its streams.
+            bool requestedTun = AppState.State.UseTun;
+            bool useTun = false;
+            bool useAuxiliary = AuxiliaryCorePlan.Needed(node, useTun);
+            AuxiliaryCorePlan? auxiliaryPlan = null;
+            string? auxiliaryDataDir = null;
+            string? auxiliaryExe = null;
+
+            // 整份 Clash 在系统代理下直接运行；TUN 下由统一前置承载，避免出现第二个 TUN 所有者。
+            bool useMihomo = node.Protocol == NodeProtocol.MihomoConfig && !useAuxiliary;
+            string? mihomoConfigPath = null;
+            string? mihomoDataDir = null;
+            if (useMihomo)
             {
-                return (false, "Clash 直通需要 mihomo 内核：请到 设置 → 内核 → mihomo，点「检查更新」按需安装后再连接");
-            }
-        }
-
-        bool useNaive = node.IsNaive;
-        string? naiveConfigPath = null;
-        if (useNaive)
-        {
-            if (!KernelCatalog.IsInstalled(CoreEngine.Naive))
-                return (false, "naive 节点需要 naive 内核：请到 设置 → 内核 → naive，点「检查更新」按需安装后再连接");
-        }
-
-        //   限制：暂不支持 TUN（不做 tun inbound 注入），固定出口也跳过（会破坏用户自己的路由）。
-        bool useCustom = node.IsCustomConfig;
-        bool customSingBox = useCustom && string.Equals(node.CustomEngine, "sing-box", StringComparison.OrdinalIgnoreCase);
-        string? customConfigPath = null;
-        if (useCustom)
-        {
-            //   xray 本身没有 tun 入站，仍然明确拒绝。
-            if (useTun && !customSingBox)
-                return (false, "自定义 xray 配置不支持 TUN 模式（xray 没有 tun 入站）—— 请关闭 TUN；"
-                             + "需要 TUN 的话请改用 sing-box 格式的自定义配置");
-            if (!node.Extras.TryGetValue("config_path", out var customSrc) || !File.Exists(customSrc))
-                return (false, "自定义配置文件不存在（可能已被清理），请重新拉取订阅");
-        }
-
-        //   TUN 模式固定跑 sing-box，而 mKCP / xhttp / VLESS 后量子加密 / REALITY pqv / vcn 只有 xray 支持。
-        //   这类节点在 TUN 下**必须明确拒绝**：静默改走 sing-box 会变成「连上了但所有站点超时」，
-        //   比直接提示难排查得多；静默改走系统代理又会让用户以为 TUN 生效（UDP 泄漏）。
-        if (useTun && node.RequiresXray)
-        {
-            var why = XrayOnlyReason(node);
-            LogBus.App($"连接中止：节点「{node.Name}」需要 xray 专有能力（{why}），TUN 模式固定跑 sing-box，无法承载", "Error");
-            IncidentLog.Record("connect", "TUN 与节点能力冲突，已拒绝连接", $"{node.Name}：{why}");
-            return (false, $"节点「{node.Name}」用到 xray 专有能力（{why}），TUN 模式不支持；请关闭 TUN 或换节点");
-        }
-
-        //   优先级：xray 专有能力（xhttp/kcp/VLESS 加密/pqv/vcn）优先于「明文 vless 需 sing-box」的判定，
-        //   否则「明文 vless + xhttp」这类节点会被推给 sing-box，然后因为 xhttp 不支持而直接失败。
-        //   能力不允许时 KernelRouter 返回 Auto（保持自动判定）；TUN 恒 sing-box，映射与 TUN 冲突时忽略并留痕。
-        if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray)
-            LogBus.App("协议→内核映射要求 xray，但 TUN 模式固定 sing-box，本次忽略该映射", "Warning");
-
-        bool useSingBox = useNaive
-            ? true   // naive 的前置固定用 sing-box（socks 出站 + 可选 tun 入站）
-            : useCustom
-            ? customSingBox
-            : useTun
-            || Neo.Core.Core.KernelRouter.Apply(node,
-                   node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-                   || (node.RequiresSingBox && !node.RequiresXray));
-
-        // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
-        // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
-        NodeItem? fixedExit = null;
-        // 否则 ActiveSlot 变成 1 之后，统计按 21821 取数而内核监听 21811 → 流量统计永久静默失效。
-        SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(LocalPorts.ActiveSlot);
-
-        var fixedEntries = new List<NodeItem>();
-        if (useCustom && AppState.State.FixedExitEnabled)
-        {
-            LogBus.App("自定义配置直通：固定出口与本节点自带的 outbounds/routing 冲突，本次不启用固定出口", "Warning");
-        }
-        else if (AppState.State.FixedExitEnabled)
-        {
-            if (useTun)
-            {
-                LogBus.App("固定出口：TUN 模式暂不支持（需要 xray 链式出站），本次按普通模式连接", "Warning");
-            }
-            else
-            {
-                try
+                if (useTun)
                 {
-                    fixedExit = ResolveFixedExitNode();
-                    if (fixedExit == null)
-                    {
-                        LogBus.App("固定出口：没有可用出口节点（出口需为非 REALITY 的 ws/tls 节点），本次按普通模式连接", "Warning");
-                    }
-                    else
-                    {
-                        fixedEntries = PickFixedExitEntries(fixedExit, AppState.State.FixedExitEntryCount);
-                        if (fixedEntries.Count == 0)
-                        {
-                            LogBus.App("固定出口：除出口「" + fixedExit.Name + "」外没有可用入口节点，本次按单节点连接", "Warning");
-                            fixedExit = null;
-                        }
-                    }
+                    return (false, "Clash 直通节点暂不支持 TUN 模式 —— 请关闭 TUN，或改用拆分出来的普通节点");
                 }
-                catch (Exception ex)
+                if (!KernelCatalog.IsInstalled(CoreEngine.Mihomo))
                 {
-                    LogBus.App("固定出口：准备失败，退回普通模式（" + ex.GetType().Name + ": " + ex.Message + "）", "Warning");
-                    fixedExit = null;
+                    return (false, "Clash 直通需要 mihomo 内核：请到 设置 → 内核 → mihomo，点「检查更新」按需安装后再连接");
                 }
             }
-        }
 
-        string json;
-        try
-        {
-            if (useNaive)
+            // 整份配置保留自己的路由；Xray 的 TUN 接入交由辅助协议路径。
+            bool useCustom = node.IsCustomConfig && !useAuxiliary;
+            bool customSingBox = useCustom && string.Equals(node.CustomEngine, "sing-box", StringComparison.OrdinalIgnoreCase);
+            string? customConfigPath = null;
+            if (node.IsCustomConfig)
             {
-                // naive 配置 + 前置 sing-box 配置（socks 出站指向 127.0.0.1:NaiveListen）。
-                var naiveDir = Path.Combine(NeoPaths.DataDir, "naive");
-                Directory.CreateDirectory(naiveDir);
-                naiveConfigPath = Path.Combine(naiveDir, "config.json");
-                var naiveJson = NaiveConfigBuilder.Build(node, LocalPorts.NaiveListen);
-                var ntmp = naiveConfigPath + ".tmp";
-                File.WriteAllText(ntmp, naiveJson);
-                File.Move(ntmp, naiveConfigPath, true);
+                if (!node.Extras.TryGetValue("config_path", out var customSrc) || !File.Exists(customSrc))
+                    return (false, "自定义配置文件不存在（可能已被清理），请重新拉取订阅");
+            }
 
-                var frontNode = new NodeItem
+            //   优先级：xray 专有能力（xhttp/kcp/VLESS 加密/pqv/vcn）优先于「明文 vless 需 sing-box」的判定，
+            //   否则「明文 vless + xhttp」这类节点会被推给 sing-box，然后因为 xhttp 不支持而直接失败。
+            //   能力不允许时 KernelRouter 返回 Auto（保持自动判定）；TUN 恒 sing-box，映射与 TUN 冲突时忽略并留痕。
+            if (useTun && Neo.Core.Core.KernelRouter.ResolveFor(node) == Neo.Core.Core.KernelRouter.Choice.Xray && !useAuxiliary)
+                LogBus.App("TUN 接入使用 sing-box，当前节点未启用 Xray 映射", "Debug");
+
+            bool useSingBox = useAuxiliary
+                ? true
+                : useCustom
+                ? customSingBox
+                : useTun
+                || Neo.Core.Core.KernelRouter.Apply(node,
+                       node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                       || (node.RequiresSingBox && !node.RequiresXray));
+
+            // 固定出口（多入口加速）：出口固定一个节点，其它节点作为入口给它叠加带宽。
+            // TUN 走 sing-box，暂不支持链式出站，按普通模式连接。
+            NodeItem? fixedExit = null;
+            // 否则 ActiveSlot 变成 1 之后，统计按 21821 取数而内核监听 21811 → 流量统计永久静默失效。
+            SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(LocalPorts.ActiveSlot);
+
+            var fixedEntries = new List<NodeItem>();
+            if ((useCustom || useAuxiliary) && AppState.State.FixedExitEnabled)
+            {
+                LogBus.App("自定义配置直通：固定出口与本节点自带的 outbounds/routing 冲突，本次不启用固定出口", "Warning");
+            }
+            else if (AppState.State.FixedExitEnabled)
+            {
+                if (useTun)
                 {
-                    Protocol = NodeProtocol.Socks,
-                    Server = "127.0.0.1",
-                    Port = LocalPorts.NaiveListen,
-                    Name = node.Name,
-                    Security = "none",
-                };
-                json = useTun
-                    ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                    : SingBoxConfigBuilder.Build(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
-                CoreKind = "naive";
-            }
-            else if (useCustom)
-            {
-                // 自定义整份配置：原样保留 outbounds/routing，只改本地接入层与统计接口。
-                var srcJson = File.ReadAllText(node.Extras["config_path"]);
-                var customDir = Path.Combine(NeoPaths.DataDir, "custom");
-                Directory.CreateDirectory(customDir);
-                customConfigPath = Path.Combine(customDir, "runtime-config.json");
-                json = customSingBox
-                    ? (useTun
-                        ? CustomConfigBuilder.BuildSingBoxTun(srcJson,
-                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
-                            AppState.State.AllowLan, AppState.State.DnsServer)
-                        : CustomConfigBuilder.BuildSingBox(srcJson,
-                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
-                            AppState.State.AllowLan))
-                    : CustomConfigBuilder.BuildXray(srcJson,
-                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        LocalPorts.CoreStatsApi, AppState.State.AllowLan, AppState.State.KernelLogLevel);
-                var ctmp = customConfigPath + ".tmp";
-                File.WriteAllText(ctmp, json);
-                File.Move(ctmp, customConfigPath, true);
-                CoreKind = customSingBox ? "sing-box" : "xray";
-            }
-            else if (useMihomo)
-            {
-                // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
-                var apiPort = LocalPorts.CoreClashApi;
-                //   之前这里传的是用户端口（21808/21809），与 PortRelay 抢同一个监听端口，
-                //   表现为 mihomo 会话端口被占、中继也没起到转发作用。
-                var yaml = MihomoConfigBuilder.Build(node,
-                    LocalPorts.CoreHttp, LocalPorts.CoreSocks,
-                    apiPort, AppState.State.KernelLogLevel);
-                mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
-                Directory.CreateDirectory(mihomoDataDir);
-                mihomoConfigPath = Path.Combine(mihomoDataDir, "config.yaml");
-                var ytmp = mihomoConfigPath + ".tmp";
-                File.WriteAllText(ytmp, yaml);
-                File.Move(ytmp, mihomoConfigPath, true);
-
-                // GEOIP / GEOSITE 规则需要数据文件：runtime 里有就复制到 mihomo 工作目录，
-                // 避免它启动时联网下载（本项目里 mihomo 走系统代理前还没有网络，下载必失败）。
-                try
-                {
-                    foreach (var name in new[] { "Country.mmdb", "geoip.dat", "geosite.dat" })
-                    {
-                        var src = Path.Combine(NeoPaths.RuntimeDir, name);
-                        if (File.Exists(src)) File.Copy(src, Path.Combine(mihomoDataDir, name), true);
-                    }
-                }
-                catch { }
-
-                json = "";
-                CoreKind = "mihomo";
-            }
-            else if (fixedExit != null && !useSingBox)
-            {
-                json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
-                    LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                    AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                    AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                    AppState.State.KernelLogLevel, AppState.State.DnsServer);
-                FixedExitActive = true;
-                FixedExitEntries = fixedEntries.Count;
-                FixedExitName = fixedExit.Name;
-                LogBus.App("固定出口已启用：出口「" + fixedExit.Name + "」· 入口 " + fixedEntries.Count + " 条链路（"
-                    + string.Join("、", fixedEntries.Take(6).Select(n => n.Name))
-                    + (fixedEntries.Count > 6 ? "…" : "") + "）");
-            }
-            else
-            {
-                json = useMihomo ? "" : useSingBox
-                    ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
-                    : XrayConfigBuilder.Build(node,
-                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.KernelLogLevel, AppState.State.DnsServer);
-            }
-            if (!useMihomo && !useCustom && !useNaive) CoreKind = useSingBox ? "sing-box" : "xray";
-        }
-        catch (Exception ex)
-        {
-            // 兜底：固定出口配置生成失败（例如出口节点类型不支持串联）时，
-            // 自动退回单节点再试一次，避免用户直接连不上（稳中取快）。
-            try
-            {
-                LogBus.App("配置生成失败，正在改用单节点配置重试（兜底）：" + ex.Message, "Warning");
-                IncidentLog.Record("fallback", "配置生成失败，已退回单节点重试", ex.Message);
-                FixedExitActive = false;
-                FixedExitEntries = 0;
-                FixedExitName = null;
-                json = useMihomo ? "" : useSingBox
-                    ? (useTun
-                        ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
-                        : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                            AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
-                    : XrayConfigBuilder.Build(node,
-                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
-                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
-                        AppState.State.KernelLogLevel, AppState.State.DnsServer);
-            }
-            catch (Exception ex2)
-            {
-                return (false, "配置生成失败：" + ex2.Message);
-            }
-        }
-
-        // ---- 启动前配置预检 + 自适应 ----
-        // 写盘/启动前先用内核自己的 -test/check 验一遍：版本变化导致字段/传输被弃用时，
-        // 按「版本规则 → 去性能字段 → 最简单节点配置」逐级降级，绝不把内核拒绝的配置直接交给它。
-        if (useMihomo)
-        {
-            if (string.IsNullOrEmpty(mihomoConfigPath) || !File.Exists(mihomoConfigPath))
-                return (false, "Clash 直通配置生成失败（YAML 未写出），请检查订阅缓存是否被清理后重试");
-            var chk = await Task.Run(() => RunMihomoCheck(mihomoConfigPath!));
-            if (!chk.Ok) return (false, "Clash 配置未通过 mihomo 校验：" + chk.Message);
-        }
-        else if (useCustom)
-        {
-            // 自定义配置不用自适应改写（会把用户自己的字段改掉），只做一次原样校验。
-            var customExe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
-            var customKind = useSingBox ? KernelKind.SingBox : KernelKind.Xray;
-            var chk = await Task.Run(() => KernelCompat.RunCheck(customExe, customKind, customConfigPath!, 15000));
-            if (!chk.Ok)
-                return (false, $"自定义配置未通过 {(useSingBox ? "sing-box" : "xray")} 校验：{chk.Output}");
-        }
-        else
-        {
-            var rustConfigUsed = false;
-            if (useSingBox && !useNaive && !useCustom && !useMihomo && AppState.State.UseRustConfig)
-            {
-                //   任何失败（缺 exe / 超时 / check 失败）都返回 null，这里回退 C# 原配置。
-                var rustJson = await RustConfigBridge.TryBuildAsync(node, useTun);
-                if (!string.IsNullOrEmpty(rustJson))
-                {
-                    json = rustJson;
-                    rustConfigUsed = true;
+                    LogBus.App("固定出口：TUN 模式暂不支持（需要 xray 链式出站），本次按普通模式连接", "Warning");
                 }
                 else
                 {
-                    LogBus.App("Rust 配置生成失败，本次已回退 C# 配置（连接不受影响）", "Warning");
-                }
-            }
-            json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
-            if (rustConfigUsed)
-                LogBus.App($"本次连接使用 Rust 生成的配置：{node.Name} · TUN={(useTun ? "开" : "关")}");
-        }
-
-        //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。
-        //   阶段 2 开关开启后实际配置已由 Rust 生成，影子对比没有意义，跳过（避免重复起进程）。
-        if (useSingBox && !useNaive && !useCustom && !useMihomo
-            && !AppState.State.UseRustConfig && !string.IsNullOrEmpty(json))
-            ConfigShadow.QueueIfAvailable(json, node, useTun);
-
-        // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
-        // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
-        if (useSingBox)
-        {
-            try
-            {
-                var findings = RuleSetIntegrity.Check();
-                foreach (var f in findings)
-                {
-                    LogBus.App(
-                        f.ActualBytes < 0
-                            ? $"⚠ 分流清单缺失：{f.File}（{f.Note}）"
-                            : $"⚠ 分流清单体量异常：{f.File} 仅 {f.ActualBytes:N0} B（应 ≥ {f.MinimumBytes:N0} B）—— {f.Note}",
-                        "Warning");
-                }
-                if (findings.Count > 0)
-                    LogBus.App("提示：请执行 python tools\\gen-rulesets.py 重新生成全量清单，否则国内直连会退化。", "Warning");
-            }
-            catch { }
-        }
-
-        //   原先是 File.WriteAllText(ConfigPath, json) **整文件覆盖**。
-        //   该文件写完后会被内核进程读取；覆盖面虽小，但「写一半被读」
-        //   （或进程在写一半被终止）会留下**半截 JSON** → 内核启动失败且难归因。
-        //   改为 tmp + rename 原子写（与本项目 state.json / subscription-cache.json 同款）。
-        var cfgPath = ConfigPath;
-        if (useMihomo)
-        {
-            cfgPath = mihomoConfigPath!;   // YAML 已在上面原子写出，不再写 config.json
-        }
-        else if (useCustom && customConfigPath != null)
-        {
-            cfgPath = customConfigPath;    // 自定义配置已原子写出（runtime-config.json）
-        }
-        else
-        {
-            try
-            {
-                var cfgTmp = ConfigPath + ".tmp";
-                File.WriteAllText(cfgTmp, json);
-                File.Move(cfgTmp, ConfigPath, true);
-            }
-            catch (Exception ex) { return (false, "配置写入失败：" + ex.Message); }
-        }
-
-        var exe = Path.Combine(NeoPaths.RuntimeDir,
-            useMihomo ? "mihomo.exe" : (useSingBox ? "sing-box.exe" : "xray.exe"));
-
-        // 「内核已启动（PID …）」，然后 800ms 后才检查 IsRunning。
-        // 若端口被别人占着，进程会秒退，于是日志出现自相矛盾的两行：
-        //   「xray 内核已启动（PID 45580 · 端口 10808/10809）」
-        //   「内核启动失败：本地端口被占用…」
-        // 前一行是假的（进程根本没起来），却最容易被当成"启动成功"的依据。
-        // 这里把检查提前：端口不空就当场失败并给出准确原因，不再打那条假日志。
-        try
-        {
-            if (FirstBusyPort() != 0)
-            {
-                // 再清一次残留（可能刚被别的东西拉起），仍不空才判失败
-                CleanupOrphanCores();
-                await Task.Delay(300);
-            }
-            var busyAtConnect = FirstBusyPort();
-            if (busyAtConnect != 0)
-            {
-                LogBus.App($"内核启动被拒：本地端口 {busyAtConnect} 仍被占用，未启动内核", "Error");
-                return (false, $"内核启动失败：本地端口 {busyAtConnect} 被占用。可能有其他代理程序（或残留内核）在用，请先关闭后重试");
-            }
-        }
-        catch { }
-
-        //   只在本进程第一次 TUN 连接时做（见 _tunPreStartGuardDone 注释）。
-        if (useTun && !_tunPreStartGuardDone)
-        {
-            _tunPreStartGuardDone = true;
-            EnsureTunAdapterCleared();
-        }
-
-        try
-        {
-            _kernelTail.Clear();
-
-            // naive：先起辅助进程并等 socks 端口就绪，再起前置 sing-box。
-            if (useNaive && naiveConfigPath != null)
-            {
-                var naiveExe = KernelCatalog.ExePath(CoreEngine.Naive);
-                _naive = new CoreProcess(naiveExe, Path.GetDirectoryName(naiveConfigPath)!);
-                _naive.LogLine += line => LogBus.Core("[naive] " + line);
-                _naive.Exited += code => LogBus.App($"naive 辅助进程退出（exit code {code}）", "Warning");
-                _naive.Start(naiveConfigPath, new[] { naiveConfigPath });
-                var ready = false;
-                for (var i = 0; i < 25 && !ready; i++)
-                {
-                    await Task.Delay(100);
                     try
                     {
-                        using var c = new System.Net.Sockets.TcpClient();
-                        await c.ConnectAsync(System.Net.IPAddress.Loopback, LocalPorts.NaiveListen);
-                        ready = true;
+                        fixedExit = ResolveFixedExitNode();
+                        if (fixedExit == null)
+                        {
+                            LogBus.App("固定出口：没有可用出口节点（出口需为非 REALITY 的 ws/tls 节点），本次按普通模式连接", "Warning");
+                        }
+                        else
+                        {
+                            fixedEntries = PickFixedExitEntries(fixedExit, AppState.State.FixedExitEntryCount);
+                            if (fixedEntries.Count == 0)
+                            {
+                                LogBus.App("固定出口：除出口「" + fixedExit.Name + "」外没有可用入口节点，本次按单节点连接", "Warning");
+                                fixedExit = null;
+                            }
+                        }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        LogBus.App("固定出口：准备失败，退回普通模式（" + ex.GetType().Name + ": " + ex.Message + "）", "Warning");
+                        fixedExit = null;
+                    }
                 }
-                if (!ready)
-                {
-                    try { _naive.StopAndVerify(); } catch { }
-                    _naive = null;
-                    return (false, "naive 辅助进程启动失败（socks 入口未就绪），请检查 naive 内核是否完整");
-                }
-                LogBus.App($"naive 辅助进程已就绪（PID {_naive.Pid} · 本地 socks {LocalPorts.NaiveListen}）");
             }
 
-            _xray = new CoreProcess(exe, NeoPaths.RuntimeDir);
-            _xray.LogLine += line =>
+            string json;
+            try
             {
-                LogBus.Core(line);
-                _kernelTail.Enqueue(line);
-                while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
-                LogLine?.Invoke(line);
-            };
-            var coreSelf = _xray;
-            coreSelf.Exited += code => OnCoreExited(coreSelf, code);
+                if (useAuxiliary)
+                {
+                    auxiliaryPlan = AuxiliaryCorePlan.Create(node, LocalPorts.NaiveListen, LocalPorts.AuxiliaryHttp, LocalPorts.AuxiliaryApi);
+                    auxiliaryExe = Path.Combine(NeoPaths.RuntimeDir, auxiliaryPlan.Engine + ".exe");
+                    if (!File.Exists(auxiliaryExe))
+                        return (false, $"需要 {auxiliaryPlan.Engine} 内核，请在设置 → 内核安装后连接");
+                    auxiliaryDataDir = Path.Combine(NeoPaths.DataDir, "auxiliary", auxiliaryPlan.Engine);
+                    Directory.CreateDirectory(auxiliaryDataDir);
+                    auxiliaryConfigPath = Path.Combine(auxiliaryDataDir, $"session-{connectEpoch}-{Guid.NewGuid():N}.json");
+                    var ntmp = auxiliaryConfigPath + ".tmp";
+                    File.WriteAllText(ntmp, auxiliaryPlan.Config);
+                    File.Move(ntmp, auxiliaryConfigPath, true);
+                    if (auxiliaryPlan.Engine == "mihomo")
+                        foreach (var name in new[] { "Country.mmdb", "geoip.dat", "geosite.dat" })
+                        {
+                            var src = Path.Combine(NeoPaths.RuntimeDir, name);
+                            if (File.Exists(src)) File.Copy(src, Path.Combine(auxiliaryDataDir, name), true);
+                        }
+                    var frontNode = AuxiliaryCorePlan.FrontNode(LocalPorts.NaiveListen, node.Name);
+                    var frontMode = auxiliaryPlan.OwnsRouting ? "global" : AppState.State.ProxyMode;
+                    var frontRules = auxiliaryPlan.OwnsRouting ? new List<RouteRule>() : AppState.State.CustomRules;
+                    json = useTun
+                        ? SingBoxConfigBuilder.BuildTun(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                            frontMode, !auxiliaryPlan.OwnsRouting && AppState.State.BypassPrivate, !auxiliaryPlan.OwnsRouting && AppState.State.BypassCn,
+                            !auxiliaryPlan.OwnsRouting && AppState.State.BlockAds, AppState.State.AllowLan, frontRules,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
+                            !auxiliaryPlan.OwnsRouting && AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
+                        : SingBoxConfigBuilder.Build(frontNode, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                            frontMode, !auxiliaryPlan.OwnsRouting && AppState.State.BypassPrivate, !auxiliaryPlan.OwnsRouting && AppState.State.BypassCn,
+                            !auxiliaryPlan.OwnsRouting && AppState.State.BlockAds, AppState.State.AllowLan, frontRules,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer,
+                            !auxiliaryPlan.OwnsRouting && AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
+                    if (useTun) json = AuxiliaryCorePlan.ProtectTunTransport(json, auxiliaryExe);
+                    CoreKind = "sing-box";
+                }
+                else if (useCustom)
+                {
+                    // 自定义整份配置：原样保留 outbounds/routing，只改本地接入层与统计接口。
+                    var srcJson = File.ReadAllText(node.Extras["config_path"]);
+                    var customDir = Path.Combine(NeoPaths.DataDir, "custom");
+                    Directory.CreateDirectory(customDir);
+                    customConfigPath = Path.Combine(customDir, "runtime-config.json");
+                    json = customSingBox
+                        ? (useTun
+                            ? CustomConfigBuilder.BuildSingBoxTun(srcJson,
+                                LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                                LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                                AppState.State.AllowLan, AppState.State.DnsServer)
+                            : CustomConfigBuilder.BuildSingBox(srcJson,
+                                LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                                LocalPorts.CoreClashApi, SingBoxConfigBuilder.ClashApiSecret,
+                                AppState.State.AllowLan))
+                        : CustomConfigBuilder.BuildXray(srcJson,
+                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                            LocalPorts.CoreStatsApi, AppState.State.AllowLan, AppState.State.KernelLogLevel);
+                    var ctmp = customConfigPath + ".tmp";
+                    File.WriteAllText(ctmp, json);
+                    File.Move(ctmp, customConfigPath, true);
+                    CoreKind = customSingBox ? "sing-box" : "xray";
+                }
+                else if (useMihomo)
+                {
+                    // 整份 Clash YAML 交给 mihomo：只覆盖本地接入端口/控制器。
+                    var apiPort = LocalPorts.CoreClashApi;
+                    //   之前这里传的是用户端口（21808/21809），与 PortRelay 抢同一个监听端口，
+                    //   表现为 mihomo 会话端口被占、中继也没起到转发作用。
+                    var yaml = MihomoConfigBuilder.Build(node,
+                        LocalPorts.CoreHttp, LocalPorts.CoreSocks,
+                        apiPort, AppState.State.KernelLogLevel);
+                    mihomoDataDir = Path.Combine(NeoPaths.DataDir, "mihomo");
+                    Directory.CreateDirectory(mihomoDataDir);
+                    mihomoConfigPath = Path.Combine(mihomoDataDir, "config.yaml");
+                    var ytmp = mihomoConfigPath + ".tmp";
+                    File.WriteAllText(ytmp, yaml);
+                    File.Move(ytmp, mihomoConfigPath, true);
+
+                    // GEOIP / GEOSITE 规则需要数据文件：runtime 里有就复制到 mihomo 工作目录，
+                    // 避免它启动时联网下载（本项目里 mihomo 走系统代理前还没有网络，下载必失败）。
+                    try
+                    {
+                        foreach (var name in new[] { "Country.mmdb", "geoip.dat", "geosite.dat" })
+                        {
+                            var src = Path.Combine(NeoPaths.RuntimeDir, name);
+                            if (File.Exists(src)) File.Copy(src, Path.Combine(mihomoDataDir, name), true);
+                        }
+                    }
+                    catch { }
+
+                    json = "";
+                    CoreKind = "mihomo";
+                }
+                else if (fixedExit != null && !useSingBox)
+                {
+                    json = XrayConfigBuilder.BuildFixedExit(fixedExit, fixedEntries,
+                        LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                        AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                        AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                        AppState.State.KernelLogLevel, AppState.State.DnsServer);
+                    FixedExitActive = true;
+                    FixedExitEntries = fixedEntries.Count;
+                    FixedExitName = fixedExit.Name;
+                    LogBus.App("固定出口已启用：出口「" + fixedExit.Name + "」· 入口 " + fixedEntries.Count + " 条链路（"
+                        + string.Join("、", fixedEntries.Take(6).Select(n => n.Name))
+                        + (fixedEntries.Count > 6 ? "…" : "") + "）");
+                }
+                else
+                {
+                    json = useMihomo ? "" : useSingBox
+                        ? (useTun
+                            ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                                AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                                AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                                AppState.State.KernelLogLevel, AppState.State.DnsServer,
+                                AppState.State.GameDirectEnabled, AppState.GameDirectProcessList())
+                            : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                                AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                                AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                                AppState.State.KernelLogLevel, AppState.State.DnsServer,
+                                AppState.State.GameDirectEnabled, AppState.GameDirectProcessList()))
+                        : XrayConfigBuilder.Build(node,
+                            LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                            AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
+                            AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
+                            AppState.State.KernelLogLevel, AppState.State.DnsServer);
+                }
+                if (!useMihomo && !useCustom && !useAuxiliary) CoreKind = useSingBox ? "sing-box" : "xray";
+            }
+            catch (Exception ex)
+            {
+                return (false, "配置生成失败（已保留原连接策略）：" + ex.Message);
+            }
+
+            // ---- 启动前配置预检 + 自适应 ----
+            if (auxiliaryPlan is { Engine: "mihomo" })
+            {
+                var chk = await Task.Run(() => RunMihomoCheck(auxiliaryConfigPath!));
+                if (!chk.Ok) return (false, "辅助内核配置校验失败：" + chk.Message);
+            }
+            else if (auxiliaryPlan is { Engine: "xray" })
+            {
+                var chk = await Task.Run(() => KernelCompat.RunCheck(auxiliaryExe!, KernelKind.Xray, auxiliaryConfigPath!, 15000));
+                if (!chk.Ok) return (false, "辅助内核配置校验失败：" + chk.Output);
+            }
+            // 预检拒绝就返回失败，不改变路由、固定出口、DNS 或证书策略。
             if (useMihomo)
-                _xray.Start(cfgPath, new[] { "-f", cfgPath, "-d", mihomoDataDir! });
+            {
+                if (string.IsNullOrEmpty(mihomoConfigPath) || !File.Exists(mihomoConfigPath))
+                    return (false, "Clash 直通配置生成失败（YAML 未写出），请检查订阅缓存是否被清理后重试");
+                var chk = await Task.Run(() => RunMihomoCheck(mihomoConfigPath!));
+                if (!chk.Ok) return (false, "Clash 配置未通过 mihomo 校验：" + chk.Message);
+            }
+            else if (useCustom)
+            {
+                // 自定义配置不用自适应改写（会把用户自己的字段改掉），只做一次原样校验。
+                var customExe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
+                var customKind = useSingBox ? KernelKind.SingBox : KernelKind.Xray;
+                var chk = await Task.Run(() => KernelCompat.RunCheck(customExe, customKind, customConfigPath!, 15000));
+                if (!chk.Ok)
+                    return (false, $"自定义配置未通过 {(useSingBox ? "sing-box" : "xray")} 校验：{chk.Output}");
+            }
             else
-                _xray.Start(cfgPath);
+            {
+                var rustConfigUsed = false;
+                if (useSingBox && !useAuxiliary && !useCustom && !useMihomo && AppState.State.UseRustConfig)
+                {
+                    //   任何失败（缺 exe / 超时 / check 失败）都返回 null，这里回退 C# 原配置。
+                    var rustJson = await RustConfigBridge.TryBuildAsync(node, useTun);
+                    if (!string.IsNullOrEmpty(rustJson))
+                    {
+                        json = rustJson;
+                        rustConfigUsed = true;
+                    }
+                    else
+                    {
+                        LogBus.App("Rust 配置生成失败，本次已回退 C# 配置（连接不受影响）", "Warning");
+                    }
+                }
+                json = await EnsureCompatibleConfigAsync(json, node, useSingBox);
+                if (rustConfigUsed)
+                    LogBus.App($"本次连接使用 Rust 生成的配置：{node.Name} · TUN={(useTun ? "开" : "关")}");
+            }
+
+            //   再生成一份并做字段级 diff，只写日志、不生效。后台执行 + 15 秒超时，失败不影响连接。
+            //   阶段 2 开关开启后实际配置已由 Rust 生成，影子对比没有意义，跳过（避免重复起进程）。
+            if (Cancelled()) return (false, ConnectionCancelled);
+            if (useSingBox && !useAuxiliary && !useCustom && !useMihomo
+                && !AppState.State.UseRustConfig && !string.IsNullOrEmpty(json))
+                ConfigShadow.QueueIfAvailable(json, node, useTun);
+
+            // CN 分流清单完整性护栏：清单被换成上游精简版时，TUN 下国内域名会静默
+            // 走代理（见 RuleSetIntegrity 注释）。只告警、不阻断启动。
+            if (useSingBox)
+            {
+                try
+                {
+                    var findings = RuleSetIntegrity.Check();
+                    foreach (var f in findings)
+                    {
+                        LogBus.App(
+                            f.ActualBytes < 0
+                                ? $"⚠ 分流清单缺失：{f.File}（{f.Note}）"
+                                : $"⚠ 分流清单体量异常：{f.File} 仅 {f.ActualBytes:N0} B（应 ≥ {f.MinimumBytes:N0} B）—— {f.Note}",
+                            "Warning");
+                    }
+                    if (findings.Count > 0)
+                        LogBus.App("提示：请执行 python tools\\gen-rulesets.py 重新生成全量清单，否则国内直连会退化。", "Warning");
+                }
+                catch { }
+            }
+
+            //   原先是 File.WriteAllText(ConfigPath, json) **整文件覆盖**。
+            //   该文件写完后会被内核进程读取；覆盖面虽小，但「写一半被读」
+            //   （或进程在写一半被终止）会留下**半截 JSON** → 内核启动失败且难归因。
+            //   改为 tmp + rename 原子写（与本项目 state.json / subscription-cache.json 同款）。
+            var cfgPath = ConfigPath;
+            if (useMihomo)
+            {
+                cfgPath = mihomoConfigPath!;   // YAML 已在上面原子写出，不再写 config.json
+            }
+            else if (useCustom && customConfigPath != null)
+            {
+                cfgPath = customConfigPath;    // 自定义配置已原子写出（runtime-config.json）
+            }
+            else
+            {
+                try
+                {
+                    var cfgTmp = ConfigPath + ".tmp";
+                    File.WriteAllText(cfgTmp, json);
+                    File.Move(cfgTmp, ConfigPath, true);
+                }
+                catch (Exception ex) { return (false, "配置写入失败：" + ex.Message); }
+            }
+
+            var exe = Path.Combine(NeoPaths.RuntimeDir,
+                useMihomo ? "mihomo.exe" : (useSingBox ? "sing-box.exe" : "xray.exe"));
+
+            // 「内核已启动（PID …）」，然后 800ms 后才检查 IsRunning。
+            // 若端口被别人占着，进程会秒退，于是日志出现自相矛盾的两行：
+            //   「xray 内核已启动（PID 45580 · 端口 10808/10809）」
+            //   「内核启动失败：本地端口被占用…」
+            // 前一行是假的（进程根本没起来），却最容易被当成"启动成功"的依据。
+            // 这里把检查提前：端口不空就当场失败并给出准确原因，不再打那条假日志。
+            try
+            {
+                if (FirstBusyPort() != 0)
+                {
+                    // 再清一次残留（可能刚被别的东西拉起），仍不空才判失败
+                    CleanupOrphanCores();
+                    await Task.Delay(300);
+                }
+                var busyAtConnect = FirstBusyPort();
+                if (busyAtConnect != 0)
+                {
+                    LogBus.App($"内核启动被拒：本地端口 {busyAtConnect} 仍被占用，未启动内核", "Error");
+                    return (false, $"内核启动失败：本地端口 {busyAtConnect} 被占用。可能有其他代理程序（或残留内核）在用，请先关闭后重试");
+                }
+            }
+            catch { }
+
+            if (Cancelled()) return (false, ConnectionCancelled);
+            //   只在本进程第一次 TUN 连接时做（见 _tunPreStartGuardDone 注释）。
+            if (requestedTun)
+            {
+                if (!_tunPreStartGuardDone)
+                {
+                    _tunPreStartGuardDone = true;
+                    EnsureTunAdapterCleared();
+                }
+                if (HasActiveTunResidueForGuard())
+                    return (false, "旧 TUN 网卡或路由仍在生效，已取消启动，请等待清理完成");
+            }
+
+            try
+            {
+                _kernelTail.Clear();
+
+                if (useAuxiliary)
+                {
+                    var auxiliaryPorts = auxiliaryPlan!.OwnsRouting
+                        ? new[] { LocalPorts.NaiveListen, LocalPorts.AuxiliaryHttp, LocalPorts.AuxiliaryApi }
+                        : new[] { LocalPorts.NaiveListen };
+                    if (auxiliaryPorts.FirstOrDefault(p => !PortFree(p)) is var busyAuxiliary && busyAuxiliary != 0)
+                        return (false, $"辅助内核端口 {busyAuxiliary} 已被占用，未接管系统网络");
+                }
+
+                // 先确认辅助协议入口就绪，主内核才接管系统流量。
+                if (auxiliaryPlan != null && auxiliaryConfigPath != null)
+                {
+                    var auxiliary = new CoreProcess(auxiliaryExe!, auxiliaryDataDir!);
+                    auxiliary.LogLine += line => LogBus.Core("[" + auxiliaryPlan.Engine + "] " + line);
+                    auxiliary.Exited += code =>
+                    {
+                        CoreProcess? active;
+                        lock (SessionStateGate)
+                        {
+                            if (!ReferenceEquals(_naive, auxiliary) || connectEpoch != _sessionEpoch || !IsConnected) return;
+                            active = _xray;
+                        }
+                        LogBus.App($"{auxiliaryPlan.Engine} 辅助进程意外退出（exit code {code}）", "Error");
+                        OnCoreExited(active, code);
+                    };
+                    lock (SessionStateGate)
+                    {
+                        if (Cancelled()) return (false, ConnectionCancelled);
+                        _naive = auxiliary;
+                        CoreConfigs[auxiliary] = auxiliaryConfigPath;
+                        auxiliary.Start(auxiliaryConfigPath, auxiliaryPlan.Arguments(auxiliaryConfigPath, auxiliaryDataDir!));
+                    }
+                    // Naive 在处理 SOCKS greeting 前会访问上游 preamble；本机启动检查不可依赖远端响应。
+                    var ready = await ProxyReadiness.WaitAsync(() => auxiliary.IsRunning,
+                        LocalPorts.NaiveListen, LocalPorts.NaiveListen, TimeSpan.FromSeconds(8), ct,
+                        negotiateSocks: auxiliaryPlan.Engine != "naive",
+                        isCurrent: () => !Cancelled());
+                    if (!ready)
+                        return (false, $"{auxiliaryPlan.Engine} 辅助进程启动失败（SOCKS 入口未就绪），未接管系统网络");
+                    LogBus.App($"{auxiliaryPlan.Engine} 辅助进程已就绪（PID {auxiliary.Pid} · 本地 socks {LocalPorts.NaiveListen}）");
+                }
+
+                if (Cancelled()) return (false, ConnectionCancelled);
+                var coreSelf = new CoreProcess(exe, NeoPaths.RuntimeDir);
+                coreSelf.LogLine += line =>
+                {
+                    LogBus.Core(line);
+                    _kernelTail.Enqueue(line);
+                    while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
+                    LogLine?.Invoke(line);
+                };
+                coreSelf.Exited += code => OnCoreExited(coreSelf, code);
+                lock (SessionStateGate)
+                {
+                    if (Cancelled()) return (false, ConnectionCancelled);
+                    CoreConfigs[coreSelf] = cfgPath;
+                    CoreStats.Register(coreSelf, CoreKind, LocalPorts.CoreStatsApi, LocalPorts.CoreClashApi, LocalPorts.Socks);
+                    _xray = coreSelf;
+                    _tunSessionActive = useTun;
+                    if (useMihomo)
+                        coreSelf.Start(cfgPath, new[] { "-f", cfgPath, "-d", mihomoDataDir! });
+                    else
+                        coreSelf.Start(cfgPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogBus.Exception($"内核启动失败（{CoreKind}）", ex);
+                return (false, "内核启动失败：" + ex.Message);
+            }
+
+            var readinessCore = _xray;
+            var readyTimer = Stopwatch.StartNew();
+            bool coreReady;
+            if (useTun)
+            {
+                // TUN 的网卡/路由建立仍沿用已验证的稳定窗口，不以端口开放替代其就绪。
+                await Task.Delay(800, ct);
+                coreReady = readinessCore is { IsRunning: true };
+            }
+            else
+            {
+                coreReady = readinessCore != null && await ProxyReadiness.WaitAsync(
+                    () => readinessCore.IsRunning, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                    TimeSpan.FromSeconds(useMihomo ? 15 : 8), ct,
+                    negotiateSocks: !useCustom && !useMihomo, isCurrent: () => !Cancelled());
+            }
+            if (Cancelled()) return (false, ConnectionCancelled);
+            if (!coreReady || readinessCore == null || !readinessCore.IsRunning || useAuxiliary && _naive is not { IsRunning: true })
+            {
+                // The finally path revokes only this attempt and schedules owned cleanup.
+                //   原先只查 10808/10085 —— 而这两个正是刚被门禁放行的，于是 10809 冲突
+                var busyPort = FirstBusyPort();
+                bool busy = readinessCore is not { IsRunning: true } && busyPort != 0;
+                var bootTail = KernelTailText();
+                var failedListener = KernelCompat.ListenerBindFailurePort(bootTail);
+                if (failedListener is { } failedPort && new[] { LocalPorts.CoreSocks, LocalPorts.CoreHttp,
+                    LocalPorts.CoreStatsApi, LocalPorts.CoreClashApi }.Contains(failedPort))
+                {
+                    var listenerError = ListenerBindFailure + failedPort + "（端口被占用或被系统拒绝访问）";
+                    LogBus.App(listenerError + Environment.NewLine + bootTail, "Error");
+                    return (false, listenerError);
+                }
+                // 已知特征映射成中文可读原因（预检通过但内核仍退出时，多半是运行期/传输/字段问题）。
+                var bootHint = KernelCompat.DescribeStartupFailure(bootTail);
+                LogBus.App(busy
+                    ? $"内核启动失败：本地端口 {busyPort} 被占用（残留内核已尝试清理，请重试）"
+                    : readinessCore is { IsRunning: true } ? "内核启动超时：代理监听器尚未就绪"
+                    : "内核启动后立即退出（配置或参数错误）"
+                      + (bootHint.Length > 0 ? "；已知特征：" + bootHint : "")
+                      + (bootTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{bootTail}" : ""), "Error");
+                var failMsg = busy
+                    ? "内核启动失败：本地端口 " + busyPort + " 被占用（残留内核已尝试清理，请重试）"
+                    : readinessCore is { IsRunning: true } ? "内核启动超时：代理监听器尚未就绪"
+                    : "内核启动后立即退出（配置或参数错误，详见内核日志）"
+                      + (bootHint.Length > 0 ? "（" + bootHint + "）" : "");
+                IncidentLog.Record("error", failMsg, bootTail);
+                return (false, failMsg);
+            }
+
+            LogBus.App($"内核就绪：{readyTimer.ElapsedMilliseconds} ms（{CoreKind}）", "Debug");
+            // Resource publication and proxy ownership are committed under the same session lock.
+            lock (SessionStateGate)
+            {
+                if (Cancelled() || _xray is not { IsRunning: true } || useAuxiliary && _naive is not { IsRunning: true }) return (false, ConnectionCancelled);
+                EnsureRelays();
+                if (!SystemProxy.Enable(LocalProxySettings.Server))
+                    return (false, "系统代理接管失败，已取消连接");
+            }
+            if (requestedTun)
+            {
+                _tunBridgeRestarts = 0;
+                var tunStart = await StartTunBridgeAsync(connectEpoch, ct).ConfigureAwait(false);
+                if (!tunStart.Ok) return tunStart;
+            }
+            lock (SessionStateGate)
+            {
+                if (Cancelled() || _xray is not { IsRunning: true }) return (false, ConnectionCancelled);
+                IsConnected = true;
+                ConnectedNode = node;
+                ConnectedAt = DateTime.Now;
+                _lastCoreStartAt = DateTime.Now;
+            }
+            if (requestedTun) FailoverService.MarkTunNetworkEvent();
+            AppState.SetCurrentNode(node);
+            if (Cancelled()) return (false, ConnectionCancelled);
+            CoreState.Report("running", _xray?.Pid ?? 0, CoreKind, "connected", sessionEpoch: connectEpoch);
+            IncidentLog.Record("connect", "已连接 " + node.Name
+                + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : ""));
+            _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
+            _ = WarmupDnsAsync();                 // 连接成功后预热 DNS（x.com / cloudflare），减轻首访冷启动
+            StartWatchdog(node);                  // 内核兜底：每 20s 检查进程/端口/TUN/stats API
+            var gdCount = (requestedTun && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
+            LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(requestedTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
+                       (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
+            NotifyStateChanged();
+            // 连接后自检（fire-and-forget）：链路站稳后确认「目标站」真的可访问；
+            // 不可用且条件允许时自动切同地区下一个节点（最多 1 次）。不阻塞本连接流程。
+            StartPostConnectSelfCheck(node);
+            if (Cancelled()) return (false, ConnectionCancelled);
+            connectSucceeded = true;
+            return (true, null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return (false, ConnectionCancelled);
         }
         catch (Exception ex)
         {
-            _xray = null;
-            LogBus.Exception($"内核启动失败（{CoreKind}）", ex);
-            return (false, "内核启动失败：" + ex.Message);
-        }
-
-        await Task.Delay(useMihomo ? 1400 : 800);
-        if (_xray == null || !_xray.IsRunning)
-        {
-            Disconnect("内核启动失败");
-            //   原先只查 10808/10085 —— 而这两个正是刚被门禁放行的，于是 10809 冲突
-            var busyPort = FirstBusyPort();
-            bool busy = busyPort != 0;
-            var bootTail = KernelTailText();
-            // 已知特征映射成中文可读原因（预检通过但内核仍退出时，多半是运行期/传输/字段问题）。
-            var bootHint = KernelCompat.DescribeStartupFailure(bootTail);
-            LogBus.App(busy
-                ? $"内核启动失败：本地端口 {busyPort} 被占用（残留内核已尝试清理，请重试）"
-                : "内核启动后立即退出（配置或参数错误）"
-                  + (bootHint.Length > 0 ? "；已知特征：" + bootHint : "")
-                  + (bootTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{bootTail}" : ""), "Error");
-            var failMsg = busy
-                ? "内核启动失败：本地端口 " + busyPort + " 被占用（残留内核已尝试清理，请重试）"
-                : "内核启动后立即退出（配置或参数错误，详见内核日志）"
-                  + (bootHint.Length > 0 ? "（" + bootHint + "）" : "");
-            IncidentLog.Record("error", failMsg, bootTail);
-            return (false, failMsg);
-        }
-
-        //   这样切换节点时只需改 Relay 的后端指针，用户端口不变、系统代理不用改、老连接不断。
-        EnsureRelays();
-        LogBus.App($"{CoreKind} 内核已启动（PID {_xray.Pid} · 内核端口 {LocalPorts.CoreSocks}/{LocalPorts.CoreHttp} · 用户端口 {LocalPorts.Socks}/{LocalPorts.Http} 由中继转发）");
-
-        // 系统代理：非 TUN 时连上就自动写入 Windows。
-        //   Enable()，开关的两种状态落到同一结果，纯属误导）。因此这里不再有任何开关判断，
-        //   行为与旧版一致：连上即写、断开即清。
-        //   TUN 模式走虚拟网卡接管全部流量，不需要也不应该写系统代理。
-        //   Windows 的 ProxyServer 里裸写 "127.0.0.1:10808" 会被当作 **HTTP 代理**，
-        //   于是 Edge / Steam / 其它走 WinINet 的程序把 HTTP CONNECT 发到 socks 监听端口，
-        //   直接被拒（实测 curl -x http://127.0.0.1:10808 → 1ms 失败；-x http://127.0.0.1:10809 → 200）。
-        //   这也是「所有网页转圈、Steam 加载半天」的直接原因。
-        //   同时把 socks 显式写进分号串，支持 socks 的程序仍可直连 10808。
-        if (!useTun)
-            SystemProxy.Enable(
-                $"http=127.0.0.1:{LocalPorts.Http};" +
-                $"https=127.0.0.1:{LocalPorts.Http};" +
-                $"socks=127.0.0.1:{LocalPorts.Socks}");
-
-        // （TUN 打开就"关闭不掉"的修复，见 TeardownTunNetwork 注释）
-        _tunSessionActive = useTun;
-        //   neo-tun 建立/销毁会触发 NetworkAddressChanged，FailoverService 据此
-        //   过滤掉「我们自己造成的网络变化」，避免每次连 TUN 都误报「立即复查」。
-        if (useTun) FailoverService.MarkTunNetworkEvent();
-
-        IsConnected = true;
-        ConnectedNode = node;
-        CoreState.Report("running", _xray?.Pid ?? 0, CoreKind, "connected");
-        IncidentLog.Record("connect", "已连接 " + node.Name
-            + (FixedExitActive ? "（固定出口 " + FixedExitName + "）" : ""));
-        ConnectedAt = DateTime.Now;
-        _lastCoreStartAt = DateTime.Now;   // 供「内核是否稳定运行过」判断使用
-        _ = TryAutoMeasureDelayAsync(node);   // 后台补测本节点延迟，让「未测速」自愈
-        _ = WarmupDnsAsync();                 // 连接成功后预热 DNS（x.com / cloudflare），减轻首访冷启动
-        StartWatchdog(node);                  // 内核兜底：每 20s 检查进程/端口/TUN/stats API
-        var gdCount = (useSingBox && AppState.State.GameDirectEnabled) ? AppState.GameDirectProcessList().Count : 0;
-        LogBus.App($"=== 会话开始 · 节点：{node.Name} · 模式：{ModeName(AppState.State.ProxyMode)} · TUN={(useTun ? "开" : "关")} · 游戏直连={(gdCount > 0 ? $"开（{gdCount} 个进程）" : "关")}" +
-                   (FixedExitActive ? $" · 固定出口={FixedExitName}（入口 {FixedExitEntries}）" : "") + " ===");
-        NotifyStateChanged();
-        // 连接后自检（fire-and-forget）：链路站稳后确认「目标站」真的可访问；
-        // 不可用且条件允许时自动切同地区下一个节点（最多 1 次）。不阻塞本连接流程。
-        StartPostConnectSelfCheck(node);
-        return (true, null);
+            LogBus.Exception("连接失败", ex);
+            return (false, "连接失败：" + ex.Message);
         }
         finally
         {
+            // Unique per-attempt paths cannot delete a successor's configuration.
+            // Started auxiliaries are also registered with ResetSession for post-stop cleanup.
+            if (!connectSucceeded && auxiliaryConfigPath != null)
+                try { File.Delete(auxiliaryConfigPath); } catch { }
+            if (!connectSucceeded && ownedEpoch is { } owner
+                && ResetSession("connection attempt ended", owner, null, out var next))
+                intent?.Advance(owner, next);
+            if (lifecycleHeld) TeardownGate.Release();
             IsConnecting = false;
-            //   否则一次失败会把门永久占住，此后所有连接请求都被拒。
-            try { SessionGate.Release(); } catch { }
+            SessionGate.Release();
             NotifyStateChanged();
         }
     }
 
-    // ---- 启动前配置预检 + 自适应 ----
-    // 背景：内核版本变化会移除旧字段/传输；此前没有预检，被拒只能表现为「内核启动后立即退出」。
-    // 流程：预检 → 版本规则适配 → 去性能字段 → 最简单节点配置，每级都留痕（LogBus + IncidentLog）。
-    // 预检本身跑不起来（缺 exe / 超时）不阻断连接。
-
-    private static async Task<string> EnsureCompatibleConfigAsync(string json, NodeItem node, bool useSingBox)
+    // ---- 连接前配置预检：只允许移除确定不改变路由/证书策略的可选性能字段 ----
+    private static async Task<string> EnsureCompatibleConfigAsync(string json, NodeItem node, bool useSingBox,
+        int? socksPort = null, int? httpPort = null, int? statsPort = null, int? clashApiPort = null)
     {
         var kind = useSingBox ? KernelKind.SingBox : KernelKind.Xray;
         var coreName = useSingBox ? "sing-box" : "xray";
         var exe = Path.Combine(NeoPaths.RuntimeDir, useSingBox ? "sing-box.exe" : "xray.exe");
-        var tmp = Path.Combine(Path.GetTempPath(), $"neo-preflight-{Environment.ProcessId}-{DateTime.Now:HHmmssfff}.json");
-        var current = json;
-        var lastStderr = "";
+        var tmp = Path.Combine(Path.GetTempPath(), $"neo-preflight-{Environment.ProcessId}-{Guid.NewGuid():N}.json");
         try
         {
-            // 版本取自既有缓存探测；失败则只跳过「版本规则」这一级，预检照跑。
-            Version? ver = null;
-            try
+            File.WriteAllText(tmp, json);
+            var original = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+            if (original.Ok) return json;
+            if (original.InfraFailed) throw new InvalidOperationException("配置预检无法执行：" + original.Output);
+            RecordPreflightFailure("配置预检失败", original.Output);
+            var stripped = KernelCompat.StripOptionalFields(json, kind, out var notes);
+            if (!string.Equals(stripped, json, StringComparison.Ordinal))
             {
-                var txt = await Task.Run(() => useSingBox ? SingBoxVersion : XrayVersion);
-                if (!string.IsNullOrWhiteSpace(txt)) ver = KernelCompat.ParseVersion(txt, kind);
-            }
-            catch { }
-
-            File.WriteAllText(tmp, current);
-            var r0 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
-            if (r0.Ok)
-            {
-                if (ver != null)
-                {
-                    // 通过时只记录版本注记（不改配置），例如 xray 26 仍支持但弃用 ws 的提示。
-                    KernelCompat.Adapt(current, kind, ver, out var okNotes);
-                    foreach (var n in okNotes)
-                        if (n.StartsWith("版本提示：", StringComparison.Ordinal)) LogBus.App(n, "Debug");
-                }
-                LogBus.App($"配置预检通过（{coreName}）", "Debug");
-                return current;
-            }
-            if (r0.InfraFailed)
-            {
-                LogBus.App($"配置预检无法执行（不阻断连接）：{r0.Output}", "Warning");
-                return current;
-            }
-            lastStderr = r0.Output;
-            RecordPreflightFailure("配置预检失败", r0.Output);
-
-            // 第 1 级：按内核版本规则适配（sing-box 1.16 DNS 字段 / xray 传输注记）
-            if (ver != null)
-            {
-                var adapted = KernelCompat.Adapt(current, kind, ver, out var notes);
-                LogAdaptNotes(notes);
-                if (!string.Equals(adapted, current, StringComparison.Ordinal))
-                {
-                    File.WriteAllText(tmp, adapted);
-                    var r1 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
-                    if (r1.Ok)
-                    {
-                        RecordAdaptation($"按内核版本 {ver} 适配后预检通过（{coreName}）");
-                        return adapted;
-                    }
-                    if (r1.InfraFailed)
-                    {
-                        LogBus.App($"配置预检无法执行（不阻断连接）：{r1.Output}", "Warning");
-                        return adapted;
-                    }
-                    lastStderr = r1.Output;
-                    RecordPreflightFailure("版本规则适配后预检仍失败", r1.Output);
-                    current = adapted;
-                }
-            }
-
-            // 第 2 级：去掉性能向可选字段（sockopt / observatory / mux 等）
-            var stripped = KernelCompat.StripOptionalFields(current, kind, out var stripNotes);
-            if (!string.Equals(stripped, current, StringComparison.Ordinal))
-            {
-                LogAdaptNotes(stripNotes);
                 File.WriteAllText(tmp, stripped);
-                var r2 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
-                if (r2.Ok)
+                var optional = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
+                if (optional.Ok)
                 {
-                    RecordAdaptation($"去掉性能向可选字段后预检通过（{coreName}）");
+                    LogAdaptNotes(notes);
                     return stripped;
                 }
-                if (r2.InfraFailed)
-                {
-                    LogBus.App($"配置预检无法执行（不阻断连接）：{r2.Output}", "Warning");
-                    return stripped;
-                }
-                lastStderr = r2.Output;
-                RecordPreflightFailure("去掉性能向可选字段后预检仍失败", r2.Output);
-                current = stripped;
+                RecordPreflightFailure("移除可选性能字段后预检仍失败", optional.Output);
             }
-
-            // 第 3 级：退回最简单节点配置（不链式、不分流、无自定义规则）
-            var minimal = BuildMinimalConfig(node, useSingBox);
-            if (minimal != null)
-            {
-                File.WriteAllText(tmp, minimal);
-                var r3 = await Task.Run(() => KernelCompat.RunCheck(exe, kind, tmp, 8000));
-                if (r3.Ok)
-                {
-                    RecordAdaptation($"已退回最简单节点配置并通过预检（{coreName}）");
-                    return minimal;
-                }
-                if (r3.InfraFailed)
-                {
-                    LogBus.App($"配置预检无法执行（不阻断连接）：{r3.Output}", "Warning");
-                    return minimal;
-                }
-                lastStderr = r3.Output;
-                RecordPreflightFailure("最简单节点配置预检仍失败", r3.Output);
-                current = minimal;
-            }
-
-            var lines = KernelCompat.FirstLines(lastStderr, 3);
-            LogBus.App($"配置预检在逐级降级后仍失败（{coreName}），将按最后一份配置尝试启动：{lines}", "Error");
-            IncidentLog.Record("compat", "配置预检逐级降级后仍失败，仍尝试启动", lines);
-            return current;
+            throw new InvalidOperationException($"配置预检失败（{coreName}），已保留路由与安全策略并拒绝连接："
+                + KernelCompat.FirstLines(original.Output, 3));
         }
-        catch (Exception ex)
-        {
-            LogBus.App($"配置预检异常（不阻断连接）：[{ex.GetType().Name}] {ex.Message}", "Warning");
-            return json;
-        }
-        finally
-        {
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-        }
+        finally { try { File.Delete(tmp); } catch { } }
     }
 
-    /// <summary>预检失败留痕：LogBus + IncidentLog("compat", 原因, 原始 stderr 前 3 行)。</summary>
+
     private static void RecordPreflightFailure(string summary, string output)
     {
         var lines = KernelCompat.FirstLines(output, 3);
@@ -1061,34 +997,7 @@ public static class ConnectionService
         IncidentLog.Record("compat", "已自适应：" + detail);
     }
 
-    /// <summary>最后一级降级：构造最简单的单节点配置（global 分流、无自定义规则、错误级日志）。</summary>
-    private static string? BuildMinimalConfig(NodeItem node, bool useSingBox)
-    {
-        try
-        {
-            // 最简单配置不含固定出口链路；若之前已按固定出口生成过配置，这里要把状态复位，避免日志/界面虚报。
-            FixedExitActive = false;
-            FixedExitEntries = 0;
-            FixedExitName = null;
 
-            const string dns = "223.5.5.5";
-            if (useSingBox)
-            {
-                return AppState.State.UseTun
-                    ? SingBoxConfigBuilder.BuildTun(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        "global", false, false, false, false, null, "error", dns)
-                    : SingBoxConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                        "global", false, false, false, false, null, "error", dns);
-            }
-            return XrayConfigBuilder.Build(node, LocalPorts.CoreSocks, LocalPorts.CoreHttp,
-                "global", false, false, false, false, null, "error", dns);
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"构造最简单节点配置失败：{ex.GetType().Name} {ex.Message}", "Warning");
-            return null;
-        }
-    }
 
     /// <summary>
     /// 后端切过去，最后延迟停掉旧内核。
@@ -1097,81 +1006,109 @@ public static class ConnectionService
     ///     其余（sing-box 节点 / TUN / naive / Clash 直通 / 自定义配置）回退普通连接
     ///     —— 那些场景会有 3～4 秒断网，但功能正确。
     /// </summary>
-    public static async Task<(bool Ok, string? Err)> SwitchNodeFastAsync(NodeItem node)
+    public static Task<(bool Ok, string? Err)> SwitchNodeFastAsync(NodeItem node,
+        int? expectedEpoch = null, CancellationToken ct = default, SessionIntent? intent = null)
     {
+        var expected = expectedEpoch ?? intent?.Epoch ?? SessionEpoch;
+        return Task.Run(() => SwitchNodeFastCoreAsync(node, expected, ct, intent));
+    }
+
+    private static async Task<(bool Ok, string? Err)> SwitchNodeFastCoreAsync(NodeItem node,
+        int? expectedEpoch, CancellationToken ct, SessionIntent? intent)
+    {
+        expectedEpoch ??= intent?.Epoch;
         if (Interlocked.Exchange(ref _switchGate, 1) == 1)
             return (false, "正在切换节点中，请稍候");
+        if (!await SessionGate.WaitAsync(0))
+        {
+            Interlocked.Exchange(ref _switchGate, 0);
+            return (false, "已有连接操作正在进行，请稍候重试");
+        }
+        var sessionHeld = true;
         //（否则切到一半点断开会让会话「复活」：系统代理已关、看门狗已取消）。
         IsConnecting = true;
-        CoreState.Report("switching", CorePid, CoreKind, "switch start");
         var epoch = Volatile.Read(ref _sessionEpoch);
+        CoreState.Report("switching", CorePid, CoreKind, "switch start", sessionEpoch: epoch);
         try { SwitchProgress?.Invoke("正在切换节点…"); } catch { }
         try
         {
-        if (!IsConnected || _xray is not { IsRunning: true })
-        {
-            return await ConnectAsync(node, force: true);
-        }
-        if (AppState.State.UseTun || node.IsNaive || node.IsClashPassthrough || node.IsCustomConfig
-            || AppState.State.FixedExitEnabled)
-        {
-            LogBus.App("节点切换：当前会话不支持无感切换（TUN/特殊节点/固定出口），走普通重连", "Debug");
-            return await ConnectAsync(node, force: true);
-        }
-
-        var useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
-            || (node.RequiresSingBox && !node.RequiresXray));
-        var exeName = useSingBox ? "sing-box.exe" : "xray.exe";
-        var exePath = Path.Combine(NeoPaths.RuntimeDir, exeName);
-        if (!File.Exists(exePath))
-        {
-            LogBus.App("节点切换：缺少内核 " + exeName + "，保持当前节点", "Warning");
-            return (false, "缺少内核 " + exeName);
-        }
-
-        var oldSlot = LocalPorts.ActiveSlot;
-        var newSlot = 1 - oldSlot;
-
-        // 仍然占着目标槽位端口。不做预检就直接起新内核 → 绑不上端口 → 8 秒后切换失败
-        //（表现为「连续切第二次必挂」）。这里先把它强停，等端口释放。
-        if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
-        {
-            LogBus.App("无感切换：目标槽位仍被上一轮内核占用（退役中），先强制退役再切", "Warning");
-            try { _retiringCore?.Stop(); } catch { }
-            for (var i = 0; i < 20; i++)
+            if (ct.IsCancellationRequested || App.IsShuttingDown
+                || (expectedEpoch.HasValue && expectedEpoch.Value != epoch))
+                return (false, ConnectionCancelled);
+            async Task<(bool Ok, string? Error)> FullReconnectAsync()
             {
-                if (PortFree(LocalPorts.SlotSocks(newSlot)) && PortFree(LocalPorts.SlotHttp(newSlot))) break;
-                await Task.Delay(150);
+                IsConnecting = false;
+                SessionGate.Release();
+                sessionHeld = false;
+                return await ConnectAsync(node, force: true, expectedEpoch: epoch, ct: ct, intent: intent);
             }
+            if (!IsConnected || _xray is not { IsRunning: true })
+            {
+                return await FullReconnectAsync();
+            }
+            if (_tunSessionActive || FixedExitActive || ConnectedNode is { } currentNode
+                && (AuxiliaryCorePlan.Needed(currentNode, false) || currentNode.IsClashPassthrough || currentNode.IsCustomConfig)
+                || AppState.State.UseTun || AuxiliaryCorePlan.Needed(node, false) || node.IsClashPassthrough || node.IsCustomConfig
+                || AppState.State.FixedExitEnabled)
+            {
+                LogBus.App("节点切换：当前会话不支持无感切换（TUN/特殊节点/固定出口），走普通重连", "Debug");
+                return await FullReconnectAsync();
+            }
+
+            await ApplyTlsPolicyAsync(node).ConfigureAwait(false);
+            if (ct.IsCancellationRequested || App.IsShuttingDown || epoch != Volatile.Read(ref _sessionEpoch))
+                return (false, ConnectionCancelled);
+            var useSingBox = KernelRouter.Apply(node, node.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC
+                || (node.RequiresSingBox && !node.RequiresXray));
+            var exeName = useSingBox ? "sing-box.exe" : "xray.exe";
+            var exePath = Path.Combine(NeoPaths.RuntimeDir, exeName);
+            if (!File.Exists(exePath))
+            {
+                LogBus.App("节点切换：缺少内核 " + exeName + "，保持当前节点", "Warning");
+                return (false, "缺少内核 " + exeName);
+            }
+
+            var oldSlot = LocalPorts.ActiveSlot;
+            var newSlot = 1 - oldSlot;
+
+            // 仍然占着目标槽位端口。不做预检就直接起新内核 → 绑不上端口 → 8 秒后切换失败
+            //（表现为「连续切第二次必挂」）。这里先把它强停，等端口释放。
             if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
             {
-                LogBus.App("无感切换：目标槽位端口仍被占用，回退普通重连", "Warning");
-                return await ConnectAsync(node, force: true);
+                LogBus.App("无感切换：目标槽位仍被上一轮内核占用（退役中），先强制退役再切", "Warning");
+                try { ReleaseCore(_retiringCore); } catch { }
+                for (var i = 0; i < 20; i++)
+                {
+                    if (PortFree(LocalPorts.SlotSocks(newSlot)) && PortFree(LocalPorts.SlotHttp(newSlot))) break;
+                    await Task.Delay(150, ct);
+                }
+                if (!PortFree(LocalPorts.SlotSocks(newSlot)) || !PortFree(LocalPorts.SlotHttp(newSlot)))
+                {
+                    LogBus.App("无感切换：目标槽位端口仍被占用，回退普通重连", "Warning");
+                    return await FullReconnectAsync();
+                }
             }
-        }
 
-        var newSocks = LocalPorts.SlotSocks(newSlot);
-        var newHttp = LocalPorts.SlotHttp(newSlot);
-        var newStats = LocalPorts.SlotStats(newSlot);
+            var newSocks = LocalPorts.SlotSocks(newSlot);
+            var newHttp = LocalPorts.SlotHttp(newSlot);
+            var newStats = LocalPorts.SlotStats(newSlot);
 
-        // 命令行里是否含数据目录来认「这是我们的内核」，放 TEMP 会导致崩溃后孤儿内核清不掉、
-        // 下次启动一直报「端口被占用」。
-        var cfgPath = Path.Combine(NeoPaths.DataDir, $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
-        CoreProcess? newCore = null;
-        try
-        {
-            var prevClash = SingBoxConfigBuilder.ClashApiPortOverride;
-            string json;
+            // 命令行里是否含数据目录来认「这是我们的内核」，放 TEMP 会导致崩溃后孤儿内核清不掉、
+            // 下次启动一直报「端口被占用」。
+            var cfgPath = Path.Combine(NeoPaths.DataDir, $"neo-switch-{newSlot}-{Guid.NewGuid():N}.json");
+            CoreProcess? newCore = null;
+            var coreCommitted = false;
             try
             {
+                string json;
                 if (useSingBox)
                 {
-                    SingBoxConfigBuilder.ClashApiPortOverride = LocalPorts.SlotClashApi(newSlot);
                     json = SingBoxConfigBuilder.Build(node, newSocks, newHttp,
                         AppState.State.ProxyMode, AppState.State.BypassPrivate, AppState.State.BypassCn,
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.KernelLogLevel, AppState.State.DnsServer,
-                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList());
+                        AppState.State.GameDirectEnabled, AppState.GameDirectProcessList(),
+                        clashApiPort: LocalPorts.SlotClashApi(newSlot));
                 }
                 else
                 {
@@ -1180,242 +1117,228 @@ public static class ConnectionService
                         AppState.State.BlockAds, AppState.State.AllowLan, AppState.State.CustomRules,
                         AppState.State.KernelLogLevel, AppState.State.DnsServer, newStats);
                 }
+                // 不跨 await 持有全局 builder 端口覆盖，避免影响后台测速生成的配置。
+                json = await EnsureCompatibleConfigAsync(json, node, useSingBox, newSocks, newHttp, newStats,
+                    LocalPorts.SlotClashApi(newSlot));
+                if (ct.IsCancellationRequested || App.IsShuttingDown || epoch != Volatile.Read(ref _sessionEpoch))
+                    return (false, ConnectionCancelled);
+                await File.WriteAllTextAsync(cfgPath, json, ct);
+
+                newCore = new CoreProcess(exePath, NeoPaths.RuntimeDir);
+                newCore.LogLine += line =>
+                {
+                    LogBus.Core(line);
+                    _kernelTail.Enqueue(line);
+                    while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
+                };
+                CoreConfigs[newCore] = cfgPath;
+                CoreStats.Register(newCore, useSingBox ? "sing-box" : "xray", newStats,
+                    LocalPorts.SlotClashApi(newSlot), LocalPorts.Socks);
+                newCore.Start(cfgPath);
+                var newCoreSelf = newCore;
+                newCoreSelf.Exited += code => OnCoreExited(newCoreSelf, code);
+
+                // 等新内核就绪：端口可连 + 进程仍存活（最长 8 秒）
+                var ready = await ProxyReadiness.WaitAsync(() => newCoreSelf.IsRunning,
+                    newSocks, newHttp, TimeSpan.FromSeconds(8), ct,
+                    isCurrent: () => !App.IsShuttingDown && epoch == Volatile.Read(ref _sessionEpoch));
+                if (!ready || !newCore.IsRunning)
+                {
+                    try { ReleaseCore(newCore); } catch { }
+                    LogBus.App("无感切换失败：新内核未能就绪，保持当前节点不变", "Warning");
+                    IncidentLog.Record("failover", "无感切换失败（新内核未就绪），保持原节点");
+                    return (false, "新内核未能就绪，已保持当前节点");
+                }
+
+                //   若用户已断开（SystemProxy 已关、看门狗已取消），继续提交会得到「界面已连接、实际直连」的矛盾状态。
+                CoreProcess? prev;
+                int committedEpoch;
+                lock (SessionStateGate)
+                {
+                    if (ct.IsCancellationRequested || App.IsShuttingDown || epoch != _sessionEpoch || !IsConnected)
+                        return (false, ConnectionCancelled);
+                    prev = _xray;
+                    var prevKind = CoreKind;
+                    try
+                    {
+                        LocalPorts.ActiveSlot = newSlot;
+                        CoreKind = useSingBox ? "sing-box" : "xray";
+                        EnsureRelays();
+                    }
+                    catch
+                    {
+                        LocalPorts.ActiveSlot = oldSlot;
+                        CoreKind = prevKind;
+                        try { EnsureRelays(); } catch { }
+                        throw;
+                    }
+                    _xray = newCore;
+                    coreCommitted = true;
+                    _retiringCore = prev;
+                    ConnectedNode = node;
+                    ConnectedAt = DateTime.Now;
+                    _lastCoreStartAt = DateTime.Now;
+                    committedEpoch = Interlocked.Increment(ref _sessionEpoch);
+                    intent?.Advance(epoch, committedEpoch);
+                }
+                var oldSocks = LocalPorts.SlotSocks(oldSlot);
+                var oldHttp = LocalPorts.SlotHttp(oldSlot);
+                var oldRelaySocks = _relaySocks;
+                var oldRelayHttp = _relayHttp;
+                _ = Task.Run(async () =>
+                {
+                    // 退役循环第一轮就会看到 0 并立刻停旧内核，那条请求随之失败。
+                    // 先等 2 秒让在途连接落账，再开始判断。
+                    try { await Task.Delay(2000); } catch { }
+                    var deadline = DateTime.Now.AddMinutes(5);
+                    while (DateTime.Now < deadline && ReferenceEquals(_retiringCore, prev))
+                    {
+                        var n = (oldRelaySocks?.ActiveFor(oldSocks) ?? 0) + (oldRelayHttp?.ActiveFor(oldHttp) ?? 0);
+                        if (n == 0) break;
+                        try { await Task.Delay(2000); } catch { break; }
+                    }
+                    var left = (oldRelaySocks?.ActiveFor(oldSocks) ?? 0) + (oldRelayHttp?.ActiveFor(oldHttp) ?? 0);
+                    try { ReleaseCore(prev); } catch { }
+                    lock (SessionStateGate) { if (ReferenceEquals(_retiringCore, prev)) _retiringCore = null; }
+                    try
+                    {
+                        LogBus.App(left > 0
+                            ? $"旧内核已退役（原槽位 {oldSlot}，残留 {left} 条连接被强制关闭）"
+                            : $"旧内核已退役（原槽位 {oldSlot}，连接已全部结束）", "Debug");
+                    }
+                    catch { }
+                });
+                CancelPostConnectSelfCheck();
+                AppState.SetCurrentNode(node);
+                // Persistence/events may invoke user code. They must never be followed by an unconditional commit.
+                if (committedEpoch != SessionEpoch || !ReferenceEquals(_xray, newCore))
+                    return (false, ConnectionCancelled);
+                StartWatchdog(node);
+                CoreState.Report("running", newCore.Pid, CoreKind, "switch done", sessionEpoch: committedEpoch);
+                NotifyStateChanged();
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                if (!coreCommitted) { try { ReleaseCore(newCore); } catch { } }
+                LogBus.Exception("无感切换失败", ex);
+                return (false, "无感切换失败：" + ex.Message);
             }
             finally
             {
-                SingBoxConfigBuilder.ClashApiPortOverride = prevClash;
-            }
-            await File.WriteAllTextAsync(cfgPath, json);
-
-            newCore = new CoreProcess(exePath, NeoPaths.RuntimeDir);
-            newCore.LogLine += line =>
-            {
-                LogBus.Core(line);
-                _kernelTail.Enqueue(line);
-                while (_kernelTail.Count > 60) _kernelTail.TryDequeue(out _);
-            };
-            newCore.Start(cfgPath);
-            var newCoreSelf = newCore;
-            newCoreSelf.Exited += code => OnCoreExited(newCoreSelf, code);
-
-            // 等新内核就绪：端口可连 + 进程仍存活（最长 8 秒）
-            var ready = false;
-            for (var i = 0; i < 40 && !ready; i++)
-            {
-                await Task.Delay(200);
-                if (!newCore.IsRunning) break;
-                try
+                if (!coreCommitted)
                 {
-                    using var probe = new System.Net.Sockets.TcpClient();
-                    using var cts = new CancellationTokenSource(300);
-                    await probe.ConnectAsync(System.Net.IPAddress.Loopback, newSocks, cts.Token);
-                    ready = true;
+                    try { ReleaseCore(newCore); } catch { }
+                    try { File.Delete(cfgPath); } catch { }
                 }
-                catch { }
             }
-            if (!ready || !newCore.IsRunning)
-            {
-                try { newCore.Stop(); } catch { }
-                LogBus.App("无感切换失败：新内核未能就绪，保持当前节点不变", "Warning");
-                IncidentLog.Record("failover", "无感切换失败（新内核未就绪），保持原节点");
-                return (false, "新内核未能就绪，已保持当前节点");
-            }
-
-            //   若用户已断开（SystemProxy 已关、看门狗已取消），继续提交会得到「界面已连接、实际直连」的矛盾状态。
-            if (epoch != Volatile.Read(ref _sessionEpoch) || !IsConnected)
-            {
-                try { newCore.Stop(); } catch { }
-                try { File.Delete(cfgPath); } catch { }
-                LogBus.App("无感切换已取消：会话在切换期间已断开，丢弃新内核", "Warning");
-                return (false, "会话已断开，已取消切换");
-            }
-
-            // 切换：旧内核继续服务已有连接，新连接立刻走新内核
-            var prev = _xray;
-            var prevKind = CoreKind;
-            //   否则会留下「_xray 指向新内核、中继还指着旧槽位」的半提交状态。
-            try
-            {
-                _xray = newCore;
-                LocalPorts.ActiveSlot = newSlot;
-                CoreKind = useSingBox ? "sing-box" : "xray";
-                EnsureRelays();
-            }
-            catch
-            {
-                _xray = prev;
-                LocalPorts.ActiveSlot = oldSlot;
-                CoreKind = prevKind;
-                throw;
-            }
-            ConnectedNode = node;
-            AppState.SetCurrentNode(node);
-            ConnectedAt = DateTime.Now;
-            IsConnected = true;
-            CoreState.Report("running", newCore.Pid, CoreKind, "switch done");
-            //   旧看门狗会因 ConnectedNode 引用变化自己退出，不补的话新内核只剩 Exited 兜底；
-            //   _lastCoreStartAt 不更新还会让「启动即崩」被误判成「已稳定运行过」。
-            _lastCoreStartAt = DateTime.Now;
-            StartWatchdog(node);
-            NotifyStateChanged();
-
-            LogBus.App($"无感切换完成：{node.Name}（新内核 PID {newCore.Pid} · 槽位 {newSlot}），旧内核 20 秒后停止");
-            // 用户要求：不要长文案。切换结果只写日志，界面只显示圆环旁的「正在切换节点…」。
-
-            // 到点硬停会把长连接截断。改成「等旧槽位连接数归零」再停，最长 5 分钟兜底。
-            var oldSocks = LocalPorts.SlotSocks(oldSlot);
-            var oldHttp = LocalPorts.SlotHttp(oldSlot);
-            _retiringCore = prev;
-            _ = Task.Run(async () =>
-            {
-                // 退役循环第一轮就会看到 0 并立刻停旧内核，那条请求随之失败。
-                // 先等 2 秒让在途连接落账，再开始判断。
-                try { await Task.Delay(2000); } catch { }
-                var deadline = DateTime.Now.AddMinutes(5);
-                while (DateTime.Now < deadline)
-                {
-                    var n = (_relaySocks?.ActiveFor(oldSocks) ?? 0) + (_relayHttp?.ActiveFor(oldHttp) ?? 0);
-                    if (n == 0) break;
-                    try { await Task.Delay(2000); } catch { break; }
-                }
-                var left = (_relaySocks?.ActiveFor(oldSocks) ?? 0) + (_relayHttp?.ActiveFor(oldHttp) ?? 0);
-                try { prev?.Stop(); } catch { }
-                try { if (ReferenceEquals(_retiringCore, prev)) _retiringCore = null; } catch { }
-                try { File.Delete(cfgPath); } catch { }
-                try
-                {
-                    LogBus.App(left > 0
-                        ? $"旧内核已退役（原槽位 {oldSlot}，残留 {left} 条连接被强制关闭）"
-                        : $"旧内核已退役（原槽位 {oldSlot}，连接已全部结束）", "Debug");
-                }
-                catch { }
-            });
-            return (true, null);
-        }
-        catch (Exception ex)
-        {
-            try { newCore?.Stop(); } catch { }
-            try { File.Delete(cfgPath); } catch { }
-            LogBus.Exception("无感切换失败", ex);
-            return (false, "无感切换失败：" + ex.Message);
-        }
         }
         finally
         {
             try { SwitchProgress?.Invoke(""); } catch { }
             Interlocked.Exchange(ref _switchGate, 0);
-            IsConnecting = false;
+            if (sessionHeld)
+            {
+                IsConnecting = false;
+                SessionGate.Release();
+            }
         }
     }
 
     public static void Disconnect(string? reason = null)
     {
-        CoreState.Report("stopping", CorePid, CoreKind, "disconnect: " + (reason ?? ""));
-        Interlocked.Increment(ref _sessionEpoch);
-        //   否则它可能在几秒后通过 SwitchNodeFastAsync->ConnectAsync(force) 把会话自动连回来。
-        if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
-            FailoverService.CancelInFlight();
-        // 断开 / 切换会话：取消尚未完成的连接后自检。
-        CancelPostConnectSelfCheck();
-        CancelWatchdog();
-        // 会话真正结束（非看门狗发起的重启）时，把「看门狗连续触发」计数归零。
-        if (!_watchdogRestarting) _watchdogTriggerCount = 0;
-
-        // 用户主动断开 / 退出程序：清掉「故障转移放弃后重连」的待办，
-        // 避免用户刚点断开，5 分钟后又被自动连回去。
-        if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
-            FailoverService.CancelPendingReconnect();
-
-        bool was = IsConnected;
-        var startedAt = ConnectedAt;
-        IsConnected = false;
-        ConnectedNode = null;
-        ConnectedAt = null;
-        FixedExitActive = false;
-        FixedExitEntries = 0;
-        FixedExitName = null;
-
-        // 用户主动断开时，取消尚未执行的内核自动重启，否则会「断开后又自己连回来」
-        try { _coreRestartCts?.Cancel(); } catch { }
-
-        try { SystemProxy.Disable(); } catch { }
-        // 用户端口先摘掉中继，再停内核 —— 否则会出现「端口还在监听但后端已死」的窗口。
-        StopRelays();
-
-        //   旧实现只调 _xray.Stop()（丢弃 WaitForExit 返回值），内核若没死透，
-        //   neo-tun 网卡与 auto_route 写入的路由会留在系统里 —— 用户看到的就是
-        //   「TUN 打开后关闭不掉」（流量仍被接管）。
-        bool wasTun = _tunSessionActive;
-        _tunSessionActive = false;
-        if (wasTun) FailoverService.MarkTunNetworkEvent();
-        try
-        {
-            if (_xray != null)
-            {
-                bool exited = _xray.StopAndVerify();
-                if (!exited)
-                {
-                    //   真正的兜底在下次连接/启动的 CleanupOrphanCores，这里如实说明。
-                    LogBus.App("内核未能在超时内退出（将在下次连接/启动时由孤儿清理兜底；TUN 残留会导致路由被继续接管）", "Warning");
-                }
-            }
-        }
-        catch (Exception ex) { LogBus.Exception("停止内核失败", ex); }
-        _xray = null;
-
-        //   断开/退出时，旧内核会成孤儿继续占着槽位端口（下次启动报端口被占用）。
-        try
-        {
-            var retiring = _retiringCore;
-            _retiringCore = null;
-            if (retiring != null && !retiring.StopAndVerify())
-                LogBus.App("退役中的旧内核未能在超时内退出（将在下次连接/启动时由孤儿清理兜底）", "Warning");
-        }
-        catch (Exception ex) { LogBus.Exception("停止退役内核失败", ex); }
-
-        // naive 辅助进程：必须一起停，否则它会一直占着 socks 入口。
-        try
-        {
-            if (_naive != null && !_naive.StopAndVerify())
-                LogBus.App("naive 辅助进程未能在超时内退出", "Warning");
-        }
-        catch (Exception ex) { LogBus.Exception("停止 naive 辅助进程失败", ex); }
-        _naive = null;
-
-        //   本方法是在 **UI 线程**上被同步调用的（MainWindow.StopTimersAndDisconnect / 关窗口 /
-        //   退出流程都会走到它），而 TeardownTunNetwork 内部会串行启动两条 PowerShell
-        //   （Get-NetAdapter / Get-NetRoute），每条冷启动数百毫秒、最坏各等 8 秒超时。
-        //   把它们放在调用线程上跑 = 界面卡住最长十几秒，用户体感就是「关闭很卡」。
-        //   现改为：先同步做完必要的收尾（停进程、清系统代理），把**只影响系统网络状态**的
-        //   网卡/路由清理丢到后台线程 —— 断开立刻返回，界面不卡，残留清理随后完成。
-        //   注意用 try/catch 包住后台任务，避免未观察异常。
-        if (wasTun) StartBackgroundTunTeardown("断开连接");
-
-        if (was)
-        {
-            var dur = startedAt == null ? "" : $"（时长 {(DateTime.Now - startedAt.Value).TotalMinutes:F0} 分钟）";
-            //   既无错误也无故障转移失败计数，完全无法判断是谁断的。
-            //   现在把调用方传进来的原因一并落盘。
-            LogBus.App($"=== 会话结束{dur}（原因：{reason ?? "未标注"}） ===");
-            NotifyStateChanged();
-        }
-        CoreState.Report("idle", 0, CoreKind, "disconnected");
+        ResetSession(reason, null, null, out _);
+        // Every exit/relaunch caller sets this first. Join owner cleanup before ending the process.
+        if (App.IsShuttingDown) LastTunTeardown.GetAwaiter().GetResult();
     }
 
-    /// 抽成一个方法是因为三条路径（用户断开 / 内核意外退出 / 启动时清理上次残留）
-    /// 必须走**同一套**闸门：
-    ///   · <see cref="TeardownGate"/> 串行化拆除，避免两次拆除互相穿插；
-    ///     否则后台 Remove-NetAdapter 可能删掉新会话刚建的 neo-tun。
-    /// 本方法不阻塞调用方：拆除动作在 Task.Run 里执行。
+    internal static bool DisconnectIfCurrent(int expectedEpoch, string reason, out int epoch)
+        => ResetSession(reason, expectedEpoch, null, out epoch);
+
+    private static bool ResetSession(string? reason, int? expectedEpoch, CoreProcess? expectedCore, out int epoch)
+    {
+        bool was;
+        CancellationTokenSource? selfCheck, watchdog, restart;
+        lock (SessionStateGate)
+        {
+            epoch = _sessionEpoch;
+            if ((expectedEpoch.HasValue && expectedEpoch != epoch)
+                || (expectedCore != null && !ReferenceEquals(expectedCore, _xray))) return false;
+            epoch = Interlocked.Increment(ref _sessionEpoch);
+            was = IsConnected;
+            var active = _xray;
+            var retiring = _retiringCore;
+            var naive = _naive;
+            var tunBridge = _tunBridge;
+            var socks = _relaySocks;
+            var http = _relayHttp;
+            var wasTun = _tunSessionActive || tunBridge != null;
+            _xray = null; _retiringCore = null; _naive = null;
+            _tunBridge = null;
+            _relaySocks = null; _relayHttp = null;
+            IsConnected = false; ConnectedNode = null; ConnectedAt = null;
+            FixedExitActive = false; FixedExitEntries = 0; FixedExitName = null;
+            _tunSessionActive = false;
+            selfCheck = _selfCheckCts; _selfCheckCts = null;
+            watchdog = _watchdogCts; _watchdogCts = null;
+            restart = _coreRestartCts; _coreRestartCts = null;
+            var previous = _lastTeardown;
+            // Publish the barrier before releasing the state lock, so a new connection cannot miss it.
+            _lastTeardown = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); } catch { }
+                await TeardownGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    if (!await SystemProxy.RestoreAfterDisconnectAsync().ConfigureAwait(false))
+                    {
+                        LogBus.App("系统代理还原失败（已重试），原设置快照已保留；请手动重连或检查其他代理程序", "Error");
+                        NotifyUser("系统代理还原失败，可能影响联网；已保留恢复快照，请手动重连或检查其他代理程序");
+                    }
+                    try { socks?.Dispose(); } catch { }
+                    try { http?.Dispose(); } catch { }
+                    var adapterId = wasTun ? CaptureTunAdapterId() : null;
+                    try { tunBridge?.StopAndVerify(); } catch { }
+                    ReleaseCore(tunBridge);
+                    ReleaseCore(active);
+                    ReleaseCore(retiring);
+                    try { naive?.StopAndVerify(); } catch { }
+                    ReleaseCore(naive);
+                    if (wasTun)
+                    {
+                        FailoverService.MarkTunNetworkEvent();
+                        TeardownTunNetwork(adapterId);
+                    }
+                }
+                catch (Exception ex) { LogBus.Exception("Session cleanup failed", ex); }
+                finally { TeardownGate.Release(); }
+            });
+        }
+        try { selfCheck?.Cancel(); } catch { }
+        try { watchdog?.Cancel(); } catch { }
+        try { restart?.Cancel(); } catch { }
+        if (!_watchdogRestarting) _watchdogTriggerCount = 0;
+        if (reason is "用户点击圆环断开" or "托盘菜单断开" or "程序退出")
+        {
+            FailoverService.CancelInFlight();
+            FailoverService.CancelPendingReconnect();
+        }
+        CoreState.Report("idle", 0, CoreKind, "disconnected: " + reason, sessionEpoch: epoch);
+        if (was) NotifyStateChanged();
+        return true;
+    }
+
+
     private static void StartBackgroundTunTeardown(string reason)
     {
-        try
+        lock (SessionStateGate)
         {
-            _lastTeardown = RunTunTeardownAsync(reason);
-        }
-        catch (Exception ex)
-        {
-            LogBus.App($"安排 TUN 后台拆除失败（{reason}）：{ex.GetType().Name} {ex.Message}", "Warning");
+            var previous = _lastTeardown;
+            _lastTeardown = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); } catch { }
+                await RunTunTeardownAsync(reason).ConfigureAwait(false);
+            });
         }
     }
 
@@ -1424,154 +1347,63 @@ public static class ConnectionService
         await TeardownGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            LogBus.App($"TUN 拆除开始（{reason}）", "Debug");
-            TeardownTunNetwork();
+            if (IsConnected || IsConnecting || _xray is { IsRunning: true } || HasRunningRuntimeSingBox()) return;
+            LogBus.App("TUN cleanup: " + reason, "Debug");
+            TeardownTunNetwork(CaptureTunAdapterId());
         }
-        catch (Exception ex) { LogBus.Exception("TUN 后台拆除失败", ex); }
-        finally { try { TeardownGate.Release(); } catch { } }
+        finally { TeardownGate.Release(); }
     });
 
-    /// 为什么必须有这一步：TUN 模式用 `auto_route=true` + `strict_route=true`
-    /// 创建 `neo-tun` 网卡并把默认路由指向它。正常退出时 sing-box 会自己撤销，
-    /// 但若进程被强杀 / 卡死 / 超时未退出，这些系统状态就会残留 ——
-    /// 流量继续被已经不存在的内核"接管"，表现为关不掉 TUN。
-    /// 系统代理早有 `CleanupOrphanedSystemProxy` 兜底，TUN 此前**完全没有**。
-    /// 清理策略（保守，只动自己命名的对象）：
-    ///   ① 内核进程兜底：按名清 runtime 目录下的 sing-box（复用 CleanupOrphanCores 的路径校验）
-    ///   ② 网卡：删除名为 neo-tun 的适配器（只在它确实存在时动）
-    ///   ③ 路由：删除指向 172.19.0.1 的残留路由（精确匹配我们自己的地址段）
-    /// 全部 try/catch 包裹：清理失败不能影响断开流程本身。
-    private static void TeardownTunNetwork()
+    private static Guid? CaptureTunAdapterId()
     {
-        // ① 内核兜底：确认 runtime 目录下的 sing-box 都已退出
         try
         {
-            foreach (var p in Process.GetProcessesByName("sing-box"))
-            {
-                try
-                {
-                    string? path = null;
-                    try { path = p.MainModule?.FileName; } catch { }
-                    var prefix = NeoPaths.RuntimeDir.TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
-                    // 只清属于本程序 runtime 的进程，绝不误杀用户自己的别的 sing-box
-                    if (path == null || !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    if (CoreProcess.IsTempCorePid(p.Id)) continue;
-                    p.Kill(entireProcessTree: true);
-                    if (!p.WaitForExit(5000))
-                        LogBus.App($"TUN 拆除：sing-box（PID {p.Id}）未能退出，网卡/路由可能残留", "Warning");
-                    else
-                        LogBus.App($"TUN 拆除：已清理残留 sing-box（PID {p.Id}）", "Warning");
-                }
-                catch { }
-                finally { try { p.Dispose(); } catch { } }
-            }
+            var adapter = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .FirstOrDefault(n => n.Name.Equals("neo-tun", StringComparison.OrdinalIgnoreCase)
+                    || n.Description.Contains("neo-tun", StringComparison.OrdinalIgnoreCase));
+            return Guid.TryParse(adapter?.Id, out var id) ? id : null;
         }
-        catch { }
-
-        // ② 网卡：删除 neo-tun
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.ArgumentList.Add("-NoProfile");
-            psi.ArgumentList.Add("-Command");
-            psi.ArgumentList.Add(
-                "$a = Get-NetAdapter -Name 'neo-tun' -ErrorAction SilentlyContinue; " +
-                "if ($a) { Disable-NetAdapter -Name 'neo-tun' -Confirm:$false -ErrorAction SilentlyContinue; " +
-                "Remove-NetAdapter -Name 'neo-tun' -Confirm:$false -ErrorAction SilentlyContinue; 'REMOVED' } else { 'ABSENT' }");
-            using var p = Process.Start(psi);
-            if (p != null)
-            {
-                var so = p.StandardOutput.ReadToEndAsync();
-                var se = p.StandardError.ReadToEndAsync();
-                // 超时 8s → 3s：本方法现在跑在后台线程，但过长的等待会拖住后台任务；
-                // 网卡移除是幂等操作，本次没删掉下次启动还会再清一次。
-                if (Task.WaitAll(new[] { so, se }, TimeSpan.FromSeconds(3)))
-                {
-                    try { p.WaitForExit(2000); } catch { }
-                    var outp = (so.Result ?? "").Trim();
-                    if (outp.Contains("REMOVED"))
-                        LogBus.App("TUN 拆除：已移除 neo-tun 虚拟网卡", "Warning");
-                }
-                else
-                {
-                    try { p.Kill(entireProcessTree: true); } catch { }
-                    LogBus.App("TUN 拆除：移除网卡超时，已放弃（不影响断开本身）", "Warning");
-                }
-            }
-        }
-        catch (Exception ex) { LogBus.App($"TUN 拆除：移除网卡失败（{ex.GetType().Name}）", "Warning"); }
-
-        // ③ 路由：删除指向本程序 TUN 网关的残留路由
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.ArgumentList.Add("-NoProfile");
-            psi.ArgumentList.Add("-Command");
-            psi.ArgumentList.Add(
-                "$r = Get-NetRoute -ErrorAction SilentlyContinue | " +
-                "Where-Object { $_.NextHop -eq '172.19.0.1' -or $_.InterfaceAlias -eq 'neo-tun' }; " +
-                "if ($r) { $r | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue; 'REMOVED' } else { 'ABSENT' }");
-            using var p = Process.Start(psi);
-            if (p != null)
-            {
-                var so = p.StandardOutput.ReadToEndAsync();
-                var se = p.StandardError.ReadToEndAsync();
-                // 超时 8s → 3s（同网卡那处，避免拖住后台清理任务）
-                if (Task.WaitAll(new[] { so, se }, TimeSpan.FromSeconds(3)))
-                {
-                    try { p.WaitForExit(2000); } catch { }
-                    if ((so.Result ?? "").Contains("REMOVED"))
-                        LogBus.App("TUN 拆除：已清理 neo-tun 残留路由", "Warning");
-                }
-                else
-                {
-                    try { p.Kill(entireProcessTree: true); } catch { }
-                }
-            }
-        }
-        catch (Exception ex) { LogBus.App($"TUN 拆除：清理路由失败（{ex.GetType().Name}）", "Warning"); }
+        catch { return null; }
     }
 
-    /// 清理「孤儿内核」：上次 neo 被强杀/崩溃后残留的 xray / sing-box 子进程。
-    /// `GetProcessesByName` 之后看「可执行文件路径前缀 == 本程序 runtime 目录」，
-    /// 命中就 `Kill(entireProcessTree: true)`。缺陷在于：用户只要把**另一份**
-    /// xray.exe 放进 neo 的 runtime 目录（手动拷贝、或把 neo 的内核复用给别的工具），
-    /// 它同样满足「路径前缀」条件，于是被连带杀掉。日志实证确实在跑这条路径：
-    ///   neo-20261016.log:571/1364/1505/2323（4 条）、neo-20261017.log:438（1 条）
-    /// 共 5 条「已清理残留内核进程（xray.exe · PID …）」。
-    /// 现改为**两级判定**：
-    ///   ① 定向清理（首选）：若 `_xray` 仍记录着自己那个子进程的 PID，直接按 PID 清。
-    ///      这是 100% 无歧义的 —— 我们杀的就是自己启动的那个进程。
-    ///   ② 名字匹配（兜底）：仅在 ① 拿不到 PID 时才逐个核对**二次确认**：
-    ///      要么父进程就是本程序（neo 的子进程），要么命令行里含本程序生成的配置路径
-    ///     （`config.json` = 主会话配置；`neo-realtest*.json` = 延迟测试用的临时配置）。
-    /// 三条硬性安全约束（缺一不可）：
-    ///   · 「必须位于本程序 runtime 目录下」这条原保护**原样保留**，取不到路径一律跳过；
-    ///   · **fail-open**：父进程/命令行任一取不到 → **跳过该进程**，绝不退回「仅凭名字就杀」。
-    ///     宁可漏清残留，也不能误杀别人的进程（与下方 TeardownTunNetwork 同一取向）；
-    ///   · P/Invoke 全部 try/catch：受保护进程（反作弊/系统进程）上必然失败，
-    ///     失败走 fail-open，且**不写日志**（本方法是高频路径，避免刷屏）。
+    private static void TeardownTunNetwork(Guid? adapterId)
+    {
+        if (adapterId == null) return;
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("-NoProfile");
+        psi.ArgumentList.Add("-Command");
+        psi.ArgumentList.Add(TunCleanupPlan.Build(adapterId.Value));
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("TUN cleanup could not start");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(8000))
+        {
+            // Do not release the lifecycle barrier while an OS helper can still change adapters/routes.
+            try { process.Kill(entireProcessTree: true); } catch { }
+            process.WaitForExit();
+            LogBus.App("TUN 清理超时，辅助进程已结束；残留状态将在下次连接前重新检查", "Warning");
+        }
+        Task.WaitAll(output, error);
+        if (process.ExitCode != 0)
+            LogBus.App("TUN 清理未完成：" + KernelCompat.FirstLines(error.Result, 2), "Warning");
+    }
+
     public static void CleanupOrphanCores()
     {
         try
         {
-            foreach (var f in Directory.EnumerateFiles(NeoPaths.DataDir, "neo-switch-*.json"))
+            foreach (var f in Directory.EnumerateFiles(NeoPaths.DataDir, "neo-switch-*.json")
+                .Concat(Directory.EnumerateFiles(NeoPaths.DataDir, "neo-tun-*.json")))
             {
+                if (CoreConfigs.Values.Contains(f, StringComparer.OrdinalIgnoreCase)) continue;
+                if (IsConnected || _xray is { IsRunning: true } || _retiringCore is { IsRunning: true }) continue;
                 try { File.Delete(f); } catch { }
             }
         }
@@ -1596,7 +1428,7 @@ public static class ConnectionService
                         // 复用后的新进程未必还是我们的内核。
                         string? tpath = null;
                         try { tpath = target.MainModule?.FileName; } catch { }
-                        if (tpath != null && IsUnderRuntimeDir(tpath))
+                        if (tpath != null && IsUnderRuntimeDir(tpath) && !HasOtherLiveNeoParent(target.Id))
                         {
                             target.Kill(entireProcessTree: true);
                             target.WaitForExit(3000);
@@ -1610,7 +1442,7 @@ public static class ConnectionService
         catch { }
 
         // ② 名字匹配兜底（带二次确认）
-        foreach (var name in new[] { "xray", "sing-box", "naive" })
+        foreach (var name in new[] { "xray", "sing-box", "naive", "mihomo" })
         {
             Process[] procs;
             try { procs = Process.GetProcessesByName(name); } catch { continue; }
@@ -1626,6 +1458,7 @@ public static class ConnectionService
                         continue;
 
                     if (CoreProcess.IsTempCorePid(p.Id)) continue;
+                    if (IsActiveCorePid(p.Id) || HasOtherLiveNeoParent(p.Id)) continue;
 
                     // 已经按 ① 清掉的不再重复处理
                     if (_xray != null && !_xray.IsRunning && p.Id == _xray.Pid) continue;
@@ -1655,60 +1488,54 @@ public static class ConnectionService
     /// 并**同步**登记到 _lastTeardown：这样紧随其后的 ConnectAsync 会等它做完再建新会话，
     public static void CleanupOrphanedTun()
     {
+        lock (SessionStateGate)
+        {
+            if (IsConnected || IsConnecting || !_lastTeardown.IsCompleted) return;
+            StartBackgroundTunTeardown("orphan cleanup");
+        }
+    }
+
+    private static bool IsActiveCorePid(int pid)
+    {
+        return (_xray is { IsRunning: true } && _xray.Pid == pid)
+            || (_retiringCore is { IsRunning: true } && _retiringCore.Pid == pid)
+            || (_naive is { IsRunning: true } && _naive.Pid == pid)
+            || (_tunBridge is { IsRunning: true } && _tunBridge.Pid == pid);
+    }
+
+    private static bool HasOtherLiveNeoParent(int pid)
+    {
+        if (!TryGetParentProcessId(pid, out var parentPid) || parentPid <= 0 || parentPid == Environment.ProcessId) return false;
         try
         {
-            // 已有拆除任务在跑（上一次断开的后台拆除）→ 不重复入队，
-            // 避免覆盖 _lastTeardown 让 ConnectAsync 等错任务。
-            if (!_lastTeardown.IsCompleted) return;
+            using var parent = Process.GetProcessById(parentPid);
+            return !parent.HasExited && parent.ProcessName.Equals("neo", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException) { return false; } // The old parent is gone: this may be an orphan.
+        catch { return true; } // An uninspectable live owner is not authority to kill its child.
+    }
 
-            _lastTeardown = Task.Run(async () =>
-            {
-                try
-                {
-                    if (!HasTunAdapter()) return;
-                    if (HasRunningRuntimeSingBox())
-                    {
-                        LogBus.App("检测到 neo-tun 网卡，但 runtime 下仍有运行中的 sing-box —— 跳过 TUN 残留清理", "Debug");
-                        return;
-                    }
-                    //   残留网卡可能是上次以管理员身份运行 TUN 留下的；普通权限的 neo 根本删不掉它
-                    //   （Remove-NetAdapter 需要管理员），旧逻辑于是每次连接都打一条吓人的 WARN +
-                    //   白跑一次拆除（实测 12 次重连 = 12 条 WARN）。现在先判是否真的启用：
-                    //   网卡 Up 或带网关 → 才当残留处理；否则只提示一次（Info），不影响上网。
-                    if (!IsTunAdapterActive())
-                    {
-                        if (!_tunResidualHinted)
-                        {
-                            _tunResidualHinted = true;
-                            LogBus.App("发现未启用的 neo-tun 残留网卡（无路由，不影响上网）。若需彻底移除，请以管理员身份运行一次 neo 或重启系统。", "Info");
-                        }
-                        return;
-                    }
-                    LogBus.App("检测到上次异常退出残留的 neo-tun 网卡（runtime 下无运行中的 sing-box），正在后台清理 TUN 网络状态", "Warning");
-                    await RunTunTeardownAsync("启动时清理残留").ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    LogBus.App($"TUN 残留清理失败（不影响启动）：{ex.GetType().Name} {ex.Message}", "Warning");
-                }
-            });
-        }
-        catch (Exception ex)
+    internal static bool IsRecordedGuardCore(int pid, int watchedNeoPid)
+    {
+        if (!TryGetParentProcessId(pid, out var parentPid) || parentPid != watchedNeoPid) return false;
+        try
         {
-            LogBus.App($"TUN 残留清理检查失败（不影响启动）：{ex.GetType().Name} {ex.Message}", "Debug");
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited && process.MainModule?.FileName is { } path && IsUnderRuntimeDir(path);
         }
+        catch { return false; }
     }
 
     /// TUN 会话启动前的兜底：确保没有残留的 neo-tun 网卡。
     /// 残留网卡/路由是「我们能主动消掉的变量」之一，所以在启动内核前同步清一次并等它消失（最多 4 秒）。
-    /// 失败不阻断连接（宁可可能残一次，也不能连不上）。
+    /// 清理后由连接创建路径复核；仍在生效时拒绝启动。
     private static void EnsureTunAdapterCleared()
     {
         try
         {
             if (!HasTunAdapter()) return;
             LogBus.App("TUN 启动前发现残留 neo-tun 网卡 —— 先清除再启动内核", "Warning");
-            TeardownTunNetwork();      // 内部同步执行 Remove-NetAdapter 并等待（最多 3s）
+            TeardownTunNetwork(CaptureTunAdapterId());
             Thread.Sleep(200);
             LogBus.App("TUN 启动前残留网卡清理已执行", "Debug");
         }
@@ -1732,7 +1559,6 @@ public static class ConnectionService
     }
 
     /// 只提示一次「未启用的 TUN 残留网卡」，避免每次重连都刷日志。
-    private static bool _tunResidualHinted;
 
     /// <summary>neo-tun 网卡是否真的在用（Up 或带网关）；仅"存在"不算（可能是无权删除的残留）。</summary>
     private static bool IsTunAdapterActive()
@@ -1873,7 +1699,7 @@ public static class ConnectionService
         }
         catch { }
 
-        return false;   
+        return false;
     }
 
     // ---- 用于「二次确认」的自包含 Win32 探查（刻意不引 System.Management）----
@@ -2040,7 +1866,7 @@ public static class ConnectionService
     {
         for (int i = 0; i < 10; i++)
         {
-            if (FirstBusyPort() == 0) return true;   
+            if (FirstBusyPort() == 0) return true;
             await Task.Delay(200);
         }
         return FirstBusyPort() == 0;
@@ -2048,14 +1874,16 @@ public static class ConnectionService
 
     private static bool PortFree(int port)
     {
+        System.Net.Sockets.TcpListener? listener = null;
         try
         {
-            var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
-            l.Start();
-            l.Stop();
+            listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.ExclusiveAddressUse = true;
+            listener.Start();
             return true;
         }
         catch { return false; }
+        finally { try { listener?.Stop(); } catch { } }
     }
 
     /// 门禁此前只查 10808(socks) 与 10085(stats)，而内核实际还会绑定
@@ -2081,23 +1909,22 @@ public static class ConnectionService
         return 0;
     }
 
-    public static async Task ReloadForSettingsAsync()
+    public static async Task<bool> ReloadForSettingsAsync()
     {
         if (IsConnected && ConnectedNode is { } node)
         {
-            LogBus.App("配置已更新 — 正在重载内核…");
-            try
-            {
-                var (ok, err) = await ConnectAsync(node, force: true);
-                //   用户改完设置后内核没重载成功、连接已断，界面却毫无提示。
-                if (!ok)
-                    RaiseSettingsReloadFailed($"配置重载失败：{err ?? "未知原因"}");
-            }
-            catch (Exception ex)
-            {
-                RaiseSettingsReloadFailed($"配置重载异常：[{ex.GetType().Name}] {ex.Message}");
-            }
+            var (ok, error) = await ConnectAsync(node, force: true, expectedEpoch: SessionEpoch);
+            if (!ok) RaiseSettingsReloadFailed("配置重载失败：" + error);
+            return ok;
         }
+        if (!await SessionGate.WaitAsync(0)) return false;
+        try
+        {
+            await LastTunTeardown.ConfigureAwait(false);
+            AppState.ApplyLocalPorts();
+            return true;
+        }
+        finally { SessionGate.Release(); }
     }
 
     /// <summary>
@@ -2139,23 +1966,22 @@ public static class ConnectionService
     /// <summary>启动本会话的连接后自检（fire-and-forget）。</summary>
     private static void StartPostConnectSelfCheck(NodeItem node)
     {
-        // 自检自动切换出来的新会话**也要自检**：否则「切到的备用节点同样不可用」就再也发现不了。
-        // 防连环切靠 _selfCheckSwitchCount（每轮最多 2 次）与 _selfCheckTried（不重复试同一节点），
-        // 只有用户/故障转移发起的新连接才重置这两个预算。
-        if (!_selfCheckSwitching)
-        {
-            _selfCheckSwitchCount = 0;
-            _selfCheckTried.Clear();
-        }
-
-        CancelPostConnectSelfCheck();
-
         var cts = new CancellationTokenSource();
-        _selfCheckCts = cts;
+        CancellationTokenSource? previous;
+        int epoch;
+        lock (SessionStateGate)
+        {
+            if (!IsConnected || !ReferenceEquals(ConnectedNode, node)) { cts.Dispose(); return; }
+            if (!_selfCheckSwitching) { _selfCheckSwitchCount = 0; _selfCheckTried.Clear(); }
+            epoch = _sessionEpoch;
+            previous = _selfCheckCts;
+            _selfCheckCts = cts;
+        }
+        try { previous?.Cancel(); } catch { }
         var expectKey = AppState.NodeKey(node);
         _ = Task.Run(async () =>
         {
-            try { await RunPostConnectSelfCheckAsync(expectKey, cts.Token).ConfigureAwait(false); }
+            try { await RunPostConnectSelfCheckAsync(expectKey, cts.Token, epoch).ConfigureAwait(false); }
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
@@ -2163,7 +1989,7 @@ public static class ConnectionService
             }
             finally
             {
-                if (ReferenceEquals(_selfCheckCts, cts)) _selfCheckCts = null;
+                Interlocked.CompareExchange(ref _selfCheckCts, null, cts);
                 try { cts.Dispose(); } catch { }
             }
         });
@@ -2172,8 +1998,7 @@ public static class ConnectionService
     /// <summary>取消连接后自检（断开 / 切换会话 / 内核退出时调用）。</summary>
     private static void CancelPostConnectSelfCheck()
     {
-        var cts = _selfCheckCts;
-        _selfCheckCts = null;
+        var cts = Interlocked.Exchange(ref _selfCheckCts, null);
         // 只 Cancel 不 Dispose：任务自己的 finally 负责释放，避免任务还在用 token 时被释放。
         try { cts?.Cancel(); } catch { }
     }
@@ -2183,10 +2008,11 @@ public static class ConnectionService
     /// 「可用」= x.com 或 cloudflare 任一可达（并发发起、任一成功即取消另一个）；
     /// 只有 Google 通不算可用（那正是本自检要抓的「google 通但目标站死」形态）。
     /// </summary>
-    private static async Task RunPostConnectSelfCheckAsync(string sessionKey, CancellationToken ct)
+    private static async Task RunPostConnectSelfCheckAsync(string sessionKey, CancellationToken ct, int? expectedEpoch = null)
     {
+        var epoch = expectedEpoch ?? Volatile.Read(ref _sessionEpoch);
         await Task.Delay(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-        if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
+        if (epoch != Volatile.Read(ref _sessionEpoch) || ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
 
         // 会话已不是「这次连接」→ 本次自检作废，避免旧任务误判新会话。
         var cur = ConnectedNode;
@@ -2208,7 +2034,7 @@ public static class ConnectionService
         // 两个都失败后再打一次 google（5s），仅用于日志区分「链路不通」还是「链路通但目标站不可达」。
         var (usable, xOk, cfOk, googleOk) = await RunSelfCheckProbesAsync(ct).ConfigureAwait(false);
 
-        if (ct.IsCancellationRequested || !IsConnected) return;
+        if (epoch != Volatile.Read(ref _sessionEpoch) || ct.IsCancellationRequested || !IsConnected) return;
         cur = ConnectedNode;
         if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
 
@@ -2223,6 +2049,12 @@ public static class ConnectionService
         // 不可用：先记录（Warning + IncidentLog），再按条件决定是否自动切换。
         LogBus.App($"连接后自检：目标站不可用（{detail}）", "Warning");
         IncidentLog.Record("selfcheck", "连接后自检目标站不可用", $"{cur.Name} · {detail}");
+
+        if (!AppState.State.FailoverEnabled)
+        {
+            LogBus.App("连接后自检：自动故障转移已关闭，仅记录诊断，保持当前节点", "Warning");
+            return;
+        }
 
         if (_selfCheckSwitchCount >= 2)
         {
@@ -2243,7 +2075,7 @@ public static class ConnectionService
             .Where(n => n.Protocol is not (NodeProtocol.Hysteria2 or NodeProtocol.TUIC))
             .Where(n => !(AppState.State.UseTun && n.RequiresXray))
             .Where(n => string.Equals(NodeGrouper.RegionOf(n.Name), region, StringComparison.Ordinal))
-            .OrderBy(n => n.RealDelay)
+            .OrderBy(n => NodeQualityHistory.Shared.Score(AppState.NodeKey(n), n.RealDelay))
             .Take(3)
             .ToList();
         var curKey = AppState.NodeKey(cur);
@@ -2262,7 +2094,8 @@ public static class ConnectionService
         }
 
         cur = ConnectedNode;
-        if (cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
+        if (ct.IsCancellationRequested || !AppState.State.FailoverEnabled || App.IsShuttingDown
+            || cur == null || !string.Equals(AppState.NodeKey(cur), sessionKey, StringComparison.Ordinal)) return;
 
         _selfCheckTried.TryAdd(AppState.NodeKey(cur), 0);
         _selfCheckSwitchCount++;
@@ -2273,7 +2106,8 @@ public static class ConnectionService
         try
         {
             // 走 ConnectAsync 内部的连接流程：SessionGate 会拒绝与用户操作并发的情况。
-            (ok, err) = await ConnectAsync(cand).ConfigureAwait(false);
+            // ConnectAsync 自身会取消旧自检 token；交接后用会话代号防止用户断开被复活。
+            (ok, err) = await ConnectAsync(cand, expectedEpoch: epoch).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -2287,7 +2121,6 @@ public static class ConnectionService
 
         if (ok)
         {
-            AppState.SetCurrentNode(cand);
             LogBus.App($"自检不可用，已自动切换到 {cand.Name}（第 {_selfCheckSwitchCount}/2 次）", "Warning");
             IncidentLog.Record("selfcheck", "自检不可用，已自动切换节点", $"{cur.Name} → {cand.Name}（{cand.RealDelay} ms）");
         }
@@ -2369,37 +2202,17 @@ public static class ConnectionService
 
     private static void OnCoreExited(CoreProcess? core, int code)
     {
-        // 无感切换后旧内核会被延迟退役，它的退出事件不能把新会话拆掉
-        //（否则表现为「正用着突然断网」，而且新内核变成没人管的孤儿）。
-        if (core != null && !ReferenceEquals(core, _xray))
+        NodeItem? node;
+        DateTime? endedAt;
+        int exitEpoch;
+        lock (SessionStateGate)
         {
-            try { LogBus.App("旧内核已退出（已被新内核替换，忽略）", "Debug"); } catch { }
-            return;
+            if (core == null || !ReferenceEquals(core, _xray) || !IsConnected) return;
+            node = ConnectedNode;
+            endedAt = ConnectedAt;
+            exitEpoch = _sessionEpoch;
         }
-        if (!IsConnected) return;
-        var node = ConnectedNode;
-        CoreState.Report(node != null && AppState.State.AutoRestartCore ? "restarting" : "idle", 0, CoreKind, "core exited " + code);
-        IsConnected = false;
-        ConnectedNode = null;
-        // 内核退出 = 本会话结束：取消连接后自检。
-        CancelPostConnectSelfCheck();
-        //   导致「会话结束」日志里的时长永远为空（这条是内核退出路径的既有小缺陷）。
-        var endedAt = ConnectedAt;
-        ConnectedAt = null;
-        try { SystemProxy.Disable(); } catch { }
-
-        //   若不在这里拆除，neo-tun 网卡与 auto_route 写入的路由会继续把流量接走。
-        //   复用 Disconnect 的后台拆除路径（TeardownGate + _lastTeardown），不复制逻辑。
-        if (_tunSessionActive)
-        {
-            _tunSessionActive = false;
-            FailoverService.MarkTunNetworkEvent();
-            LogBus.App("内核意外退出时 TUN 会话仍为活动状态 —— 正在后台拆除 neo-tun 网卡与路由", "Warning");
-            StartBackgroundTunTeardown("内核意外退出");
-        }
-
-        CancelWatchdog();   // 内核已退出：交给现有「内核意外退出自动重启」路径，避免看门狗重复重启
-        _xray = null;
+        if (!ResetSession("core exited " + code, exitEpoch, core, out var restartEpoch)) return;
         var crashTail = KernelTailText();
         LogBus.App($"内核意外退出（exit code {code}）— 已自动断开并清理系统代理"
                    + (crashTail.Length > 0 ? $"{Environment.NewLine}内核最后输出：{crashTail}" : ""), "Error");
@@ -2414,7 +2227,7 @@ public static class ConnectionService
         // 必须先把自动重启安排出去：本方法运行在 Process.Exited 的线程池线程上，
         // 而 StateChanged 的订阅者里有直接操作 XAML 的（MainWindow.UpdateConnUi），
         // 跨线程访问 UI 会抛异常，且该异常会被 CoreProcess 的 try/catch 静默吞掉——
-        if (node != null)
+        if (node != null && restartEpoch == SessionEpoch)
         {
             if (AppState.State.AutoRestartCore)
             {
@@ -2438,14 +2251,14 @@ public static class ConnectionService
     /// <summary>
     /// 启动前用 mihomo 自己的 `-t -f &lt;yaml&gt;` 做配置校验（等价 xray -test / sing-box check）。
     /// 失败时会带出内核输出的前几行，用户能直接看出是订阅 YAML 的哪一段不合法。
-    /// 校验器本身跑不起来（缺 exe / 超时）不阻断启动——与其它内核预检一致的 fail-open 取向。
+    /// 缺内核、校验失败或超时均拒绝启动；接管系统网络前必须确认配置可执行。
     /// </summary>
     private static (bool Ok, string Message) RunMihomoCheck(string yamlPath)
     {
         try
         {
             var exe = Path.Combine(NeoPaths.RuntimeDir, "mihomo.exe");
-            if (!File.Exists(exe)) return (true, "mihomo 不存在，跳过校验");
+            if (!File.Exists(exe)) return (false, "mihomo 内核不存在");
             var psi = new ProcessStartInfo
             {
                 FileName = exe,
@@ -2459,14 +2272,16 @@ public static class ConnectionService
             psi.ArgumentList.Add("-f");
             psi.ArgumentList.Add(yamlPath);
             using var proc = Process.Start(psi);
-            if (proc == null) return (true, "mihomo 校验启动失败，跳过校验");
-            var so = proc.StandardOutput.ReadToEnd();
-            var se = proc.StandardError.ReadToEnd();
+            if (proc == null) return (false, "mihomo 校验启动失败");
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
             if (!proc.WaitForExit(15000))
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
-                return (true, "mihomo 校验超时，跳过校验");
+                return (false, "mihomo 校验超时，已拒绝接管系统网络");
             }
+            var so = stdout.GetAwaiter().GetResult();
+            var se = stderr.GetAwaiter().GetResult();
             if (proc.ExitCode == 0) return (true, "");
             var tail = string.Join(" | ", (se + "\n" + so).Split('\n')
                 .Select(x => x.Trim()).Where(x => x.Length > 0).TakeLast(3));
@@ -2474,7 +2289,7 @@ public static class ConnectionService
         }
         catch (Exception ex)
         {
-            return (true, "mihomo 校验无法执行：" + ex.Message);
+            return (false, "mihomo 校验无法执行：" + ex.Message);
         }
     }
 
@@ -2547,6 +2362,7 @@ public static class ConnectionService
     private const int MaxEarlyCrashAttempts = 2;
     private static DateTime _lastCoreStartAt = DateTime.MinValue;
     private static bool _coreRestartInProgress;
+    private static int _coreRestartGate;
     private static CancellationTokenSource? _coreRestartCts;
 
     // ---- 内核看门狗（兜底）----
@@ -2563,10 +2379,13 @@ public static class ConnectionService
     /// 内核稳定运行超过这个时长后再次崩溃，视为「新事件」，重置重试计数。
     private const int StableUptimeSeconds = 60;
 
-    private static async Task TryAutoRestartCoreAsync(NodeItem node)
+    private static async Task<bool> TryAutoRestartCoreAsync(NodeItem node, bool recoverUnresponsive = false)
     {
-        if (_coreRestartInProgress) return;
+        if (!AppState.State.AutoRestartCore || App.IsShuttingDown) return false;
+        if (Interlocked.CompareExchange(ref _coreRestartGate, 1, 0) != 0) return false;
         _coreRestartInProgress = true;
+        var epoch = Volatile.Read(ref _sessionEpoch);
+        var expectedCore = _xray;
         var cts = new CancellationTokenSource();
         _coreRestartCts = cts;
         try
@@ -2587,26 +2406,26 @@ public static class ConnectionService
                     //   再补一条只会重复刷屏（当年正是「反复刷日志」引发的整改）。
                     LogBus.App($"内核连续 {_earlyCrashCount} 次启动即崩溃，判定为配置或环境问题：已停止自动重启，请手动重连或检查内核日志", "Error");
                     NotifyKernelGaveUp($"内核连续 {_earlyCrashCount} 次启动即崩溃");
-                    return;
+                    return false;
                 }
                 _coreRestartAttempts++;
                 if (_coreRestartAttempts > MaxCoreRestartAttempts)
                 {
                     LogBus.App($"内核已连续异常退出 {_coreRestartAttempts} 次：已停止自动重启，请手动重连或检查内核日志", "Error");
                     NotifyKernelGaveUp($"内核已连续异常退出 {_coreRestartAttempts} 次");
-                    return;
+                    return false;
                 }
                 var retryDelay = TimeSpan.FromSeconds(5 * _earlyCrashCount);
                 LogBus.App($"内核启动后立即崩溃，{retryDelay.TotalSeconds:F0} 秒后重试（第 {_earlyCrashCount}/{MaxEarlyCrashAttempts} 次）", "Warning");
 
                 await Task.Delay(retryDelay, cts.Token);
-                if (cts.IsCancellationRequested || IsConnected) return;
-                if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
+                if (!CanRestart()) return false;
+                Interlocked.CompareExchange(ref _coreRestartCts, null, cts);
 
-                var (rok, rerr) = await ConnectAsync(node);
-                if (rok) { _earlyCrashCount = 0; LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
+                var (rok, rerr) = await ConnectAsync(node, force: recoverUnresponsive, expectedEpoch: epoch);
+                if (rok) { LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
                 else { LogBus.App($"内核自动重启失败：{rerr}", "Error"); IncidentLog.Record("kernel-restart", "内核自动重启失败", rerr); }
-                return;
+                return rok;
             }
 
             // 稳定运行过再崩 → 是新事件，重新计数
@@ -2621,7 +2440,7 @@ public static class ConnectionService
                 // 与上面两条放弃路径同一句文案（参见 earlyCrash 分支的注释）：
                 LogBus.App($"内核已连续异常退出 {_coreRestartAttempts} 次：已停止自动重启，请手动重连或检查内核日志", "Error");
                 NotifyKernelGaveUp($"内核已连续异常退出 {_coreRestartAttempts} 次");
-                return;
+                return false;
             }
 
             _coreRestartAttempts++;
@@ -2629,14 +2448,20 @@ public static class ConnectionService
             LogBus.App($"内核异常退出，{delay.TotalSeconds:F0} 秒后自动重启（第 {_coreRestartAttempts}/{MaxCoreRestartAttempts} 次）", "Warning");
 
             await Task.Delay(delay, cts.Token);
-            if (cts.IsCancellationRequested || IsConnected) return;   // 用户已手动连上或已断开
+            if (!CanRestart()) return false;
 
             // 交接给 ConnectAsync：它内部会调 Disconnect()，若 _coreRestartCts 仍指向本 cts 会被误取消
-            if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
+            Interlocked.CompareExchange(ref _coreRestartCts, null, cts);
 
-            var (ok, err) = await ConnectAsync(node);
+            var (ok, err) = await ConnectAsync(node, force: recoverUnresponsive, expectedEpoch: epoch);
             if (ok) { LogBus.App($"内核已自动重启并恢复连接（{node.Name}）", "Warning"); IncidentLog.Record("kernel-restart", "内核已自动重启并恢复连接", node.Name); }
             else { LogBus.App($"内核自动重启失败：{err}", "Error"); IncidentLog.Record("kernel-restart", "内核自动重启失败", err); }
+            return ok;
+
+            bool CanRestart() => !cts.IsCancellationRequested && !App.IsShuttingDown
+                && AppState.State.AutoRestartCore && epoch == Volatile.Read(ref _sessionEpoch)
+                && (!IsConnected || (recoverUnresponsive && ReferenceEquals(ConnectedNode, node)
+                    && ReferenceEquals(_xray, expectedCore)));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -2645,17 +2470,26 @@ public static class ConnectionService
         }
         finally
         {
-            if (ReferenceEquals(_coreRestartCts, cts)) { try { cts.Dispose(); } catch { } _coreRestartCts = null; }
+            Interlocked.CompareExchange(ref _coreRestartCts, null, cts);
+            cts.Dispose();
             _coreRestartInProgress = false;
+            Interlocked.Exchange(ref _coreRestartGate, 0);
         }
+        return false;
     }
 
     // ---- 内核看门狗实现 ----
     private static void StartWatchdog(NodeItem node)
     {
-        CancelWatchdog();
+        CancellationTokenSource? previous;
         var cts = new CancellationTokenSource();
-        _watchdogCts = cts;
+        lock (SessionStateGate)
+        {
+            if (!IsConnected || !ReferenceEquals(ConnectedNode, node)) { cts.Dispose(); return; }
+            previous = _watchdogCts;
+            _watchdogCts = cts;
+        }
+        try { previous?.Cancel(); } catch { }
         _ = Task.Run(async () =>
         {
             try { await WatchdogLoopAsync(node, cts.Token); }
@@ -2663,7 +2497,7 @@ public static class ConnectionService
             catch (Exception ex) { LogBus.App($"内核兜底：看门狗异常退出：[{ex.GetType().Name}] {ex.Message}", "Error"); }
             finally
             {
-                if (ReferenceEquals(_watchdogCts, cts)) _watchdogCts = null;
+                Interlocked.CompareExchange(ref _watchdogCts, null, cts);
                 try { cts.Dispose(); } catch { }
             }
         });
@@ -2671,8 +2505,7 @@ public static class ConnectionService
 
     private static void CancelWatchdog()
     {
-        var cts = _watchdogCts;
-        _watchdogCts = null;
+        var cts = Interlocked.Exchange(ref _watchdogCts, null);
         try { cts?.Cancel(); } catch { }
     }
 
@@ -2686,7 +2519,14 @@ public static class ConnectionService
             if (ct.IsCancellationRequested || !IsConnected || App.IsShuttingDown) return;
             // 否则它仍拿旧 node 触发自动重启，会把用户切回已经换掉的节点。
             if (!ReferenceEquals(ConnectedNode, node)) return;
-            if (_watchdogRestarting) return;   // 已在本看门狗发起的重启流程里
+            if (_watchdogRestarting) continue;
+
+            var tunBridge = _tunBridge;
+            if (_tunSessionActive && tunBridge != null && (!tunBridge.IsRunning || !HasTunAdapter()))
+            {
+                await RecoverTunBridgeAsync(tunBridge, SessionEpoch, -1).ConfigureAwait(false);
+                continue;
+            }
 
             var why = "";
             var processOk = _xray != null && _xray.IsRunning;
@@ -2696,14 +2536,14 @@ public static class ConnectionService
             else if (_tunSessionActive && !HasTunAdapter())
                 why = "TUN 网卡 neo-tun 不存在";
             else if (_naive != null && !_naive.IsRunning)
-                why = "naive 辅助进程未运行";
+                why = "协议辅助进程未运行";
 
             // stats API：仅 xray 有 10085（sing-box 用 clash_api，不按这个口径判卡死）。
             // 用现有 XrayStats.Query（xray api statsquery）探活，3s 超时；连续 3 次（约 60s）无响应 = 卡死。
             var statsKill = false;
             if (why.Length == 0 && CoreKind == "xray")
             {
-                if (XrayStats.Query() != null) statsFails = 0;
+                if (XrayStats.IsResponsive()) statsFails = 0;
                 else
                 {
                     statsFails++;
@@ -2723,12 +2563,23 @@ public static class ConnectionService
             if (why.Length == 0)
             {
                 fails = 0;
+                if (statsFails == 0 && (DateTime.Now - _lastCoreStartAt).TotalSeconds > StableUptimeSeconds)
+                    _watchdogTriggerCount = 0;
                 continue;
             }
 
             fails++;
             LogBus.App($"内核兜底：检测到异常（{why}），连续 {fails}/2 次", "Warning");
             if (!statsKill && fails < 2) continue;
+
+            if (!AppState.State.AutoRestartCore)
+            {
+                LogBus.App($"内核兜底：{why}；自动重启已关闭，仅记录异常并继续巡检", "Warning");
+                fails = 0;
+                statsFails = 0;
+                continue;
+            }
+            if (_coreRestartInProgress) continue;
 
             _watchdogTriggerCount++;
             IncidentLog.Record("watchdog", statsKill ? "内核无响应" : "内核看门狗触发",
@@ -2744,22 +2595,29 @@ public static class ConnectionService
             if (_coreRestartInProgress)
             {
                 LogBus.App("内核兜底：已有内核自动重启在进行，看门狗让行", "Warning");
-                return;
+                continue;
             }
 
             _watchdogRestarting = true;
-            try { await TryAutoRestartCoreAsync(node); }
+            var restarted = false;
+            try { restarted = await TryAutoRestartCoreAsync(node, recoverUnresponsive: true); }
             catch (Exception ex) { LogBus.App($"内核兜底：看门狗发起自动重启异常：[{ex.GetType().Name}] {ex.Message}", "Error"); }
             finally { _watchdogRestarting = false; }
 
-            if (ct.IsCancellationRequested || App.IsShuttingDown) return;   // 重启期间用户已断开/退出：不判失败
+            if (ct.IsCancellationRequested || App.IsShuttingDown || restarted) return;
             if (_coreRestartInProgress)
             {
                 LogBus.App("内核兜底：看门狗已让行给现有自动重启", "Warning");
+                continue;
+            }
+            if (!IsConnected)
+            {
+                EnterSafeMode($"看门狗自动重启后仍未连接（最后原因：{why}）");
                 return;
             }
-            if (!IsConnected) EnterSafeMode($"看门狗自动重启后仍未连接（最后原因：{why}）");
-            return;   // 成功重启后 ConnectAsync 已启动新看门狗，本循环结束
+            // 没有创建新会话就继续监督，不能假设 ConnectAsync 一定启动了替代看门狗。
+            fails = 0;
+            statsFails = 0;
         }
     }
 
@@ -2845,6 +2703,12 @@ public static class ConnectionService
 
     private static async Task TryAutoMeasureDelayAsync(NodeItem node)
     {
+        var epoch = SessionEpoch;
+        var core = _xray;
+        var port = LocalPorts.Socks;
+        var identity = AppState.NodeKey(node);
+        bool Current() => IsConnected && epoch == SessionEpoch && ReferenceEquals(core, _xray)
+            && ReferenceEquals(ConnectedNode, node) && port == LocalPorts.Socks && identity == AppState.NodeKey(node);
         try
         {
             if (!AppState.State.AutoSpeedTest) return;
@@ -2854,19 +2718,19 @@ public static class ConnectionService
             try
             {
                 await Task.Delay(1200);   // 让内核先站稳，避免与连接流程抢资源
-                if (!IsConnected) return;
+                if (!Current()) return;
                 if (node.RealDelay != 0) return;
 
                 // 冷启动虚高的根因：连上后的第一次探测包含 DNS（223.5.5.5 冷查询，实测 401ms）、
                 // TCP、TLS 冷启动成本，一次往返被算进「节点延迟」。因此先做 1 次**丢弃的预热探测**，
                 // 把这部分一次性成本吃掉；显示值只取热身之后 3 轮里的最优。
                 var cold = await RealDelayTester.PingViaSocksAsync(
-                    LocalPorts.Socks,
+                    port,
                     target: "https://x.com/",
                     timeoutMs: 12000,   // 冷启动放宽超时，避免把「第一次慢」误判成失败
                     rounds: 1,
                     ct: CancellationToken.None);
-                if (!IsConnected) return;
+                if (!Current()) return;
                 if (cold < 0)
                 {
                     // 热身全超时：**不写 -1**（沿用「不写假超时」原则），保持 0 未测速，下次连接再试。
@@ -2877,16 +2741,20 @@ public static class ConnectionService
 
                 // 走「已连接的代理」测，而不是另起临时内核（另起进程任一步慢就误判 -1）。
                 var best = await RealDelayTester.PingViaSocksAsync(
-                    LocalPorts.Socks,
+                    port,
                     rounds: AutoMeasureAttempts,
                     ct: CancellationToken.None);
 
-                if (!IsConnected) return;
+                if (!Current()) return;
 
                 if (best > 0)
                 {
-                    node.RealDelay = best;
-                    DelayCache.Set(node, best);
+                    lock (SessionStateGate)
+                    {
+                        if (!Current()) return;
+                        node.RealDelay = best;
+                        DelayCache.Set(node, best);
+                    }
                     LogBus.App($"节点延迟（热）：{best} ms · {node.Name}");
                 }
                 else
@@ -2946,126 +2814,37 @@ public static class ConnectionService
         }
     }
 
-    public static int? CoreMemoryMb
-    {
-        get
-        {
-            try
-            {
-                if (_xray == null || !_xray.IsRunning) return null;
-                using var p = Process.GetProcessById(_xray.Pid);
-                return (int)(p.WorkingSet64 / 1024 / 1024);
-            }
-            catch { return null; }
-        }
-    }
+    public static int? CoreMemoryMb => StatsSampler.CoreMemoryMb;
 
-    private static bool SameNode(NodeItem a, NodeItem b) =>
-        a.EndPoint == b.EndPoint && a.Name == b.Name && a.Protocol == b.Protocol;
+    private static bool SameNode(NodeItem a, NodeItem b) => AppState.NodeKey(a) == AppState.NodeKey(b);
 
     // 历史：多节点并发已移除，sing-box balancer 能力探测随之删除 ——
     // 内核固定为官方 1.14.3，不再需要自编译 balancer 补丁，也不再写 singbox-balancer-probe.json。
 
-    private static string? _xrayVersion;
+    // The connection summary, settings and updater share one probe/cache.
+    // Periodic UI reads stay non-blocking; a manual check explicitly refreshes it.
+    private static readonly object VersionWarmGate = new();
+    private static Task? _versionWarmup;
+    public static string? CachedXrayVersion => KernelCatalog.CachedVersion(CoreEngine.Xray);
+    public static string? CachedSingBoxVersion => KernelCatalog.CachedVersion(CoreEngine.SingBox);
+    public static Task WarmVersionCacheAsync()
+    {
+        lock (VersionWarmGate)
+            return _versionWarmup ??= Task.Run(() => { _ = XrayVersion; _ = SingBoxVersion; });
+    }
 
-    /// 是否已经探测过（无论成功与否）。用于避免「探测失败 → 每次读取都重试」：
-    /// 本属性的读取方是 MainWindow 每 2 秒一次的 UI 线程定时器，若不记忆失败，
-    /// 一旦正则匹配不上（内核换了输出格式 / exe 半损坏 / 被杀软拦截），
-    /// 就会**每 2 秒在 UI 线程重新起一次 xray 子进程**，界面周期性卡顿且永不停止。
-    private static bool _xrayVersionProbed;
-
-    /// 内核 exe 被替换后调用，让下一次读取重新探测版本。
     public static void ResetXrayVersion()
     {
-        _xrayVersion = null;
-        _xrayVersionProbed = false;
+        lock (VersionWarmGate) _versionWarmup = null;
+        KernelCatalog.ResetVersion(CoreEngine.Xray);
     }
 
-    public static string? XrayVersion
-    {
-        get
-        {
-            if (_xrayVersionProbed) return _xrayVersion;
-            _xrayVersionProbed = true;   // 先置位：即使下面抛异常也不反复重试
-            try
-            {
-                var exe = Path.Combine(NeoPaths.RuntimeDir, "xray.exe");
-                if (!File.Exists(exe)) return null;
-                var txt = RunVersionProbe(exe, @"Xray\s+([\d.]+)");
-                if (txt != null)
-                {
-                    _xrayVersion = txt;
-                    LogBus.App($"检测到 xray {_xrayVersion}", "Debug");
-                }
-            }
-            catch { }
-            return _xrayVersion;
-        }
-    }
-
-    private static string? _singBoxVersion;
-    private static bool _singBoxVersionProbed;
-
-    /// <summary>sing-box 内核 exe 被替换后调用，让下一次读取重新探测版本。
-    /// 不重置的话，更新完内核界面会一直显示旧版本号。</summary>
     public static void ResetSingBoxVersion()
     {
-        _singBoxVersion = null;
-        _singBoxVersionProbed = false;
+        lock (VersionWarmGate) _versionWarmup = null;
+        KernelCatalog.ResetVersion(CoreEngine.SingBox);
     }
 
-    public static string? SingBoxVersion
-    {
-        get
-        {
-            if (_singBoxVersionProbed) return _singBoxVersion;
-            _singBoxVersionProbed = true;
-            try
-            {
-                var exe = Path.Combine(NeoPaths.RuntimeDir, "sing-box.exe");
-                if (!File.Exists(exe)) return null;
-                var txt = RunVersionProbe(exe, @"version\s+(\S+)");
-                if (txt != null)
-                {
-                    _singBoxVersion = txt;
-                    LogBus.App($"检测到 sing-box {_singBoxVersion}", "Debug");
-                }
-            }
-            catch { }
-            return _singBoxVersion;
-        }
-    }
-
-    /// 起一次 `&lt;exe&gt; version` 并抽出匹配组 1 的版本号；失败返回 null。
-    /// 三个容易踩的坑，这里都避开：
-    /// ① **不能 `RedirectStandardError = true` 却不读它** —— 子进程往 stderr 写满
-    ///    管道缓冲区（Windows 约 4 KB）后会阻塞，而父进程正在 `ReadToEnd()` 等 stdout，
-    ///    双方互等即死锁。这些探测只需要 stdout，因此直接不重定向 stderr。
-    /// ② **`WaitForExit` 必须在 `ReadToEnd` 之后**（顺序原实现是对的，这里保持）：
-    ///    否则输出还没读完就判定已退出，会读到截断内容。
-    /// ③ 给整段加一个总时限，避免子进程挂在半途把调用线程（可能是 UI 线程）拖住。
-    private static string? RunVersionProbe(string exe, string pattern)
-    {
-        using var p = Process.Start(new ProcessStartInfo
-        {
-            FileName = exe,
-            ArgumentList = { "version" },
-            RedirectStandardOutput = true,
-            RedirectStandardError = false,   // 见上：重定向却不读 = 死锁风险
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        });
-        if (p == null) return null;
-
-        var read = p.StandardOutput.ReadToEndAsync();
-        if (!read.Wait(TimeSpan.FromSeconds(5)))
-        {
-            try { p.Kill(entireProcessTree: true); } catch { }
-            return null;
-        }
-        try { p.WaitForExit(3000); } catch { }
-
-        var m = System.Text.RegularExpressions.Regex.Match(read.Result, pattern);
-        return m.Success ? m.Groups[1].Value : null;
-    }
+    public static string? XrayVersion => KernelCatalog.ReadVersion(CoreEngine.Xray);
+    public static string? SingBoxVersion => KernelCatalog.ReadVersion(CoreEngine.SingBox);
 }

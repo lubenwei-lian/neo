@@ -69,7 +69,7 @@ public static class XrayConfigBuilder
             ["api"] = new JsonObject
             {
                 ["tag"] = "api",
-                ["services"] = new JsonArray("StatsService"),
+                ["services"] = new JsonArray("StatsService", "RoutingService"),
             },
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
@@ -325,7 +325,7 @@ public static class XrayConfigBuilder
         {
             ["log"] = new JsonObject { ["loglevel"] = level },
             ["dns"] = new JsonObject { ["servers"] = new JsonArray(dns) },
-            ["api"] = new JsonObject { ["tag"] = "api", ["services"] = new JsonArray("StatsService") },
+            ["api"] = new JsonObject { ["tag"] = "api", ["services"] = new JsonArray("StatsService", "RoutingService") },
             ["stats"] = new JsonObject(),
             ["policy"] = new JsonObject
             {
@@ -902,7 +902,8 @@ public static class XrayConfigBuilder
                     ["serverName"] = n.Sni ?? n.HostHeader ?? n.Server,
                 };
                 if (!string.IsNullOrEmpty(n.Fingerprint)) tls["fingerprint"] = n.Fingerprint;
-                if (n.AllowInsecure || n.ForceInsecure) tls["allowInsecure"] = true;
+                if ((n.AllowInsecure || n.ForceInsecure) && !IsHexSha256(n.CertSha256))
+                    throw new ArgumentException("当前 Xray 已移除 allowInsecure；请使用 sing-box，或为节点配置有效的 SHA-256 证书 pin（不能静默删除证书策略）");
 
                 //   · ech → echConfigList（base64 ECHConfigList）；xray 26 还要求 echForceQuery=full 才真正查询
                 //   · vcn → verifyPeerCertByName（按证书里的名字校验，不依赖 SNI）

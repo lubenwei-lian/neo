@@ -1,0 +1,6 @@
+bin/
+obj/
+PolicyUnderTest.g.cs
+SubscriptionUnderTest.g.cs
+source-methods.json
+results.json

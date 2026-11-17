@@ -1,0 +1,44 @@
+// I/O boundaries only; the two subscription refresh methods are copied verbatim.
+#nullable enable
+using System.Diagnostics;
+using Neo.Core.Models;
+using Neo.App.Services;
+namespace Neo.App.Tests;
+public static class SubscriptionPolicyUnderTest
+{
+    public sealed class SubItem
+    {
+        public string Id = "", Name = "", Url = "";
+        public bool Enabled = true;
+        public int NodeCount;
+        public string? TrafficInfo;
+        public long SubUpload, SubDownload, SubTotal, SubExpireUnix, LastFetchUnix;
+    }
+    public sealed class Settings { public List<SubItem> Subscriptions = []; }
+    public static Settings State = new();
+    private static readonly object SaveGate = new();
+    private static readonly Dictionary<string, long> SubRevisions = new();
+    private static long SubRevision(string id) => SubRevisions.GetValueOrDefault(id);
+    private static bool SubscriptionCurrent(SubItem sub, string url, long revision, bool requireEnabled = true)
+        => State.Subscriptions.Contains(sub) && (!requireEnabled || sub.Enabled) && sub.Url == url && SubRevision(sub.Id) == revision;
+    private static readonly SemaphoreSlim SubRefreshGate = new(1, 1);
+    public static Dictionary<string, string> Cache = [];
+    public static DateTime LastFetchLocal;
+    private const string ProviderPlaceholderMessage = "test placeholder";
+    private static bool IsProviderPlaceholder(IReadOnlyList<NodeItem> nodes, string? raw, out string? detail) { detail = null; return false; }
+    private static (string Http, string ParseError) ClassifyFetchFailure(string? error) => ("test", "test");
+    private static Dictionary<string, string> LoadSubCache() => new(Cache);
+    private static void SaveSubCache(Dictionary<string, string> cache) => Cache = new(cache);
+    private static void RebuildSubNodesFromCaches() { }
+    private static void MirrorLegacyFromFirst() { }
+    private static void Save() { }
+    private static void RebuildNodes() { }
+    private static void NotifySubscriptionUpdatedSafe() { }
+    public static void Reset()
+    {
+        State = new(); Cache = new();
+        State.Subscriptions.Add(new() {Id = "a", Name = "a", Url = "https://a.invalid"});
+        State.Subscriptions.Add(new() {Id = "b", Name = "b", Url = "https://b.invalid"});
+        SubscriptionFetcher.FetchHook = url => Task.FromResult(new SubscriptionFetcher.Result {Success = true, RawText = url});
+    }
+

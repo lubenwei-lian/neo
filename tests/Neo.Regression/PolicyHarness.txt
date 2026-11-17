@@ -1,0 +1,75 @@
+// Generated test class: production methods below are copied without rewriting their bodies.
+#nullable enable
+using Neo.Core.Models;
+using Neo.Core.Core;
+using Neo.Core;
+namespace Neo.App.Services;
+public static class PolicyUnderTest
+{
+    public static bool IsConnected = true;
+    public static NodeItem? ConnectedNode;
+    public static bool FixedExitActive;
+    public static bool IsTunSession;
+    public static bool IsConnecting;
+    public static bool IsSessionBusy;
+    private static int _selfCheckSwitchCount;
+    private static bool _selfCheckSwitching;
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _selfCheckTried = new();
+    public static int AutomaticConnectCalls;
+    public static bool LastForce;
+    public static int SafeModeCalls;
+    public static int GaveUpCalls;
+    public static string CoreKind = "xray";
+    private static bool _tunSessionActive;
+    public sealed class FakeCore { public bool IsRunning = true; }
+    public static FakeCore? _xray = new();
+    private static FakeCore? _naive;
+    private static int _coreRestartAttempts;
+    private const int MaxCoreRestartAttempts = 3;
+    private static int _earlyCrashCount;
+    private const int MaxEarlyCrashAttempts = 2;
+    public static DateTime _lastCoreStartAt = DateTime.Now.AddHours(-47);
+    private static bool _coreRestartInProgress;
+    private static int _coreRestartGate;
+    public static int _sessionEpoch;
+    private static CancellationTokenSource? _coreRestartCts;
+    private const int StableUptimeSeconds = 60;
+    private const double WatchdogIntervalSeconds = 0.005;
+    private const int WatchdogMaxTriggers = 3;
+    private static int _watchdogTriggerCount;
+    private static bool _watchdogRestarting;
+    public static Func<Task<(bool Ok, string? Error)>>? ConnectHook;
+    private static bool PortFree(int port) => false;
+    private static bool HasTunAdapter() => true;
+    private static void EnterSafeMode(string reason) { SafeModeCalls++; IsConnected = false; }
+    private static void NotifyKernelGaveUp(string reason) { GaveUpCalls++; }
+    private static Task<(bool, bool, bool, bool)> RunSelfCheckProbesAsync(CancellationToken ct) => Task.FromResult((false, false, false, true));
+    private static async Task<(bool Ok, string? Error)> ConnectAsync(NodeItem n, bool force = false, int? expectedEpoch = null, CancellationToken ct = default)
+    {
+        if (ct.IsCancellationRequested || (expectedEpoch.HasValue && expectedEpoch.Value != _sessionEpoch)) return (false, "cancelled");
+        AutomaticConnectCalls++;
+        LastForce = force;
+        if (ConnectHook != null) return await ConnectHook();
+        _sessionEpoch++;
+        IsConnected = true;
+        ConnectedNode = n;
+        _xray = new();
+        return (true, null);
+    }
+    public static void Reset(NodeItem node)
+    {
+        IsConnected = true; ConnectedNode = node; CoreKind = "xray";
+        IsConnecting = false; IsSessionBusy = false; FixedExitActive = false; IsTunSession = false;
+        _selfCheckSwitchCount = 0; _selfCheckSwitching = false; _selfCheckTried.Clear();
+        AutomaticConnectCalls = SafeModeCalls = GaveUpCalls = 0; LastForce = false;
+        _coreRestartGate = 0; _coreRestartInProgress = false; _coreRestartAttempts = _earlyCrashCount = 0;
+        _watchdogTriggerCount = 0; _watchdogRestarting = false; _sessionEpoch = 0;
+        _lastCoreStartAt = DateTime.Now.AddHours(-47); _xray = new(); _naive = null;
+        _coreRestartCts = null; ConnectHook = null;
+        AppState.State.AutoRestartCore = true; App.IsShuttingDown = false;
+        XrayStats.Responsive = false;
+    }
+    public static void ManualDisconnect() { _sessionEpoch++; IsConnected = false; ConnectedNode = null; _coreRestartCts?.Cancel(); }
+    public static Task RunSelfCheck(NodeItem node) => RunPostConnectSelfCheckAsync(AppState.NodeKey(node), CancellationToken.None);
+    public static Task RunWatchdog(NodeItem node, CancellationToken ct = default) => WatchdogLoopAsync(node, ct);
+    public static Task<bool> Recover(NodeItem node, bool force) => TryAutoRestartCoreAsync(node, force);

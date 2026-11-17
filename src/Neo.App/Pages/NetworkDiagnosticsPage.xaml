@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="using:Neo.App.Ui" x:Class="Neo.App.Pages.NetworkDiagnosticsPage">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Grid x:Name="DetailsHeader" Padding="24,18" ColumnSpacing="12" BorderBrush="{ThemeResource NeoRim}" BorderThickness="0,0,0,1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock Text="连通性" ui:AdaptiveText.BaseSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button x:Name="CancelCheckButton" Grid.Column="1" Content="停止" Click="OnCancelClicked" CornerRadius="18" Padding="14,4" MinHeight="0" ui:AdaptiveText.BaseHeight="32" ui:AdaptiveText.BaseSize="11.5"/>
+            <Button x:Name="RunDiagnosticsButton" Grid.Column="2" Content="检测网络" Click="OnRunClicked" CornerRadius="18" Padding="14,4" MinHeight="0" ui:AdaptiveText.BaseHeight="32" ui:AdaptiveText.BaseSize="11.5" Background="{ThemeResource NeoAccent}" Foreground="{ThemeResource NeoOnAccent}" BorderThickness="0"/>
+            <Button Grid.Column="3" Click="OnBackClicked" AutomationProperties.Name="收起连通性详情" CornerRadius="18" Width="32" ui:AdaptiveText.BaseHeight="32" MinHeight="0" MinWidth="0" Padding="0" Background="#08FFFFFF" BorderThickness="0"><FontIcon Glyph="&#xE711;" ui:AdaptiveText.BaseSize="12"/></Button>
+        </Grid>
+        <ScrollViewer x:Name="DetailsScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto" VerticalScrollMode="Enabled"
+                      HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" ZoomMode="Disabled"
+                      IsVerticalScrollChainingEnabled="False" Background="Transparent" Padding="24,16,24,20">
+            <StackPanel Background="Transparent">
+                <TextBlock x:Name="CurrentExitText" ui:AdaptiveText.BaseSize="12" Foreground="{ThemeResource NeoText2}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                <TextBlock x:Name="SessionText" ui:AdaptiveText.BaseSize="11.5" Foreground="{ThemeResource NeoText3}" TextWrapping="Wrap"/>
+                <Grid Margin="0,16,0,14" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock x:Name="DiagnosticSummaryText" ui:AdaptiveText.BaseSize="25" FontWeight="SemiBold" Foreground="{ThemeResource NeoGreen}"/>
+                    <TextBlock x:Name="DetailCountText" Grid.Column="1" ui:AdaptiveText.BaseSize="11" Foreground="{ThemeResource NeoText3}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="DetailWhenText" Grid.Column="2" ui:AdaptiveText.BaseSize="11" Foreground="{ThemeResource NeoText3}" VerticalAlignment="Center"/>
+                </Grid>
+                <StackPanel x:Name="DiagnosticRows"/>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

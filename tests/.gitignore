@@ -1,0 +1,8 @@
+**/*UnderTest.g.cs
+**/source-binding.json
+**/source-methods.json
+**/acceptance-results.json
+**/isolated-data/
+**/isolated-runtime/
+**/tun-cleanup-plan.ps1
+**/__pycache__/

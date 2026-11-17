@@ -1,0 +1,252 @@
+/* 圆环即按钮 + 订阅三版 */
+.ringwrap.clickable{cursor:pointer}
+.ringwrap.clickable .track{transition:stroke .18s linear}
+.ringwrap.clickable:hover .track{stroke:rgba(255,255,255,.14)}
+.ringwrap.clickable:active{transform:scale(.985)}
+.ringwrap.clickable:focus-visible{outline:none}
+.ringwrap.clickable:focus-visible .track{stroke:rgba(90,169,255,.5)}
+.ringhint{display:flex;align-items:center;gap:7px;font-size:10.5px;color:var(--NeoText3);flex:none}
+.bring{cursor:pointer}
+.bring:hover .track{stroke:rgba(255,255,255,.14)}
+
+/* 订阅三版容器 */
+.sv{flex:1;min-height:0;display:none}
+.sv.on{display:flex}
+.svbody{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px;width:100%}
+
+/* 行样式（三版共用） */
+.srow{display:grid;grid-template-columns:minmax(200px,1.6fr) 96px 52px 52px minmax(152px,auto);gap:12px;align-items:center;
+  padding:11px 14px;border-radius:22px;background:var(--row);border:1px solid rgba(255,255,255,.045);
+  transition:border-color .16s linear}
+.srow:hover{border-color:rgba(255,255,255,.1)}
+.srow.on{border-color:var(--NeoAccentLine);background:var(--rowOn)}
+.srow .nm{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;min-width:0}
+.srow .nm span:first-child{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .nm .badge{flex:none}
+.srow .url{font-size:10px;color:var(--NeoText3);font-family:var(--mono);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .cell{font-size:11px;color:var(--NeoText2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.srow .cell em{display:block;font-style:normal;font-size:9.5px;color:var(--NeoText3);margin-bottom:2px}
+.srow .bar{width:44px;flex:none}
+.srow .btn{white-space:nowrap;flex:none}
+.srow .cell{min-width:0}
+
+/* 用量格 */
+.days.small{grid-template-columns:repeat(15,1fr);gap:4px;margin:10px 0 6px}
+.days.small i{border-radius:3px}
+
+/* S1 */
+.s1{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:auto auto minmax(0,1fr);gap:12px}
+.s1 .s1usage{grid-column:1;grid-row:1}
+.s1 .s1list{grid-column:1;grid-row:3;min-height:0}
+.s1 .s1log{grid-column:2;grid-row:1 / span 3;min-height:0}
+
+/* S2 */
+.s2{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:12px}
+.s2main{grid-column:1;grid-row:1}
+.s2plan{grid-column:2;grid-row:1}
+.s2others{grid-column:1;grid-row:2;min-height:0}
+.s2days{grid-column:2;grid-row:2;min-height:0}
+.s2main .big{display:flex;align-items:baseline;gap:8px;margin:6px 0 2px}
+.s2main .big b{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.s2main .big span{font-size:11px;color:var(--NeoText2)}
+
+/* S3 */
+.s3{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px}
+.s3cols{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:12px}
+
+/* 地区分布 */
+.regionchips{display:flex;flex-wrap:wrap;gap:6px}
+.rchip{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:14px;
+  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.045);font-size:10.5px;color:var(--NeoText2)}
+.rchip b{color:var(--NeoText1);font-variant-numeric:tabular-nums}
+.rchip i{width:6px;height:6px;border-radius:2px;background:rgba(90,169,255,.6)}
+
+@media (max-width:1180px){
+  .s1{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr) auto}
+  .s1 .s1list{grid-row:2}
+  .s1 .s1plan{grid-column:1;grid-row:3}
+  .s2{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr)}
+  .s2days{grid-column:1;grid-row:2}
+  .s2others{grid-row:3}
+  .s3cols{grid-template-columns:1fr}
+  .srow{grid-template-columns:minmax(0,1fr) 92px auto}
+  .srow .cell.opt{display:none}
+}
+
+/* 左列均匀分布，避免中段一块空洞 */
+.hero{justify-content:space-between}
+.hero .ringwrap{margin-top:2px}
+
+/* V3 左列连接详情 */
+.herokv{width:100%;display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:18px;
+  background:rgba(255,255,255,.024);border:1px solid rgba(255,255,255,.04)}
+.kv2{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:10.5px;
+  padding:5px 0;border-bottom:1px solid rgba(255,255,255,.035)}
+.kv2:last-child{border-bottom:0}
+.kv2 b{font-weight:400;color:var(--NeoText3)}
+.kv2 span{color:var(--NeoText2)}
+
+/* 面板子项别被 flex 压扁（标题行高度变 0 的元凶） */
+.panel{overflow:hidden}
+.panel > *{flex:0 0 auto}
+.panel > .rows,.panel > .spark,.panel > .logstream,.panel > .hex,.panel > .nodeinfo{flex:1 1 auto;min-height:0}
+.panel .ptitle{color:var(--NeoText1)}
+.panel .ptitle{height:18px;margin-bottom:10px}
+
+/* S3 列表列窄：只留名称 + 用量条 + 更新 */
+.s3cols .srow{grid-template-columns:minmax(0,1fr) minmax(120px,auto)}
+.s3cols .srow .cell.opt{display:none}
+.s3cols > .panel{min-height:0}
+
+/* ===== V3 左列：可伸缩圆环 + H1 仪表卡 ===== */
+.hero .ringwrap.fill{flex:1;min-height:150px;align-items:center;justify-content:center}
+.ringwrap.fill .ring{width:100%;height:auto;max-height:100%;max-width:250px;aspect-ratio:1}
+.ringhint{display:flex;align-items:center;justify-content:center;gap:7px;font-size:10px;color:var(--NeoText3);flex:none;margin:2px 0 4px}
+
+.h1card{width:100%;flex:none;border-radius:20px;padding:11px 12px;display:flex;flex-direction:column;gap:7px;
+  background:rgba(255,255,255,.028);border:1px solid rgba(255,255,255,.05)}
+.h1hd{display:flex;align-items:center;gap:7px;min-width:0}
+.h1hd .curName{font-size:12.5px;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.h1hd .curLat{margin-left:auto;flex:none}
+.h1meta{font-size:9.5px;color:var(--NeoText3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.h1sep{height:1px;background:rgba(255,255,255,.055)}
+.h1stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.h1stats > div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.h1stats span{font-size:9px;color:var(--NeoText3)}
+.h1stats b{font-size:14.5px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.h1stats b em,.h1stats b small{font-style:normal;font-size:8.5px;font-weight:400;color:var(--NeoText2);margin-left:2px}
+.h1kv{display:flex;flex-direction:column;gap:1px}
+.h1kv > div{display:flex;align-items:baseline;justify-content:space-between;gap:10px;min-height:20px;font-size:10px}
+.h1kv b{font-weight:400;color:var(--NeoText3)}
+.h1kv span{color:var(--NeoText2);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.h1sw{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.h1sw .switem{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;
+  padding:5px 8px;border-radius:13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.04)}
+.h1sw .switem span{font-size:10px;color:var(--NeoText2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.h1sw .sw{width:32px;height:19px;border-radius:10px;flex:none}
+.h1sw .sw b{width:14px;height:14px;top:1.5px;left:2px}
+.h1sw .sw.on b{transform:translateX(13px)}
+
+@media (max-height:700px){
+  .hero .ringwrap.fill{min-height:120px}
+  .h1card{padding:9px 11px;gap:6px}
+  .h1stats b{font-size:13px}
+}
+
+/* ===== V3 小窗：整页单列滚动，避免 flex/grid 互相压 ===== */
+@media (max-width:1180px){
+  .cv.on{overflow-y:auto;display:block}
+  .split{display:block}
+  .hero{display:flex;flex-direction:row;align-items:center;gap:12px;height:auto;padding:12px;flex:none}
+  .ringwrap.fill{flex:none;width:120px;height:120px;min-height:0;margin:0}
+  .ringwrap.fill .ring{width:120px;height:120px;max-width:none;max-height:none}
+  .ringwrap.fill .ringc .st{font-size:13px}
+  .ringwrap.fill .ringc .tm{font-size:9px}
+  .ringwrap.fill .ringc .ex{display:none}
+  .ringhint{display:none}
+  .h1card{flex:1 1 auto;width:auto;min-width:0;padding:10px 12px}
+  .rightcol{display:block;margin-top:12px}
+  .cgrid{display:block}
+  .cgrid > .panel,.rightcol > .logpanel{margin-bottom:12px;height:auto}
+}
+
+/* ===== 30 日用量柱状图（渐变锚定整图高度，越高越红） ===== */
+.uchart{position:relative;height:116px;display:flex;align-items:flex-end;gap:6px;padding-top:18px;margin-top:6px}
+.uchart i{display:block;flex:1;min-width:0;position:relative;transform-origin:bottom;
+  background-image:linear-gradient(180deg,#FF6B6B 0%,#F0A93B 44%,#5AA9FF 100%);
+  background-repeat:no-repeat;background-position:bottom;background-size:100% 116px;
+  border-radius:3px 3px 2px 2px;box-shadow:inset 0 1px 0 rgba(255,255,255,.18);
+  opacity:.8;transition:opacity .16s linear}
+.uchart i:hover{opacity:1}
+.uchart i.peak .ptag{position:absolute;left:50%;top:-14px;transform:translateX(-50%);
+  font-size:9px;color:var(--NeoText2);white-space:nowrap;font-variant-numeric:tabular-nums;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06);padding:1px 5px;border-radius:7px}
+
+/* 更新计划横条 */
+.planstrip{grid-column:1;grid-row:2;display:flex;flex-direction:row;align-items:center;gap:24px;padding:10px 16px;min-height:58px}
+.planstrip .ps-l{display:flex;align-items:center;gap:9px}
+.planstrip .ps-l .g{font-family:"Segoe Fluent Icons";font-size:13px;color:var(--NeoAccent)}
+.planstrip .ps-l b{font-size:12.5px;font-weight:600}
+.planstrip .ps-t{font-size:10.5px;color:var(--NeoText3)}
+.planstrip .ps-i{display:flex;align-items:baseline;gap:7px;font-size:11px}
+.planstrip .ps-i b{font-weight:400;color:var(--NeoText3);font-size:10.5px}
+.planstrip .ps-i span{color:var(--NeoText1);font-variant-numeric:tabular-nums}
+.planstrip .ps-r{margin-left:auto}
+
+/* 订阅日志行 */
+.lgrow{padding:9px 12px;border-radius:16px;background:rgba(255,255,255,.028);
+  border:1px solid rgba(255,255,255,.04);display:flex;flex-direction:column;gap:4px}
+.lgrow .lgtop{display:flex;align-items:center;gap:7px;min-width:0}
+.lgrow .lgtop .nm{font-size:11.5px;font-weight:600;flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lgrow .lgbot{display:flex;align-items:center;gap:6px;font-size:9.5px;color:var(--NeoText3);
+  font-variant-numeric:tabular-nums}
+.lgrow .lgbot i{font-style:normal;opacity:.5}
+
+/* 订阅行：启用开关 + 状态 */
+.srow.off{opacity:.55}
+.srow .acts{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+.sw.mini{width:32px;height:19px;border-radius:10px}
+.sw.mini b{width:14px;height:14px;top:1.5px;left:2px}
+.sw.mini.on b{transform:translateX(13px)}
+
+/* 订阅日志展开 */
+.lgrow{cursor:pointer;transition:border-color .16s linear}
+.lgrow:hover{border-color:rgba(255,255,255,.1)}
+.lgrow .lgcaret{font-family:"Segoe Fluent Icons";font-size:9px;color:var(--NeoText3);
+  transition:transform .2s cubic-bezier(.16,.84,.24,1)}
+.lgrow.open .lgcaret{transform:rotate(180deg)}
+.lgdetail{flex:none;max-height:0;overflow:hidden;display:flex;flex-direction:column;gap:3px;
+  margin-top:2px;font-size:10px;opacity:0;
+  transition:max-height .26s cubic-bezier(.16,.84,.24,1),opacity .2s linear,margin-top .2s linear}
+.lgrow.open .lgdetail{height:auto;max-height:120px;opacity:1;margin-top:6px}
+.lgdetail > div{flex:none;min-height:14px;display:flex;justify-content:space-between;gap:8px}
+.lgdetail b{font-weight:400;color:var(--NeoText3)}
+.lgdetail span{color:var(--NeoText2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lgdetail .mono{font-family:var(--mono);font-size:9.5px}
+
+/* 操作反馈条 */
+.toastbar{position:absolute;left:50%;bottom:18px;transform:translate(-50%,10px);opacity:0;pointer-events:none;
+  background:rgba(28,28,34,.97);border:1px solid var(--NeoRim);border-radius:14px;padding:8px 14px;
+  font-size:11.5px;color:var(--NeoText1);box-shadow:0 12px 32px rgba(0,0,0,.55);z-index:20;
+  transition:opacity .18s linear,transform .2s cubic-bezier(.16,.84,.24,1)}
+.toastbar.on{opacity:1;transform:translate(-50%,0)}
+
+/* 添加订阅内联表单 */
+.addform{display:flex;gap:8px;align-items:center;padding:8px;border-radius:16px;
+  background:rgba(90,169,255,.05);border:1px dashed rgba(90,169,255,.32);margin-bottom:6px}
+.addform input{flex:1;min-width:0;height:30px;border-radius:14px;background:var(--NeoSearchSurface);
+  border:1px solid var(--NeoRim);color:var(--NeoText1);font-size:11px;padding:0 11px;outline:0}
+.addform input:focus{border-color:var(--NeoAccentLine)}
+.addform input::placeholder{color:var(--NeoText3)}
+
+/* 更新间隔：可点 + 下拉 */
+.planstrip .ps-pick{border:0;background:rgba(255,255,255,.04);border-radius:12px;padding:6px 9px;
+  cursor:pointer;display:flex;align-items:baseline;gap:7px;transition:background .16s linear}
+.planstrip .ps-pick:hover{background:rgba(255,255,255,.09)}
+.planstrip .ps-pick i{font-family:"Segoe Fluent Icons";font-style:normal;font-size:9px;color:var(--NeoText3)}
+.planstrip .ps-pick.off{opacity:.45;cursor:default}
+
+.popmenu{position:absolute;z-index:30;width:232px;padding:6px;border-radius:20px;
+  background:#242429;border:1px solid rgba(255,255,255,.08);
+  box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06)}
+.popmenu .pm-head{padding:7px 10px 6px;font-size:10px;color:var(--NeoText3)}
+.popmenu .pm-item{display:flex;align-items:center;gap:8px;width:100%;height:34px;padding:0 10px;
+  border-radius:14px;font-size:11.5px;color:var(--NeoText1);text-align:left}
+.popmenu .pm-item:hover{background:rgba(255,255,255,.07)}
+.popmenu .pm-item i{font-family:"Segoe Fluent Icons";font-style:normal;font-size:10px;
+  color:var(--NeoAccent);margin-left:auto}
+.popmenu .pm-item .pm-warn{margin-left:auto;font-style:normal;font-size:9px;color:var(--NeoYellow)}
+.popmenu .pm-item.on .pm-warn{margin-left:auto}
+.popmenu .pm-item:last-child{margin-bottom:4px}
+.popmenu .pm-foot{padding:7px 10px 5px;font-size:9.5px;line-height:1.5;color:var(--NeoText3);
+  border-top:1px solid rgba(255,255,255,.06);margin-top:4px}
+
+/* 设置：可点的值 */
+.valpick{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;white-space:nowrap;flex:none;border-radius:13px;
+  font-size:11px;color:var(--NeoText1);background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.06)}
+.valpick:hover{background:rgba(255,255,255,.1)}
+.valpick i{font-family:"Segoe Fluent Icons";font-style:normal;font-size:9px;color:var(--NeoText3)}
+.valinput{width:96px;height:26px;border-radius:13px;background:var(--NeoSearchSurface);
+  border:1px solid var(--NeoAccentLine);color:var(--NeoText1);font-size:11px;padding:0 9px;outline:0}

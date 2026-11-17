@@ -15,6 +15,8 @@ public static class LogExportService
     public static string BuildZip(string zipPath, int days = 3)
     {
         if (days < 1) days = 1;
+        if (!LogBus.Flush(TimeSpan.FromSeconds(5)))
+            throw new IOException("日志尚未完成写入，请稍后重试导出");
         var tmp = Path.Combine(Path.GetTempPath(), "neo-logexport-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tmp);
         try
@@ -40,6 +42,7 @@ public static class LogExportService
             info.AppendLine("neo 日志导出");
             info.AppendLine("导出时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             info.AppendLine("日志范围：最近 " + days + " 天（文件 " + copied + " 个）");
+            info.AppendLine($"本进程日志诊断：普通行溢出 {LogBus.DroppedFileLines}，文件写入失败批次 {LogBus.FailedFileBatches}");
             info.AppendLine("日志目录：" + logDir);
             info.AppendLine("版本：" + (typeof(LogExportService).Assembly.GetName().Version?.ToString(3) ?? "?"));
             try { info.AppendLine("构建时间：" + File.GetLastWriteTime(typeof(LogExportService).Assembly.Location).ToString("yyyy-MM-dd HH:mm:ss")); } catch { }

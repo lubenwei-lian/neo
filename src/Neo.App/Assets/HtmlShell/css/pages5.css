@@ -1,0 +1,955 @@
+/* 整块背景 + 悬浮卡片（覆盖各页渐变） =====================
+   原则：底是底，卡是卡。页面背景一整块纯色，所有卡片只用一层
+   半透明白 + 1px 细边 + 柔和投影，靠"浮起来"分层，不靠渐变拼接。 */
+
+html, body{background:#08080A !important}
+body{background-image:none !important}
+
+/* 全部去掉渐变，改成单层半透明 */
+.side,.panel,.hero,.h1card,.planstrip,.row,.srow,.lgrow,.subcard,.lrow,
+.mini,.grp,.grow,.corebar,.triple,.kv2,.switem,.frow,.usage,.greveal .ginner,
+.popmenu,.drawer,.addform,.lhead,.days i,.toastbar,
+.s1usage,.s1list,.s1log,.s2main,.s2plan,.s2others,.s2days{
+  background-image:none !important;
+}
+
+/* 侧栏：与内容同一层，只比底色亮一点 */
+.side{background:rgba(255,255,255,.030) !important}
+
+/* 面板 / 仪表卡 / 抽屉：浮起一档 */
+.panel,.hero,.h1card,.popmenu,.drawer,.usage,.planstrip{
+  background:rgba(255,255,255,.036) !important;
+  border:1px solid rgba(255,255,255,.055) !important;
+  box-shadow:0 12px 30px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.05) !important;
+}
+
+/* 行 / 小卡：再轻一档，不要投影，避免"一块块" */
+.row,.srow,.lgrow,.subcard,.lrow,.mini,.grow,.corebar,.triple,.kv2,.switem,.frow,.addform{
+  background:rgba(255,255,255,.022) !important;
+  border:1px solid rgba(255,255,255,.04) !important;
+  box-shadow:none !important;
+}
+
+/* 分组容器不画底，靠内部行分层 */
+.grp,.sgroup{background:none !important;border:0 !important;box-shadow:none !important}
+
+/* 选中态保持，但同样不用渐变 */
+.row.on,.srow.on,.mini.on,.grow.on,.subcard.on{
+  background:rgba(90,169,255,.13) !important;
+  border-color:rgba(90,169,255,.30) !important;
+}
+
+/* 胶囊按钮：不被挤压 */
+.ptitle{min-width:0}
+.ptitle .right{flex:none;min-width:0}
+.ptitle .right .btn,.ptitle .right button{flex:none;white-space:nowrap}
+.btn{white-space:nowrap}
+.ps-r{flex:none}
+
+/* 日志展开：只留过渡，高度由脚本量 */
+.lgdetail{transition:height .30s cubic-bezier(.32,0,.16,1),opacity .18s linear,margin-top .2s linear !important}
+
+/* 柱状图与说明文字别贴在一起 */
+.uchart{margin-bottom:6px}
+.uchart + div{margin-top:8px}
+
+/* 标题行：不再写死高度，里面的按钮不再被裁 */
+.panel{overflow:visible}
+.panel .ptitle{height:auto;min-height:20px;margin-bottom:10px;align-items:center}
+.panel .ptitle .right{display:flex;align-items:center;gap:8px;flex:none}
+.panel .ptitle .right .btn{height:24px;padding:0 9px;border-radius:12px;font-size:10.5px}
+
+/* 自定义间隔输入 */
+.pm-row{display:flex;align-items:center;gap:8px;padding:4px 10px 8px}
+.pm-row input{flex:1 1 auto;width:100%;height:32px;border-radius:12px;background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.10);color:var(--NeoText1);font-size:12.5px;padding:0 10px;outline:0;
+  font-variant-numeric:tabular-nums;-moz-appearance:textfield}
+.pm-row input::-webkit-outer-spin-button,.pm-row input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.pm-row input:focus{border-color:var(--NeoAccentLine)}
+.pm-row span{font-size:10.5px;color:var(--NeoText3);flex:none}
+.popmenu .pm-apply{width:100%;height:32px;border-radius:14px;margin:0 0 4px;padding:0 10px;
+  background:rgba(90,169,255,.18);border:1px solid rgba(90,169,255,.30);color:#CFE6FF;
+  font-size:11.5px;font-weight:600}
+.popmenu .pm-apply:hover{background:rgba(90,169,255,.26)}
+
+/* 订阅行：上下两行，列不再互挤 */
+.srow{display:flex !important;flex-direction:column;align-items:stretch !important;gap:6px;padding:10px 13px !important}
+.srow .s-top{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px}
+.srow .s-top .nm{display:flex;align-items:center;gap:7px;min-width:0;font-size:12.5px;font-weight:600}
+.srow .s-top .nm .nmtext{flex:0 1 auto;max-width:62%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.srow .s-bot{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:16px;align-items:baseline;
+  font-size:10px;color:var(--NeoText3)}
+.srow .s-bot .url{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono);min-width:0}
+.srow .s-bot .cell{white-space:nowrap;font-variant-numeric:tabular-nums}
+.srow .s-bot .cell b{color:var(--NeoText2);font-weight:600}
+.srow .acts{display:flex;align-items:center;gap:8px;flex:none}
+
+
+/* 提示条挪到内容区右上，别压底部操作 */
+.toastbar{left:auto !important;right:16px !important;bottom:auto !important;top:8px !important;
+  transform:translateY(-6px) !important}
+.toastbar.on{transform:translateY(0) !important}
+
+/* 浮层菜单：液态玻璃——半透明底 + 背景模糊，下面是虚化的内容而不是文字穿透 */
+.popmenu{
+  background:rgba(30,30,36,.62) !important;
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+  backdrop-filter:blur(22px) saturate(150%);
+  border:1px solid rgba(255,255,255,.12) !important;
+  box-shadow:0 20px 48px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.10),
+             inset 0 -1px 0 rgba(255,255,255,.04) !important;
+}
+.popmenu .pm-head{color:rgba(255,255,255,.5)}
+.popmenu .pm-item.on{background:rgba(255,255,255,.06)}
+.popmenu .pm-foot{border-top-color:rgba(255,255,255,.08)}
+
+/* ===== 层级：壁纸(0) → 暗化(1) → 卡片(2) → 浮层(3) ===== */
+:root{
+  --wall-blur:16px;
+  --wall-scrim:.66;
+}
+body{background:transparent !important}
+
+.wall{position:fixed;inset:-40px;z-index:0;pointer-events:none;
+  filter:blur(var(--wall-blur)) saturate(118%);
+  transition:filter .3s linear}
+.scrim{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:rgba(6,6,10,var(--wall-scrim));transition:background .3s linear}
+
+/* 三套壁纸，后期接自定义图片时只替换这一层 */
+body[data-wall="default"] .wall{
+  background:
+    radial-gradient(34% 26% at 12% 6%, rgba(58,102,214,.18) 0%, rgba(58,102,214,0) 72%),
+    radial-gradient(26% 22% at 92% 96%, rgba(122,68,150,.12) 0%, rgba(122,68,150,0) 72%),
+    linear-gradient(160deg,#0A0A10 0%,#070709 58%,#060608 100%);
+}
+body[data-wall="blue"] .wall{
+  background:
+    radial-gradient(30% 24% at 16% 8%, rgba(38,88,236,.20) 0%, rgba(38,88,236,0) 72%),
+    linear-gradient(160deg,#080B13 0%,#06070C 60%,#05060A 100%);
+}
+body[data-wall="warm"] .wall{
+  background:
+    radial-gradient(28% 22% at 84% 8%, rgba(198,104,58,.16) 0%, rgba(198,104,58,0) 72%),
+    linear-gradient(160deg,#0C0A09 0%,#070606 60%,#060505 100%);
+}
+body[data-wall="none"] .wall{background:#070709}
+
+/* 内容层抬高到背景之上 */
+.tbar,.shell{position:relative;z-index:2}
+
+/* 卡片这一层：不再做实时模糊，只靠半透明 + 细边 + 投影 */
+.side,.panel,.hero,.h1card,.usage,.planstrip{
+  -webkit-backdrop-filter:none;backdrop-filter:none;
+}
+
+/* 浮层这一层：实时模糊 + 顶部高光 */
+.popmenu,.drawer,.toastbar{
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+  backdrop-filter:blur(22px) saturate(150%);
+}
+
+/* 开关开启态（透明背景下要看得见） */
+.sw.on{background:rgba(90,169,255,.34) !important;border-color:rgba(90,169,255,.48) !important}
+.sw.on b{transform:translateX(18px)}
+.sw.mini.on b{transform:translateX(13px)}
+
+/* 环在剩余高度里居中 */
+.ringwrap.fill .ring{margin:auto}
+
+/* 卡片比背景实一档，文字才站得住 */
+.side{
+  background:rgba(12,12,16,.70) !important;
+  -webkit-backdrop-filter:blur(18px) saturate(120%);
+  backdrop-filter:blur(18px) saturate(120%);
+}
+.panel,.hero,.h1card,.usage,.planstrip{
+  background:rgba(12,12,16,.70) !important;
+  border:1px solid rgba(255,255,255,.075) !important;
+  -webkit-backdrop-filter:blur(18px) saturate(120%);
+  backdrop-filter:blur(18px) saturate(120%);
+}
+
+/* 柱子：蓝占大部分，只有最高的几根才到黄/红 */
+
+
+/* 纯色底，无光效：层级结构保留，将来换成自定义壁纸只需改这里 */
+.wall{background:#08080A !important;filter:none !important}
+.scrim{background:rgba(0,0,0,0) !important}
+body[data-wall="default"] .wall,
+body[data-wall="blue"] .wall,
+body[data-wall="warm"] .wall,
+body[data-wall="none"] .wall{background:#08080A !important;filter:none !important}
+
+/* 柱子：单根内部同色系渐变，按用量分三档（蓝 / 琥珀 / 红） */
+
+
+/* 节点选择器 */
+.popmenu.wide{width:300px;max-height:392px;overflow-y:auto;overscroll-behavior:contain}
+.pm-item.node{display:grid;grid-template-columns:20px minmax(0,1fr) auto 12px;gap:8px;align-items:center;
+  height:34px;padding:0 8px}
+.pm-item.node .nm{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm-item.node .lat2{font-size:10.5px;font-variant-numeric:tabular-nums;color:var(--NeoText2)}
+.pm-item.node .lat2.ok{color:var(--NeoGreen)} .pm-item.node .lat2.warn{color:var(--NeoYellow)}
+.pm-item.node .lat2.bad{color:var(--NeoRed)} .pm-item.node .lat2.dim{color:var(--NeoText3)}
+.pm-item.node .flag{width:18px;height:12px}
+.nodePick{cursor:pointer;border-radius:14px;transition:background .16s linear}
+.nodePick:hover{background:rgba(255,255,255,.04)}
+.nodePick .pickcaret{font-size:9px;color:var(--NeoText3);margin-left:4px}
+
+/* 柱子：一根渐变贯穿全图（每根参数完全相同），柱子越矮露出的部分越靠下 */
+.uchart i{
+  /* 50% 蓝 / 35% 黄 / 15% 红（自下而上），交界处留 4% 过渡 */
+  background-image:linear-gradient(180deg,
+    #FF3B33 0%,
+    #FF4A3E 9%,
+    #F0913F 24%,
+    #F0A93B 32%,
+    #EFB24C 46%,
+    #86BDF3 58%,
+    #5AA9FF 70%,
+    #4E9AE6 100%) !important;
+  background-repeat:no-repeat !important;
+  background-position:bottom !important;
+  background-size:100% 116px !important;
+}
+
+/* ===== Node sheet: slide as one surface; keep background cards opaque. ===== */
+.page[data-page="conn"] .split{
+  transform-origin:50% 0;
+  opacity:1;
+  filter:none;
+  transition:transform .34s cubic-bezier(.32,0,.16,1);
+}
+/* 只退后，不把卡片推过容器顶边；实心表面不能靠降低整体透明度退场。 */
+.page[data-page="conn"].sheet-open .split{transform:scale(.986)}
+.content{overflow:visible}
+.page[data-page="conn"] .cv{overflow:visible}
+@media (max-width:1180px){
+  .page[data-page="conn"] .cv{overflow-x:hidden;overflow-y:auto;border-radius:26px}
+}
+
+/* Layout space is not a button: only the visible circular control is interactive. */
+.ringButton{
+  position:relative;
+  display:block;
+  flex:none;
+  width:min(100%,250px);
+  aspect-ratio:1;
+  padding:0;
+  border:0;
+  border-radius:50%;
+  clip-path:circle(46.2%);
+  background:transparent;
+  cursor:pointer;
+  outline:none;
+  transition:transform .16s cubic-bezier(.16,.84,.24,1);
+}
+.ringButton .ring{pointer-events:none}
+.ringButton:hover .track{stroke:rgba(255,255,255,.14)}
+.ringButton:focus-visible .track{stroke:rgba(90,169,255,.7)}
+.ringButton:active{transform:scale(.985)}
+@media (max-width:1180px){
+  .ringButton{width:120px;height:120px}
+}
+
+.sheet{position:absolute;left:0;right:0;bottom:0;height:0;overflow:hidden;z-index:12;
+  border-radius:24px 24px 0 0;
+  background:rgba(20,20,24,.92);
+  -webkit-backdrop-filter:blur(24px) saturate(140%);
+  backdrop-filter:blur(24px) saturate(140%);
+  border:1px solid rgba(255,255,255,.10);
+  box-shadow:0 -18px 48px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.09);
+  transition:height .34s cubic-bezier(.32,0,.16,1)}
+.sheet-grip{width:38px;height:4px;border-radius:2px;background:rgba(255,255,255,.18);margin:9px auto 0}
+.sheet-head{display:flex;align-items:center;gap:10px;padding:10px 16px 8px}
+.sheet-head b{font-size:12.5px;font-weight:600}
+.sheet-head .hi{font-size:10.5px;color:var(--NeoText3)}
+.sheet-head .btn{margin-left:auto}
+.sheet-list{padding:0 12px 12px;display:grid;grid-template-columns:1fr 1fr;gap:6px;
+  max-height:262px;overflow-y:auto;overscroll-behavior:contain}
+.nitem{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:9px;align-items:center;
+  height:40px;padding:0 11px;border-radius:14px;background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.045);cursor:pointer;text-align:left}
+.nitem:hover{background:rgba(255,255,255,.07)}
+.nitem.on{background:rgba(90,169,255,.14);border-color:rgba(90,169,255,.30)}
+.nitem .nm{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nitem .lat2{font-size:10.5px;font-variant-numeric:tabular-nums}
+.nitem .lat2.ok{color:var(--NeoGreen)} .nitem .lat2.warn{color:var(--NeoYellow)}
+.nitem .lat2.bad{color:var(--NeoRed)} .nitem .lat2.dim{color:var(--NeoText3)}
+.sheet-list::-webkit-scrollbar{width:8px}
+.sheet-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:999px}
+@media (max-width:1180px){
+  .sheet-list{grid-template-columns:1fr;max-height:300px}
+  .page[data-page="conn"].sheet-open .cv{padding-bottom:0}
+}
+
+/* 面板打开时的压缩规则：右列改为可滚，避免面板互相压 */
+
+/* 卡内次级面：再压一档，别读成"灰块" */
+.logstream .l{background:none !important}
+.logstream .l:nth-child(odd){background:rgba(255,255,255,.012) !important}
+.h1sw .switem{background:rgba(255,255,255,.016) !important;border-color:rgba(255,255,255,.035) !important}
+.modes button{background:rgba(255,255,255,.035) !important}
+.modes button.on{background:rgba(90,169,255,.16) !important}
+.sheet{background:rgba(18,18,22,.94) !important}
+.nitem{background:rgba(255,255,255,.022) !important}
+.nitem.on{background:rgba(90,169,255,.13) !important}
+
+/* 卡内一律不再叠底色：卡就是一个颜色，靠文字与描边分区 */
+.panel .modes,.panel .modes button{background:transparent !important;border-color:transparent !important}
+.panel .modes button.on{background:rgba(90,169,255,.16) !important;border-color:rgba(90,169,255,.28) !important}
+.panel .h1sw .switem,.hero .h1sw .switem{background:transparent !important;border:0 !important;padding:0 !important}
+.panel .logstream .l,.logstream .l{background:none !important}
+.panel .hex .hx{background:none !important}
+.nitem{background:transparent !important;border-color:rgba(255,255,255,.05) !important}
+.nitem.on{background:rgba(90,169,255,.12) !important;border-color:rgba(90,169,255,.28) !important}
+
+/* ===== 临时：纯绿背景检查（检查完删掉这一段即可回到纯黑） ===== */
+body[data-wall] .wall{
+  background:#00C14A !important;
+  background-image:url("../背景-纯绿.png") !important;
+  background-size:cover !important;
+  background-position:center !important;
+  filter:none !important;
+}
+.scrim{background:rgba(0,0,0,.20) !important}
+
+/* 卡内的行仍用白色微光叠在深卡上 */
+.row,.srow,.lgrow,.subcard,.lrow,.mini,.grow,.corebar,.triple{
+  background:rgba(255,255,255,.035) !important;
+  border-color:rgba(255,255,255,.05) !important;
+}
+
+/* 标题栏与切版条跟随玻璃体系（不加底边线） */
+.tbar{background:rgba(10,10,14,.62) !important;
+  -webkit-backdrop-filter:blur(18px) saturate(120%);backdrop-filter:blur(18px) saturate(120%)}
+.vsbar{background:rgba(0,0,0,.28) !important;border-color:rgba(255,255,255,.10) !important}
+.winbtn:hover{background:rgba(255,255,255,.10) !important}
+
+/* 侧栏里的"今日已用"不要再叠一层玻璃，否则比别的卡更黑 */
+.side .usage{background:rgba(255,255,255,.045) !important;
+  -webkit-backdrop-filter:none;backdrop-filter:none;border-color:rgba(255,255,255,.06) !important}
+
+/* 卡内行：压淡，避免在深卡上又出现一块灰 */
+.row,.srow,.lgrow,.subcard,.lrow,.mini,.grow,.triple,.corebar{
+  background:rgba(255,255,255,.022) !important;border-color:rgba(255,255,255,.045) !important}
+.srow.on{background:rgba(90,169,255,.14) !important;border-color:rgba(90,169,255,.30) !important}
+
+/* ===== 嵌套卡片只留一层玻璃（左深右浅的元凶） ===== */
+.hero .h1card,
+.side .usage,
+.panel .panel,
+.cgrid .panel .panel{
+  background:transparent !important;
+  -webkit-backdrop-filter:none !important;
+  backdrop-filter:none !important;
+  box-shadow:none !important;
+  border:0 !important;
+  border-top:1px solid rgba(255,255,255,.07) !important;
+  border-radius:0 !important;
+}
+.hero .h1card{padding:10px 2px 0 !important}
+.side .usage{padding:10px 2px 0 !important}
+
+/* ===== 卡内全部透明：只有大卡片有颜色 ===== */
+.row,.srow,.lgrow,.subcard,.lrow,.mini,.grow,.corebar,.triple,.minirow,
+.switem,.modes,.modes button,.nitem,.lgdetail,.h1kv,.h1stats,.kv2,.frow{
+  background:transparent !important;
+  border-color:transparent !important;
+  box-shadow:none !important;
+}
+/* 结构靠极细分割线，而不是底色 */
+.row,.srow,.lgrow,.subcard,.lrow{border-bottom:1px solid rgba(255,255,255,.05) !important;border-radius:0 !important}
+.row:last-child,.srow:last-child,.lgrow:last-child,.subcard:last-child,.lrow:last-child{border-bottom:0 !important}
+
+/* 选中态保留一点点色，否则分辨不出来 */
+.srow.on,.row.on,.nitem.on{background:rgba(90,169,255,.10) !important;
+  border-color:rgba(90,169,255,.26) !important;border-radius:14px !important}
+
+/* 用量柱：红区加宽到顶部 16%，颜色更实 */
+.uchart i{background-image:linear-gradient(180deg,
+    #FF3B33 0%,
+    #FF4136 10%,
+    #FA6A47 17%,
+    #F0A93B 30%,
+    #EFB24C 48%,
+    #86BDF3 60%,
+    #5AA9FF 72%,
+    #4E9AE6 100%) !important}
+
+/* ===== 只留一层表面：容器透明，卡片（.panel/.hero/.side）保留玻璃 ===== */
+.panel,.hero,.side,.h1card,.usage{overflow:hidden;position:relative}
+
+/* 纯容器：不能有底（不要用 * 选择器，会误伤卡片） */
+.rightcol,.cgrid,.split,.s1,.s3,.s3cols,.svbody,.sv,.vp,
+.ntool,.nfilter,.nhead,.rows,.sbody,.sgroup,
+.logstream,.hex,.uchart,.chart,.spark,.flow,.nfoot,
+.h1kv,.h1stats,.h1sw,.nodeinfo,.modes,.swrow,
+.planstrip,.corebar,.triple,.kv2,.frow,.ditem{
+  background:transparent !important;
+  border:0 !important;
+  box-shadow:none !important;
+}
+
+/* 行：透明，只用一条细线分隔 */
+.row,.srow,.lgrow,.subcard,.lrow,.mini,.grow,.nitem{
+  background:transparent !important;
+  border:0 !important;
+  border-bottom:1px solid rgba(255,255,255,.045) !important;
+  border-radius:0 !important;
+  box-shadow:none !important;
+}
+.row:last-child,.srow:last-child,.lgrow:last-child,.subcard:last-child,.lrow:last-child{border-bottom:0 !important}
+.srow.on,.row.on,.nitem.on{background:rgba(90,169,255,.10) !important;border-radius:14px !important}
+.hx{border-bottom:1px solid rgba(255,255,255,.05) !important}
+
+/* 实时流量：曲线从卡片边缘长出来，被卡片圆角裁切 */
+.panel .spark{margin:6px -16px -16px !important;border-radius:0 0 26px 26px;overflow:hidden}
+.panel .spark svg{display:block}
+
+/* 开关：深底，不要白壳 */
+.sw{background:rgba(255,255,255,.10) !important;border:1px solid rgba(255,255,255,.10) !important}
+.sw.on{background:rgba(90,169,255,.34) !important;border-color:rgba(90,169,255,.45) !important}
+.sw b{background:#fff !important;box-shadow:0 1px 2px rgba(0,0,0,.35) !important}
+
+
+
+
+/* 节点页内部：小卡与详情面板不再自带底 */
+.page[data-page="nodes"] .mini,.page[data-page="nodes"] #nodeDrawer,
+.page[data-page="settings"] .sgroup,.page[data-page="rule"] .rulemode{
+  background:transparent !important;
+  border:1px solid rgba(255,255,255,.05) !important;
+  box-shadow:none !important;
+  -webkit-backdrop-filter:none !important;backdrop-filter:none !important;
+}
+
+/* ===== 窗口只有一个形状：背景层不再是压在最外层的方角矩形 ===== */
+html{background:#050507 !important}
+body{
+  position:relative !important;
+  overflow:hidden !important;
+  border-radius:12px !important;
+  background:#08080A !important;
+}
+/* 背景层改成 absolute，被 body 的形状裁掉，角落不再露出方角 */
+.wall,.scrim{position:absolute !important;inset:0 !important}
+.wall{inset:-40px !important}
+
+/* 节点：不再是贴在界面上的小方块，而是排在同一表面上的信息 */
+.page[data-page="nodes"] .mini{
+  background:transparent !important;border:0 !important;box-shadow:none !important;
+  border-radius:12px !important;padding:8px 10px !important;
+}
+.page[data-page="nodes"] .mini:hover{background:rgba(255,255,255,.05) !important}
+.page[data-page="nodes"] .mini.on{background:rgba(90,169,255,.12) !important;border:0 !important}
+.dgrid{grid-template-columns:repeat(3,minmax(0,1fr)) !important;gap:4px 24px !important}
+/* 右侧详情不再是一块独立面板 */
+.page[data-page="nodes"] #nodeDrawer{
+  background:transparent !important;border:0 !important;border-left:1px solid rgba(255,255,255,.07) !important;
+  border-radius:0 !important;box-shadow:none !important;backdrop-filter:none !important;
+  padding:4px 0 4px 20px !important;
+}
+
+/* 壁纸超出 40px 会把 html 撑出滚动条——右侧那条竖着的东西就是它 */
+html{overflow:hidden !important;height:100% !important}
+body{height:100% !important}
+
+/* 背景暗化层撞名了：.scrim 在 pages2.css 里是弹窗遮罩（opacity:0），
+   我复用了同一个类名，所以这层一直是透明的——卡片外露出的就是没压过的原始壁纸 */
+body > .scrim{opacity:1 !important;background:rgba(0,0,0,.62) !important}
+
+/* ===== 亮浮暗沉：背景压到最暗，卡片比背景亮，才是"浮在上面" ===== */
+body > .scrim{opacity:1 !important;background:rgba(0,0,0,.82) !important}
+
+.panel,.hero,.side,.h1card,.usage{
+  background:rgba(255,255,255,.075) !important;
+  border:1px solid rgba(255,255,255,.095) !important;
+  box-shadow:0 20px 44px rgba(0,0,0,.46), inset 0 1px 0 rgba(255,255,255,.11) !important;
+}
+/* 卡片之间露出的缝比卡片暗，才不会被读成"背景在上层" */
+body{background:#060607 !important}
+
+/* 点节点升起的弹层：四角都圆，浮在卡片上方，不是切开的矩形 */
+.sheet{
+  background:rgba(28,28,34,.92) !important;
+  border:1px solid rgba(255,255,255,.10) !important;
+  border-radius:24px !important;
+  box-shadow:0 -8px 60px rgba(0,0,0,.7) !important;
+  bottom:14px !important;
+  left:14px !important; right:14px !important;
+}
+.sheet-grip{background:rgba(255,255,255,.18) !important}
+
+/* overflow:hidden 会切内容（代理模式卡标题被切）——只对需要裁切的卡生效 */
+.panel,.hero,.side,.h1card,.usage{overflow:visible !important}
+.logpanel,.s1log{overflow:hidden !important}
+
+/* ===== 透明画布、实心卡片：根背景透出宿主，卡片颜色保持独立 ===== */
+.wall,body > .scrim{display:none !important}   /* 仅清空页面背景，不误伤交互遮罩 */
+html{background:transparent !important}
+body{background:transparent !important;border-radius:14px !important;overflow:hidden !important}
+
+/* 所有表面实心、无模糊、无半透明 */
+.tbar,.side{background:#111116 !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important;
+  border:0 !important}
+.panel,.hero,.h1card,.usage{
+  background:#17171D !important;
+  border:1px solid #26262E !important;
+  box-shadow:0 10px 28px rgba(0,0,0,.32) !important;
+  backdrop-filter:none !important;-webkit-backdrop-filter:none !important;
+}
+.sheet{background:#1C1C23 !important;border:1px solid #2A2A33 !important;border-radius:24px !important;
+  backdrop-filter:none !important;-webkit-backdrop-filter:none !important;
+  box-shadow:0 18px 50px rgba(0,0,0,.55) !important;left:14px !important;right:14px !important;bottom:14px !important}
+.drawer{background:#17171D !important;backdrop-filter:none !important;-webkit-backdrop-filter:none !important}
+.popmenu,.palette,.toast{background:#1C1C23 !important;backdrop-filter:none !important}
+
+/* 关闭的浮层不能继续投影，否则透明画布会露出一条矩形暗边。 */
+#diagDrawer{
+  visibility:hidden;
+  pointer-events:none;
+  transition:visibility 0s linear .22s;
+}
+#diagDrawer.is-open{
+  visibility:visible;
+  pointer-events:auto;
+  transition-delay:0s;
+}
+/* 只负责外部点击，不给透明页面重新盖上一整块矩形底色。 */
+#scrim{background:transparent !important}
+
+#nodeSheet{
+  height:min(344px,calc(100% - 28px));
+  display:flex;
+  flex-direction:column;
+  opacity:1;
+  transform:translateY(calc(100% + 72px));
+  visibility:hidden;
+  pointer-events:none;
+  transition:transform .34s cubic-bezier(.32,0,.16,1),visibility 0s linear .34s;
+}
+.page.sheet-open #nodeSheet{
+  transform:translateY(0);
+  visibility:visible;
+  pointer-events:auto;
+  transition-delay:0s;
+}
+#nodeSheet .sheet-grip,#nodeSheet .sheet-head{flex:none}
+#nodeSheet .sheet-list{flex:1;min-height:0;max-height:none}
+
+@media (prefers-reduced-motion:reduce){
+  .page[data-page="conn"] .split,#nodeSheet{transition:none}
+  .page[data-page="conn"].sheet-open .split{transform:none}
+}
+
+/* 日志的小开关：36 - 2×边框1 - 2×左内距3 - 圆钮16 = 12px。 */
+.sw[data-sw="autoscroll"].on b{transform:translateX(12px)}
+
+/* 透明画布上的两条文字带：页标题与底部状态条必须有实心底，否则白字压白底看不见 */
+.ph{background:#0E0E12 !important;border:1px solid #232329 !important;border-radius:16px !important;
+  padding:8px 14px !important;margin:0 0 2px !important}
+.corebar{background:#0E0E12 !important;border:1px solid #232329 !important;border-radius:14px !important}
+
+/* pickcaret 是图标字体字符(E70D)，但没继承图标字体，所以显示成方块——改成 CSS 画的箭头，不依赖字体 */
+.nodePick .pickcaret{font-size:0 !important;line-height:0 !important}
+.nodePick .pickcaret::after{
+  content:'';display:inline-block;width:6px;height:6px;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg) translate(-1px,-2px);opacity:.75;
+}
+
+/* ===== 设置页：一整块实心表面 + 左侧索引 + 单列设置行 ===== */
+.setwrap{
+  display:grid !important;
+  grid-template-columns:168px minmax(0,1fr) !important;
+  gap:0 !important;
+  flex:1; min-height:0;
+  background:#17171D !important;
+  border:1px solid #26262E !important;
+  border-radius:20px !important;
+  box-shadow:0 10px 28px rgba(0,0,0,.32) !important;
+  overflow:hidden;
+  padding:0 !important;
+}
+
+/* 左侧索引 */
+.sidx,#setIndex{
+  display:flex !important;flex-direction:column !important;gap:2px !important;
+  padding:10px 8px !important;
+  border-right:1px solid rgba(255,255,255,.06) !important;
+  background:transparent !important;
+}
+#setIndex button{
+  display:flex;align-items:center;gap:8px;width:100%;height:34px;
+  padding:0 10px;border:0;border-radius:10px;background:transparent;
+  color:#B9BEC8;font:inherit;font-size:12.5px;cursor:pointer;text-align:left;
+  transition:background .14s linear,color .14s linear;
+}
+#setIndex button span:first-child{flex:1}
+#setIndex button .n{font-size:11px;color:#6E747F}
+#setIndex button:hover{background:rgba(255,255,255,.05)}
+#setIndex button.on{background:rgba(90,169,255,.15);color:#EDF1F7}
+#setIndex button.on .n{color:#8FB8E8}
+
+/* 右侧内容 */
+.sbody,#setBody{
+  display:flex !important;flex-direction:column !important;
+  padding:6px 20px 14px !important;
+  overflow-y:auto !important;
+  background:transparent !important;
+}
+.sgroup{display:flex !important;flex-direction:column !important;gap:0 !important;margin:0 !important;padding:0 !important}
+.sgroup .gh{
+  display:flex;align-items:center;height:34px;padding:8px 2px 0;
+  font-size:11px;letter-spacing:.04em;color:#7A808B;
+}
+.rows{display:flex !important;flex-direction:column !important;gap:0 !important}
+
+/* 行：透明 + 一条细线，左右分别是标题与控件 */
+.sgroup .row{
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) auto !important;
+  align-items:center;
+  gap:16px;
+  min-height:52px;
+  padding:8px 2px !important;
+  background:transparent !important;
+  border:0 !important;
+  border-bottom:1px solid rgba(255,255,255,.055) !important;
+  border-radius:0 !important;
+}
+.sgroup .row:last-child{border-bottom:0 !important}
+.sgroup .row .t{font-size:12.5px;color:#E7EAF0;font-weight:500}
+.sgroup .row .d{font-size:11.5px;color:#8A909B;margin-top:2px;line-height:1.35}
+.sgroup .row.wide{grid-template-columns:minmax(0,1fr) auto !important}
+
+/* 值选择器与按钮 */
+.valpick{
+  display:flex;align-items:center;gap:6px;height:28px;padding:0 10px;
+  background:rgba(255,255,255,.06) !important;
+  border:1px solid rgba(255,255,255,.10) !important;
+  border-radius:9px;color:#DDE2EA;font:inherit;font-size:12px;cursor:pointer;
+}
+.valpick i{font-style:normal;font-size:9px;color:#8A909B}
+.valpick:hover{background:rgba(255,255,255,.10) !important}
+.valinput{
+  height:28px;width:92px;padding:0 8px;border-radius:9px;
+  background:rgba(0,0,0,.35);border:1px solid rgba(90,169,255,.45);
+  color:#EDF1F7;font:inherit;font-size:12px;outline:none;
+}
+.sgroup .btn.sm{padding:0 12px;height:28px;border-radius:9px;
+  background:rgba(255,255,255,.06) !important;border:1px solid rgba(255,255,255,.10) !important}
+
+/* 开关被 .mini 的 border-radius:0 打回直角（类是 sw mini）——恢复胶囊 */
+.sw,.sw.mini,.sw.mini.on{border-radius:999px !important}
+.sw b,.sw.mini b{border-radius:50% !important}
+.sw{width:44px !important;height:26px !important}
+.sw.mini{width:32px !important;height:19px !important}
+
+/* 画布不要透出浏览器白底，否则整页刺眼 */
+html{background:#101014 !important}
+body{background:transparent !important}
+
+/* hidden 属性被作者样式 display:flex 覆盖，导致 A/B/C/D 原型切换条一直露在界面上 */
+.vsbar[hidden],.pillpanel[hidden],.sheet[hidden]{display:none !important}
+
+/* 节点页 A/B/C/D 是原型对照条，定版 D 之后不再露面（JS 会把它改为非 hidden） */
+.vsbar{display:none !important}
+
+/* ===== 筛选行：与页头同一条内容线，全部测速跟在 chips 后面 ===== */
+.filterrow{display:flex;align-items:center;gap:8px;flex:none;padding:0 2px}
+.filterrow .fhint{margin-left:auto;font-size:10.5px;color:var(--t3,#6E747F)}
+.filterrow .btn.primary{margin-left:6px}
+
+/* 日志页：自动滚动那一行不要顶到边 */
+.page[data-page="log"] > div[style*="flex"]{padding:0 2px !important}
+.page[data-page="log"] .sw[data-sw="autoscroll"]{width:36px !important;height:22px !important;border-radius:999px !important;flex:none}
+.page[data-page="log"] .sw[data-sw="autoscroll"] b{width:16px !important;height:16px !important;top:3px !important;left:3px !important}
+.page[data-page="log"] .sw[data-sw="autoscroll"].on b{transform:translateX(12px) !important}
+
+/* 选中态用 CSS 过渡，不再用脚本插值背景（避免每次点都闪一下） */
+.r,.dgrid > div,.vlist > div{transition:background .18s linear,border-color .18s linear}
+.r.on{background:linear-gradient(180deg,rgba(90,169,255,.16),rgba(90,169,255,.09)) !important;border-color:rgba(90,169,255,.30) !important}
+.dgrid > div.on{background:rgba(90,169,255,.12) !important;border-color:rgba(90,169,255,.26) !important}
+
+/* 选中态用同一套实色底：原来是"内联渐变 ↔ CSS 实色"两种底来回切，
+   渐变不可插值，所以每点一次节点卡和详情都会跳一下 */
+.vlist .r{
+  background:rgba(255,255,255,.035) !important;
+  border:1px solid rgba(255,255,255,.05) !important;
+  transition:background .18s linear,border-color .18s linear,transform .18s var(--ease);
+}
+.vlist .r.on{background:rgba(90,169,255,.15) !important;border-color:rgba(90,169,255,.30) !important}
+.dgrid > div{
+  background:rgba(255,255,255,.032) !important;
+  border:1px solid rgba(255,255,255,.045) !important;
+  transition:background .18s linear,border-color .18s linear;
+}
+.dgrid > div.on{background:rgba(90,169,255,.14) !important;border-color:rgba(90,169,255,.28) !important}
+
+.page[data-page="log"] .sw[data-sw="autoscroll"] b{top:2px !important;left:2px !important}
+.page[data-page="log"] .sw[data-sw="autoscroll"].on b{transform:translateX(14px) !important}
+
+/* H1 里的小开关回到 pages4 的原始尺寸 32×19；只修正圆钮左右等距（2 / 2） */
+.h1sw .sw{width:32px !important;height:19px !important;border-radius:10px !important}
+.h1sw .sw b{width:14px !important;height:14px !important;top:1.5px !important;left:2px !important}
+.h1sw .sw.on b{transform:translateX(12px) !important}
+
+
+/* 竖向滚动文字：宽度按内容取（max-content），高度锁定一行，旧值上滚新值下滚 */
+.roll{position:relative;display:block;width:max-content;max-width:100%;overflow:hidden}
+.roll > .track{display:block;will-change:transform}
+.roll > .track > span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 节点网格：一行 6 个（原来 auto-fill 150px 只排出 3 个，右边全是空白） */
+.dgrid{grid-template-columns:repeat(6,minmax(0,1fr)) !important;gap:6px !important;align-content:start !important}
+.dgrid > div{height:52px !important;padding:0 8px !important;border-radius:14px !important;gap:2px !important}
+.dgrid > div > div:first-child{gap:5px !important}
+.dgrid > div > div:first-child span:last-child{font-size:11.5px !important}
+.dgrid > div > div:last-child > .node-proto{font-size:9px;opacity:.85}
+.dgrid .lat{font-size:10.5px}
+.dgrid .lat .unit{font-size:9px}
+
+/* 详情栏收窄给网格让位：一行 6 个的前提下，每格多出 11px 给名字 */
+.vp[data-v="D"]{grid-template-columns:minmax(0,1fr) 252px !important}
+
+/* 圆点/数字/ms 按基线对齐：原来是三个不同高度的盒子各自居中，看起来就是三个位置 */
+.lat{align-items:flex-end !important;gap:3px !important}
+.lat .dot{align-self:center !important;margin-right:1px}
+.lat .digits{height:16px}
+.lat .unit{
+  align-self:flex-end !important;
+  line-height:16px !important;
+  font-size:inherit !important;
+  margin-left:0 !important;
+  transform:scale(.86);
+  transform-origin:left bottom;
+}
+.dgrid .lat .unit,.vlist .lat .unit{transform:scale(.8);transform-origin:left bottom}
+.lat .txt{align-self:center !important}
+
+/* 按像素把 unit 和 dot 顶到与数字同一条基线（实测 unit 低 2px、dot 高 3.5px） */
+.lat .dot{align-self:flex-end !important;margin-bottom:2.5px !important;position:relative;top:-3.5px}
+.lat .unit{position:relative;top:-2px}
+
+/* 去掉延迟前面的圆点：颜色已经由 .ok/.warn/.bad 表达，点只会引入对齐问题 */
+.lat .dot{display:none !important}
+.lat{gap:0 !important}
+.lat .unit{margin-left:2px !important}
+
+/* 没有圆点之后，lat 只要一行高，交给外层行去居中 */
+.lat{height:16px !important;align-items:baseline !important}
+.lat .digits{height:16px}
+.lat .unit{top:0 !important}
+
+/* tile 第二行：协议和延迟按基线对齐，不然数字会比 VLESS 低 1px */
+.dgrid > div > div:last-child{align-items:center !important}
+.dgrid > div > div:last-child > span:first-child{padding-bottom:0}
+
+.dgrid .lat{position:relative;top:0}
+
+/* ===== 设置：tab 卡 + 详情卡，两块独立表面；切组时详情卡做圆形扩散 ===== */
+.setwrap{
+  display:flex !important;gap:12px !important;
+  background:transparent !important;border:0 !important;box-shadow:none !important;
+  padding:0 !important;overflow:visible !important;
+}
+.sidx,#setIndex{
+  width:170px !important;flex:none !important;position:relative !important;
+  background:#17171D !important;
+  border:1px solid rgba(255,255,255,.075) !important;
+  border-radius:18px !important;
+  padding:10px 8px !important;
+  box-shadow:0 10px 28px rgba(0,0,0,.30) !important;
+  overflow:hidden !important;
+}
+#setPill{
+  position:absolute;left:8px;right:8px;top:0;border-radius:11px;
+  background:rgba(90,169,255,.16);
+  transition:transform .28s cubic-bezier(.32,0,.16,1),height .18s linear;
+  pointer-events:none;
+}
+#setIndex button{position:relative;z-index:1}
+.sbody,#setBody{
+  flex:1 !important;min-width:0 !important;
+  background:#17171D !important;
+  border:1px solid rgba(255,255,255,.075) !important;
+  border-radius:18px !important;
+  box-shadow:0 10px 28px rgba(0,0,0,.30) !important;
+  padding:6px 20px 14px !important;
+  overflow-y:auto !important;
+  will-change:clip-path;
+}
+
+/* 设置行更紧凑：卡片里不需要 68px 一行 */
+.sgroup .row{min-height:46px !important;padding:6px 2px !important}
+.sgroup{gap:0 !important}
+#setBody .sgroup:first-child{padding-top:8px}
+
+/* 设置页去掉所有线条：卡靠底色分层，行靠间距分开 */
+.ph{background:#0E0E12 !important;border:1px solid #232329 !important}
+.page[data-page="settings"] .ph{border:0 !important}
+.sidx,#setIndex,.sbody,#setBody{border:0 !important}
+.page[data-page="settings"] .sgroup .row{border-bottom:0 !important}
+.page[data-page="settings"] .sgroup .row + .row{margin-top:2px}
+.page[data-page="settings"] .sidx,.page[data-page="settings"] #setIndex,
+.page[data-page="settings"] .sbody,.page[data-page="settings"] #setBody{box-shadow:none !important}
+#setIndex button.on{background:transparent !important}
+
+/* 页头不再是一根横条：画布已经是深色，标题直接放上去就够 */
+.ph{background:transparent !important;border:0 !important;border-radius:0 !important;
+  padding:2px 2px 8px !important;margin:0 !important;box-shadow:none !important}
+
+/* 节点详情也不画分隔线，靠间距分开 */
+#nodeDrawer .row{border-bottom:0 !important;border:0 !important}
+#nodeDrawer .row + .row{margin-top:4px}
+
+/* 那圈还在的线：.sgroup 自带 1px 边框；标题栏/底部状态条也有自己的底和边 */
+.page[data-page="settings"] .sgroup{border:0 !important;box-shadow:none !important}
+.tbar{background:transparent !important;border:0 !important;box-shadow:none !important}
+.corebar{background:transparent !important;border:0 !important;box-shadow:none !important}
+
+/* 全站不再有分隔线：行与行靠间距，块与块靠底色 */
+.hx,.vlist .r,.dgrid > div,.sgroup .row,.srow,.lgrow,.lrow,.subcard,.mini,.grow,
+.nitem,.ditem,.logstream .l,.hex,.corebar,.ph,.tbar,.planstrip .ps-row{
+  border:0 !important;
+  box-shadow:none !important;
+}
+.vlist .r,.dgrid > div,.lgrow,.srow,.lrow{background-clip:padding-box}
+
+/* 设置：一整块表面。tab 与详情是这块表面里的两个区，不留缝、不画线 */
+.setwrap{
+  display:flex !important;gap:0 !important;padding:0 !important;
+  background:#17171D !important;
+  border:0 !important;border-radius:18px !important;
+  box-shadow:0 12px 30px rgba(0,0,0,.35) !important;
+  overflow:hidden !important;
+}
+.sidx,#setIndex{
+  width:172px !important;flex:none !important;position:relative !important;
+  background:transparent !important;border:0 !important;box-shadow:none !important;
+  padding:10px 8px 10px 10px !important;
+}
+.sbody,#setBody{
+  flex:1 !important;min-width:0 !important;
+  background:transparent !important;border:0 !important;box-shadow:none !important;
+  padding:10px 20px 14px 12px !important;
+}
+
+/* 侧栏「今日已用」上面那条分隔线、页脚上沿，一并去掉 */
+.side .usage,.hero .h1card,.sfoot,.side .u3,.sfoot .navset{
+  border:0 !important;border-top:0 !important;border-bottom:0 !important;box-shadow:none !important;
+}
+.side .usage{padding-top:12px !important}
+
+/* 左栏收窄：名字和数字之间不留一大片黑 */
+.sidx,#setIndex{width:106px !important;padding:10px 6px !important}
+#setIndex button{padding:0 10px !important;border-radius:10px !important;gap:8px !important}
+#setIndex button span:first-child{flex:none !important}
+#setIndex button .n{margin-left:auto}
+#setPill{left:8px !important;right:8px !important;border-radius:10px !important}
+
+/* 左栏按内容宽度自适应：名字和数字紧挨着，后面不再留一截空栏 */
+.sidx,#setIndex{width:max-content !important;min-width:0 !important;max-width:200px !important}
+#setIndex button{padding:0 10px !important;gap:0 !important}
+#setIndex button span:first-child{flex:none !important}
+#setIndex button .n{margin-left:10px !important}
+#setPill{left:4px !important;right:4px !important}
+#setBody{padding-left:14px !important}
+
+/* 左栏只占内容高度：不再拉满到卡片底部，下面不会剩一大条空的暗带 */
+.sidx,#setIndex{align-self:flex-start !important;height:auto !important}
+
+
+/* 设置恢复成两块独立表面：tab 卡 + 详情卡，靠 16px 间距分开，不合并结构 */
+.setwrap{
+  display:flex !important;gap:16px !important;padding:0 !important;
+  background:transparent !important;border:0 !important;border-radius:0 !important;
+  box-shadow:none !important;overflow:visible !important;
+}
+.sidx,#setIndex{
+  width:max-content !important;min-width:104px !important;flex:none !important;
+  align-self:flex-start !important;height:auto !important;
+  background:#17171D !important;border:0 !important;border-radius:18px !important;
+  padding:10px 8px !important;
+  box-shadow:0 10px 24px rgba(0,0,0,.28) !important;
+}
+.sbody,#setBody{
+  flex:1 !important;min-width:0 !important;
+  background:#17171D !important;border:0 !important;border-radius:18px !important;
+  padding:10px 20px 14px !important;
+  box-shadow:0 10px 24px rgba(0,0,0,.28) !important;
+  overflow-y:auto !important;
+}
+
+/* 开关圆钮四边等距（按实测像素修）
+   44×26：钮 20，左右各留 3 → 位移 18；上下 3/3
+   32×19：钮 14，上 2.5 下 2.5，左右各 2 → 位移 12 */
+.sw{width:44px !important;height:26px !important}
+.sw b{width:20px !important;height:20px !important;top:2px !important;left:2px !important}
+.sw.on b{transform:translateX(18px) !important}
+
+.sw.mini{width:32px !important;height:19px !important}
+.sw.mini b{width:14px !important;height:14px !important;top:2.5px !important;left:2.5px !important}
+.sw.mini.on b{transform:translateX(13px) !important}
+
+/* ===== N3 细边玻璃：白 3.5% + 6% 边 + blur(20)，无高光无阴影 ===== */
+.panel,.hero,.h1card,.usage,.sidx,#setIndex,.sbody,#setBody,
+.side,.drawer,.sheet,.planstrip,.logpanel{
+  background:rgba(255,255,255,.035) !important;
+  -webkit-backdrop-filter:blur(20px) !important;
+  backdrop-filter:blur(20px) !important;
+  border:1px solid rgba(255,255,255,.06) !important;
+  box-shadow:none !important;
+}
+/* 嵌套在卡片里的（侧栏今日已用、hero 里的节点卡）不重复玻璃 */
+.side .usage,.hero .h1card{
+  -webkit-backdrop-filter:none;
+  backdrop-filter:none;
+  border:0 !important;
+  background:transparent !important;
+}
+
+/* 画布底色（必须最后一条，不然会被前面的 transparent 覆盖成白底） */
+html{background:#101014 !important}
+body{background:#101014 !important}
+
+/* 健康面板压住了下面的日志卡：cgrid 两行有硬性 min 高度，撑出容器 → 和日志卡重叠 */
+.rightcol{min-height:0 !important}
+.cgrid{
+  grid-template-rows:minmax(0,.92fr) minmax(0,1.08fr) !important;
+  min-height:0 !important;overflow:hidden !important;
+}
+.cgrid > .panel{min-height:0 !important;overflow:hidden !important}
+.healthpanel{min-height:0 !important;overflow:hidden !important}
+#healthSites{min-height:0 !important;overflow-y:auto !important}
+.logpanel{margin-top:0 !important}
+
+/* 滚动条统一成细的暗条，不要系统那条白槽 */
+*{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.16) transparent}
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:4px;border:2px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.26);background-clip:content-box}
+
+/* 设置行右侧按钮被压到 48px，四个字被切掉：给回内边距、宽度按内容 */
+#setBody .row .btn, #setBody .row .valpick{
+  width:auto !important;min-width:0 !important;
+  padding:0 13px !important;white-space:nowrap !important;
+  max-width:none !important;
+}
+#setBody .row .btn.sm, #setBody .row .valpick{padding:0 11px !important}
+
+/* clip 动画单独提层，避免在没有硬件加速的机器上被降级成"瞬间切换" */
+#setBody{will-change:clip-path}
+
+/* 下载=蓝、上传=绿：图例点标在数值标签前，和曲线同色 */
+.flow .kv{position:relative}
+.flow .kv .k::before{
+  content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+  margin-right:6px;vertical-align:1px;
+}
+.flow .kv:nth-child(1) .k::before{background:#5aa9ff}
+.flow .kv:nth-child(2) .k::before{background:#43d17f}

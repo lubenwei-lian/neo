@@ -12,24 +12,27 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ApplicationIcon>Assets\neo.ico</ApplicationIcon>
     <UseWinUI>true</UseWinUI>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <DefineConstants Condition="'$(NeoUiReview)' == 'true'">$(DefineConstants);NEO_UI_REVIEW</DefineConstants>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <Version>0.2.8</Version>
+    <Version>0.2.9</Version>
     <Product>neo</Product>
     <AssemblyTitle>neo</AssemblyTitle>
     <Description>neo — 本地代理客户端（xray + sing-box 双内核）</Description>
     <Company>neo</Company>
     <Copyright>Copyright © 2026</Copyright>
     <!-- 与 <Version> 保持一致：此项决定「文件属性 → 详细信息」里的文件版本。
-         此前硬编码 0.1.2.0 且从未随版本更新，导致界面显示 0.2.8 而属性里是 0.1.2.0。 -->
-    <FileVersion>0.2.8.0</FileVersion>
+         此前硬编码 0.1.2.0 且从未随版本更新，导致界面显示 0.2.9 而属性里是 0.1.2.0。 -->
+    <FileVersion>0.2.9.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="Assets\HtmlShell\**\*"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <ProjectReference Include="..\Neo.Core\Neo.Core.csproj" />
   </ItemGroup>
 
@@ -40,6 +43,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="Assets\floatball\*.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="Assets\floatball\*.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="Assets\surface-soft.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="Assets\surface-shadow.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
+    <Content Include="Assets\node-shadow.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <Content Include="Assets\neo.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

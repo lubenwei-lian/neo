@@ -9,14 +9,12 @@
 - 来源：https://github.com/XTLS/Xray-core
 - 本项目以独立进程方式调用官方发布的 `xray.exe`，并支持在应用内从官方 release 更新。
 
-### sing-box（自编译版）
+### sing-box
 - 许可证：GPL-3.0
-- 上游：https://github.com/SagerNet/sing-box（本仓库基于 v1.14.2）
-- 本项目分发的 `sing-box.exe` 是修改版：在 `protocol/group/balancer.go` 中移除了健康成员的 3 倍延迟质量门槛，
-  并新增 balancer 出站的配置/常量/注册（补丁见 `doc/内核补丁-20261018/`）。
-- **对应源码**：上游 v1.14.2 源码 + 本仓库补丁即为完整对应源码。
-  可用 `tools/build-singbox.ps1` 自动完成「下载上游源码 → 应用补丁 → 编译」。
-  如需要，也可在 issue 中索要打好补丁的源码压缩包。
+- 上游：https://github.com/SagerNet/sing-box
+- Windows 0.2.9 默认随包使用上游官方 v1.14.3，应用内更新也使用上游官方稳定发布。
+- `doc/内核补丁-20261018/` 与 `tools/build-singbox.ps1` 保留早期自编译 v1.14.2 的对应补丁和复现入口，
+  该历史补丁不是 Windows 0.2.9 默认内核的组成部分。
 
 ## 其它
 
@@ -24,3 +22,8 @@
 - `geoip.dat` / `geosite.dat`：来自 v2fly/domain-list-community 等公开数据（按其各自许可证分发）。
 - `libcronet.dll`：Chromium 网络栈构建产物（Chromium/BSD 系许可证）。
 - 完整许可证文本随安装包与 release 资产一并提供。
+
+## 桌面 HTML 渲染与动效
+
+- Microsoft WebView2：使用系统 WebView2 Runtime；Microsoft SDK 许可随 NuGet 依赖分发。
+- 原型自带的 Motion One 动效库：MIT；版权与完整许可见 `app/Assets/HtmlShell/lib/LICENSE-Motion-One.txt`。

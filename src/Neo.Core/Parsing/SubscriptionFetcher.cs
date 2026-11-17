@@ -86,7 +86,7 @@ public static class SubscriptionFetcher
             {
                 if (!File.Exists(urlOrPath))
                     return SubscriptionFetchResult.Fail("文件不存在: " + urlOrPath);
-                var body = await File.ReadAllTextAsync(urlOrPath, ct);
+                var body = await SubscriptionSource.ReadLocalAsync(urlOrPath, ct);
                 var r = ParseContent(body);
                 if (r.Success) r.SourceUrl = urlOrPath;
                 return r;

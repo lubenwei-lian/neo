@@ -1,253 +1,133 @@
-<?xml version="1.0" encoding="utf-8"?>
-<UserControl
-    x:Class="Neo.App.Pages.NodesPage"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:Neo.App.Pages">
+<?xml version='1.0' encoding='utf-8'?>
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="using:Neo.App.Ui" xmlns:local="using:Neo.App.Pages" x:Class="Neo.App.Pages.NodesPage" SizeChanged="OnNodePageSizeChanged">
 
     <UserControl.Resources>
-        <Style x:Key="ToolBtn" TargetType="Button">
-            <Setter Property="Height" Value="38" />
-            <Setter Property="Padding" Value="14,0" />
-            <Setter Property="CornerRadius" Value="9" />
-            <Setter Property="Background" Value="{ThemeResource NeoGlass}" />
-            <Setter Property="BorderBrush" Value="{ThemeResource NeoGlassBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="FontSize" Value="12.5" />
-            <Setter Property="FontWeight" Value="Medium" />
-            <Setter Property="Foreground" Value="{ThemeResource NeoText1}" />
+        <Style x:Key="ToolBtn" TargetType="Button" BasedOn="{StaticResource NeoPillButton}">
+            <Setter Property="ui:AdaptiveText.BaseHeight" Value="30"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="Background" Value="{ThemeResource NeoControlSurface}"/>
+            <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="ui:AdaptiveText.BaseSize" Value="11.5"/>
+            <Setter Property="FontWeight" Value="Normal"/>
+            <Setter Property="Foreground" Value="{ThemeResource NeoText1}"/>
+        </Style>
+        <Style x:Key="StatusChip" TargetType="Button" BasedOn="{StaticResource NeoPillButton}">
+            <Setter Property="MinWidth" Value="0"/><Setter Property="MinHeight" Value="0"/>
+            <Setter Property="Padding" Value="10,0"/><Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="BorderThickness" Value="0"/><Setter Property="Background" Value="Transparent"/>
+            <Setter Property="ui:AdaptiveText.BaseSize" Value="11.5"/><Setter Property="ui:AdaptiveText.BaseHeight" Value="26"/>
+            <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{ThemeResource NeoText2}"/>
         </Style>
         <Style x:Key="ToolBtnPrimary" TargetType="Button" BasedOn="{StaticResource ToolBtn}">
-            <Setter Property="Background" Value="{ThemeResource NeoAccent}" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Foreground" Value="{ThemeResource NeoOnAccent}" />
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Background" Value="{ThemeResource NeoAccent}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="{ThemeResource NeoOnAccent}"/>
         </Style>
     </UserControl.Resources>
 
-    <Grid RowSpacing="12">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="38" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <Grid Grid.Row="0" ColumnSpacing="10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="290" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-
-            <Border Grid.Column="0" Height="38" CornerRadius="9" Background="{ThemeResource NeoGlass}"
-                    BorderBrush="{ThemeResource NeoGlassBorder}" BorderThickness="1" Padding="12,0">
-                <Grid ColumnSpacing="8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe Fluent Icons" FontSize="14"
-                               Foreground="{ThemeResource NeoText2}" VerticalAlignment="Center" />
-                    <!-- TextBox 默认模板不处理 VerticalContentAlignment：单行文字靠内边距压到竖直中线，
-                         与外层放大镜图标/占位文字对齐。 -->
-                    <TextBox x:Name="SearchBox" Grid.Column="1" Height="38" Background="Transparent" BorderThickness="0"
-                             Padding="0,10.5,0,0" FontSize="12.5" FontFamily="{StaticResource NeoFont}"
-                             TextWrapping="NoWrap" VerticalAlignment="Center" VerticalContentAlignment="Center"
-                             TextChanged="OnSearchChanged" />
-                    <TextBlock x:Name="SearchPlaceholder" Grid.Column="1" Text="搜索节点名称、协议或地区…"
-                               FontSize="12.5" Foreground="{ThemeResource NeoText3}" VerticalAlignment="Center"
-                               IsHitTestVisible="False" />
-                </Grid>
-            </Border>
-
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
-                <Button x:Name="RealTestBtn" Style="{StaticResource ToolBtnPrimary}" Click="OnRealTestClick"
-                        AutomationProperties.AutomationId="RealTestBtn"
-                        ToolTipService.ToolTip="真连接延迟：透过节点真实请求一次，反映实际使用体验（每节点约 1-8 秒；再点一次可停止）">
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                        <TextBlock x:Name="RealTestBtnText" Text="真连测速" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-
-                <Button x:Name="TcpTestBtn" Style="{StaticResource ToolBtn}" Click="OnTcpTestClick"
-                        AutomationProperties.AutomationId="TcpTestBtn"
-                        ToolTipService.ToolTip="仅 TCP 握手：只测与节点服务器的 TCP 握手，不经代理、速度快（UDP 节点跳过）。对中转/Cloudflare 类节点这个数字只有连通性参考价值——实际代理延迟通常高 2～10 倍，挑节点请看「真连测速」。">
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <TextBlock Text="&#xE774;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                        <TextBlock Text="快速测延迟" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-            </StackPanel>
-
-            <Button Grid.Column="2" Style="{StaticResource ToolBtn}" Click="OnSortClick">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE8FD;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock Text="延迟排序" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
-
-            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="10">
-                <Button Style="{StaticResource ToolBtn}" Click="OnAddManualClick"
-                        AutomationProperties.AutomationId="AddManualBtn"
-                        ToolTipService.ToolTip="粘贴分享链接导入节点：vmess:// vless:// trojan:// ss:// hysteria2:// tuic://">
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                        <TextBlock Text="手动节点" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-                <!-- 一键注册 Cloudflare WARP（免费 WireGuard 出口），生成节点后走现有 WireGuard 链路 -->
-                <Button Style="{StaticResource ToolBtn}" Click="OnAddWarpClick"
-                        AutomationProperties.AutomationId="AddWarpBtn"
-                        ToolTipService.ToolTip="一键注册 Cloudflare WARP 免费 WireGuard 出口（速度一般，仅作没有自建 WG 服务端时的补充）">
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <TextBlock Text="&#xE753;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                        <TextBlock Text="WARP" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-            </StackPanel>
-
-            <Button Grid.Column="4" Style="{StaticResource ToolBtn}" Click="OnGeoTestClick"
-                    AutomationProperties.AutomationId="GeoTestBtn"
-                    ToolTipService.ToolTip="检测每个节点的真实出口国家（经节点访问 Cloudflare trace）；与名称标记不符的会标红">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE81D;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock x:Name="GeoTestBtnText" Text="位置检测" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
-
-            <Button Grid.Column="5" Style="{StaticResource ToolBtn}" Click="OnRetestFailedClick"
-                    AutomationProperties.AutomationId="RetestFailedBtn"
-                    ToolTipService.ToolTip="只测未测/超时的节点（日常维护更快）">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock Text="补测" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
-
-            <Button x:Name="FilterBtn" Grid.Column="6" Style="{StaticResource ToolBtn}" Click="OnFilterTapped"
-                    AutomationProperties.AutomationId="FilterBtn"
-                    ToolTipService.ToolTip="按可用状态 / 地区筛选节点">
-                <StackPanel Orientation="Horizontal" Spacing="7">
-                    <TextBlock Text="&#xE71C;" FontFamily="Segoe Fluent Icons" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock x:Name="FilterBtnText" Text="筛选" VerticalAlignment="Center" />
-                </StackPanel>
-            </Button>
-
-            <TextBlock Grid.Column="7" HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="10.5"
-                       Foreground="{ThemeResource NeoText2}">
-                <Run x:Name="NodeCountRun" Text="共 0 个节点 · 已按延迟排序" />
-            </TextBlock>
+    <Grid x:Name="NodesLayout" RowSpacing="10">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <StackPanel x:Name="NodeToolbar" Spacing="10">
+    <Grid x:Name="NodeHeader" ColumnSpacing="10" RowSpacing="0" Padding="2,2,2,0">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <StackPanel x:Name="NodeTitle" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+        <TextBlock Text="节点" ui:AdaptiveText.BaseSize="19" FontWeight="SemiBold" Foreground="{ThemeResource NeoText1}"/>
+        <TextBlock Foreground="{ThemeResource NeoText3}" ui:AdaptiveText.BaseSize="11.5" VerticalAlignment="Center"><Run x:Name="NodeCountRun"/></TextBlock>
+      </StackPanel>
+      <Border x:Name="NodeSearch" Grid.Column="1" ui:AdaptiveText.BaseWidth="240" ui:AdaptiveText.BaseHeight="30" CornerRadius="16" Background="{ThemeResource NeoSearchSurface}" BorderBrush="{ThemeResource NeoRim}" BorderThickness="1" Padding="9,0">
+        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <FontIcon Glyph="&#xE721;" ui:AdaptiveText.BaseSize="12" Foreground="{ThemeResource NeoText3}"/>
+          <TextBox x:Name="SearchBox" Grid.Column="1" ui:AdaptiveText.BaseHeight="28" MinHeight="0" Padding="0,5,0,0" Background="Transparent" BorderThickness="0" ui:AdaptiveText.BaseSize="11.5" TextChanged="OnSearchChanged" AutomationProperties.Name="搜索节点"/>
+          <TextBlock x:Name="SearchPlaceholder" Grid.Column="1" Text="搜索名称、协议或地区" ui:AdaptiveText.BaseSize="11.5" Foreground="{ThemeResource NeoText3}" VerticalAlignment="Center" IsHitTestVisible="False"/>
         </Grid>
-
-        <Border Grid.Row="1" Style="{StaticResource NeoCardTight}">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <GridView x:Name="NodeList" VerticalAlignment="Stretch"
-                          ScrollViewer.VerticalScrollBarVisibility="Auto"
-                          ScrollViewer.HorizontalScrollBarVisibility="Hidden"
-                          SelectionMode="None" IsItemClickEnabled="False"
-                          SizeChanged="OnScrollSizeChanged">
+      </Border>
+      <StackPanel x:Name="NodeActions" Grid.Column="2" Orientation="Horizontal" Spacing="8">
+        <Button x:Name="RealTestBtn" Style="{StaticResource ToolBtnPrimary}" Click="OnRealTestClick" ToolTipService.ToolTip="真实链路测速；再次点击停止，不切换所选节点"><TextBlock x:Name="RealTestBtnText" Text="真连测速"/></Button>
+        <Button x:Name="TcpTestBtn" Style="{StaticResource ToolBtn}" Click="OnTcpTestClick" Content="测速" ToolTipService.ToolTip="测服务器 TCP 握手，结果不代表完整网页响应时间"/>
+        <Button Style="{StaticResource ToolBtn}" Content="&#xE712;" FontFamily="Segoe Fluent Icons" AutomationProperties.Name="更多节点操作">
+          <Button.Flyout><MenuFlyout>
+            <MenuFlyoutItem Text="手动添加节点" Click="OnAddManualClick"/>
+            <MenuFlyoutItem Text="注册 WARP" Click="OnAddWarpClick"/>
+            <MenuFlyoutItem x:Name="GeoTestBtnText" Text="检测当前出口" Click="OnGeoTestClick"/>
+            <MenuFlyoutItem Text="补测未测或失败节点" Click="OnRetestFailedClick"/>
+            <MenuFlyoutItem Text="快速 TCP 测速" Click="OnTcpTestClick"/>
+          </MenuFlyout></Button.Flyout>
+        </Button>
+      </StackPanel>
+    </Grid>
+    <Grid x:Name="NodeFilterBar" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Border CornerRadius="18" Background="{ThemeResource NeoCell}" BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" Padding="3">
+        <StackPanel x:Name="NodeStatusFilters" Orientation="Horizontal" Spacing="3">
+          <Button x:Name="FilterAll" Style="{StaticResource StatusChip}" Tag="all" Content="全部" Click="OnStatusFilterClick" Background="{ThemeResource NeoAccent}" Foreground="White"/>
+          <Button x:Name="FilterAvailable" Style="{StaticResource StatusChip}" Tag="available" Content="可用" Click="OnStatusFilterClick"/>
+          <Button x:Name="FilterTimeout" Style="{StaticResource StatusChip}" Tag="timeout" Content="超时" Click="OnStatusFilterClick"/>
+          <Button x:Name="FilterUntested" Style="{StaticResource StatusChip}" Tag="untested" Content="未测" Click="OnStatusFilterClick"/>
+        </StackPanel>
+      </Border>
+      <Button x:Name="FilterBtn" Grid.Column="1" ui:AdaptiveText.BaseWidth="118" Style="{StaticResource ToolBtn}" Click="OnFilterTapped"><StackPanel Orientation="Horizontal" Spacing="14"><TextBlock x:Name="FilterBtnText" Text="全部地区"/><FontIcon Glyph="&#xE70D;" FontFamily="Segoe Fluent Icons" ui:AdaptiveText.BaseSize="10"/></StackPanel></Button>
+      <TextBlock x:Name="NodeActionHint" Grid.Column="2" Text="点击卡片切换 · 点击延迟测速" HorizontalAlignment="Right" VerticalAlignment="Center" Foreground="{ThemeResource NeoText3}" ui:AdaptiveText.BaseSize="10.5"/>
+    </Grid>
+  </StackPanel>
+  <Grid Grid.Row="1" x:Name="NodeViewport"><GridView x:Name="NodeList" VerticalAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Hidden" SelectionMode="None" IsItemClickEnabled="False" SizeChanged="OnScrollSizeChanged" Padding="0,2,0,4" KeyDown="OnNodeListKeyDown">
+                    <GridView.ItemContainerTransitions><TransitionCollection/></GridView.ItemContainerTransitions>
                     <GridView.ItemContainerStyle>
                         <Style TargetType="GridViewItem">
-                            <Setter Property="Padding" Value="0" />
-                            <Setter Property="Margin" Value="0" />
-                            <Setter Property="MinWidth" Value="0" />
-                            <Setter Property="MinHeight" Value="0" />
-                            <Setter Property="Background" Value="Transparent" />
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                            <Setter Property="VerticalContentAlignment" Value="Stretch" />
-                        </Style>
+                            <Setter Property="Padding" Value="0"/>
+                            <Setter Property="Margin" Value="0"/>
+                            <Setter Property="MinWidth" Value="0"/>
+                            <Setter Property="MinHeight" Value="0"/>
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                        <Setter Property="CornerRadius" Value="22"/><Setter Property="FocusVisualMargin" Value="-3"/></Style>
                     </GridView.ItemContainerStyle>
                     <GridView.ItemsPanel>
                         <ItemsPanelTemplate>
-                            <ItemsWrapGrid Orientation="Horizontal" />
+                            <ItemsWrapGrid Orientation="Horizontal" CacheLength="0.5"/>
                         </ItemsPanelTemplate>
                     </GridView.ItemsPanel>
                     <GridView.ItemTemplate>
                         <DataTemplate x:DataType="local:NodeTile">
-                            <Border Height="{x:Bind CardHeight}" CornerRadius="9" Margin="2,2,8,8"
-                                    Background="{x:Bind CardBg, Mode=OneWay}"
-                                    BorderBrush="{x:Bind CardBorder, Mode=OneWay}"
-                                    BorderThickness="{x:Bind CardThickness, Mode=OneWay}"
-                                    ToolTipService.ToolTip="{x:Bind Tooltip, Mode=OneWay}"
-                                                                        Tapped="OnTileTapped" RightTapped="OnTileRightTapped" PointerEntered="OnTileEnter" PointerExited="OnTileLeave">
-                                <Grid Padding="10,8,8,8" RowSpacing="3" ColumnSpacing="7">
+                            <Border ui:SurfaceEdge.Enabled="True" ui:SurfaceEdge.NodeSelected="{x:Bind IsSelected, Mode=OneWay}" ui:AdaptiveText.BaseHeight="{x:Bind CardHeight}" CornerRadius="22" Margin="4,5,6,5" Background="{x:Bind CardBg, Mode=OneWay}" BorderBrush="{x:Bind CardBorder, Mode=OneWay}" BorderThickness="{x:Bind CardThickness, Mode=OneWay}" ToolTipService.ToolTip="{x:Bind Tooltip, Mode=OneWay}" Tapped="OnTileTapped" RightTapped="OnTileRightTapped" PointerEntered="OnTileEnter" PointerExited="OnTileLeave">
+                                <Grid Padding="13,6,13,6" RowSpacing="4" ColumnSpacing="7" VerticalAlignment="Center">
                                     <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Border Grid.Row="0" Grid.Column="0" Width="22" Height="15" CornerRadius="3"
-                                            Background="White" BorderBrush="#1A000000" BorderThickness="1"
-                                            VerticalAlignment="Center" DataContextChanged="OnFlagDataContextChanged">
-                                        <Grid />
-                                    </Border>
-
-                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{x:Bind NameText}" FontSize="12"
-                                               FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                               Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center" />
-
-                                    <Border Grid.Row="0" Grid.Column="2" Width="24" Height="24" CornerRadius="6"
-                                            Background="{ThemeResource NeoGlassStrong}"
-                                            BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1"
-                                            Tapped="OnTileTestTapped">
-                                        <TextBlock Text="&#xE945;" FontFamily="Segoe Fluent Icons" FontSize="11"
-                                                   Foreground="{ThemeResource NeoText3}"
-                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                    </Border>
-
-                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind MetaText, Mode=OneWay}" FontSize="10"
-                                               Foreground="{ThemeResource NeoText3}"
-                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Bottom" />
-
+                                    <Grid Grid.ColumnSpan="3" ColumnSpacing="8">
+                                      <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                      <Border Width="20" Height="14" CornerRadius="3" Background="White" VerticalAlignment="Center" DataContextChanged="OnFlagDataContextChanged"><Grid/></Border>
+                                      <TextBlock Grid.Column="1" Text="{x:Bind NameText}" ui:AdaptiveText.BaseSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource NeoText1}" VerticalAlignment="Center"/>
+                                      <Border Grid.Column="2" CornerRadius="8" Padding="6,2" Background="{ThemeResource NeoAccentSoft}" Visibility="{x:Bind SelectedVisibility, Mode=OneWay}"><TextBlock Text="已选中" ui:AdaptiveText.BaseSize="9" Foreground="{ThemeResource NeoAccent}"/></Border>
+                                    </Grid>
+                                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{x:Bind MetaText, Mode=OneWay}" ui:AdaptiveText.BaseSize="10" Foreground="{ThemeResource NeoText3}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                                     <!-- 固定宽度 + 右对齐：延迟从「● 未测」变成「● 123 ms」时列宽不再变，
                                          否则批量测速时每张卡片都在横向重排，看起来像整页在闪。 -->
-                                    <TextBlock Grid.Row="1" Grid.Column="2" Text="{x:Bind DelayText, Mode=OneWay}"
-                                               Width="64" TextAlignment="Right"
-                                               FontSize="10" FontWeight="SemiBold"
-                                               Foreground="{x:Bind DelayBrush, Mode=OneWay}"
-                                               VerticalAlignment="Bottom" />
+                                    <Button Grid.Row="1" Grid.Column="2" Style="{StaticResource NeoPillButton}" Content="{x:Bind DelayText, Mode=OneWay}" Background="Transparent" BorderThickness="0" ui:AdaptiveText.BaseWidth="76" ui:AdaptiveText.BaseHeight="26" Padding="5,0" ui:AdaptiveText.BaseSize="11.5" FontWeight="Medium" HorizontalContentAlignment="Right" Foreground="{x:Bind DelayBrush, Mode=OneWay}" Click="OnTileTestClick" Tapped="OnDelayTapHandled" AutomationProperties.Name="{x:Bind DelayActionLabel, Mode=OneWay}"/>
                                 </Grid>
                             </Border>
                         </DataTemplate>
                     </GridView.ItemTemplate>
                 </GridView>
 
-                <StackPanel x:Name="EmptyState" Visibility="Collapsed" HorizontalAlignment="Center"
-                            VerticalAlignment="Center" Spacing="6" Margin="0,60,0,0">
-                    <TextBlock Text="还没有节点" FontSize="13" FontWeight="SemiBold"
-                               Foreground="{ThemeResource NeoText2}" HorizontalAlignment="Center" />
-                    <TextBlock Text="去「订阅」页添加订阅，或用工具栏「手动节点」粘贴分享链接导入"
-                               FontSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Center" />
+                <StackPanel x:Name="EmptyState" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6" Margin="0,60,0,0">
+                    <TextBlock Text="还没有节点" ui:AdaptiveText.BaseSize="13" FontWeight="SemiBold" Foreground="{ThemeResource NeoText2}" HorizontalAlignment="Center"/>
+                    <TextBlock Text="去「订阅」页添加订阅，或用工具栏「手动节点」粘贴分享链接导入" ui:AdaptiveText.BaseSize="11" Foreground="{ThemeResource NeoText3}" HorizontalAlignment="Center"/>
                 </StackPanel>
 
-                <Border Grid.Row="1" BorderBrush="{ThemeResource NeoHairline2}" BorderThickness="0,1,0,0" Padding="6,8,6,0">
-                    <Grid>
-                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <Ellipse Width="6" Height="6" Fill="{ThemeResource NeoGreen}" VerticalAlignment="Center" />
-                            <TextBlock x:Name="FootTime" Text="尚未测速" FontSize="11" Foreground="{ThemeResource NeoText2}" />
-                            <TextBlock x:Name="FootAvg" Text="" FontSize="11" Foreground="{ThemeResource NeoText2}" />
-                        </StackPanel>
-                        <TextBlock x:Name="FootCenter" HorizontalAlignment="Center" VerticalAlignment="Center"
-                                   FontSize="11" Foreground="{ThemeResource NeoText2}" Text="" TextTrimming="CharacterEllipsis" MaxWidth="560" />
-                        <TextBlock HorizontalAlignment="Right" VerticalAlignment="Center" FontSize="11"
-                                   Foreground="{ThemeResource NeoText2}" Text="点击卡片选择节点 · 真连测速 = 实际链路延迟（再点一次停止）" />
-                    </Grid>
-                </Border>
-            </Grid>
-        </Border>
-    </Grid>
-</UserControl>
+                </Grid>
+  <Grid x:Name="NodeFooter" Grid.Row="2" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel Orientation="Horizontal" Spacing="6"><TextBlock x:Name="FootTime" Text="尚未测速" ui:AdaptiveText.BaseSize="10.5" Foreground="{ThemeResource NeoText3}"/><TextBlock x:Name="FootAvg" ui:AdaptiveText.BaseSize="10.5" Foreground="{ThemeResource NeoText3}"/></StackPanel>
+    <TextBlock x:Name="FootCenter" Grid.Column="1" ui:AdaptiveText.BaseSize="10.5" Foreground="{ThemeResource NeoText3}" TextTrimming="CharacterEllipsis" MaxWidth="260"/>
+  </Grid>
+</Grid></UserControl>

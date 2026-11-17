@@ -21,7 +21,7 @@ public sealed record SingBoxRelease(string Version, string Tag, string DownloadU
 /// 上游没有 .sha256 资产：安装做「可解压 + 内含 exe + 版本串自校验」，与 sing-box 同策略。
 public sealed record MihomoRelease(string Version, string Tag, string AssetName, string DownloadUrl, long SizeBytes, bool Prerelease, string? Sha256 = null);
 
-public static class UpdateChecker
+public static partial class UpdateChecker
 {
     private const string XrayOwner = "XTLS";
     private const string XrayRepo = "Xray-core";
@@ -36,15 +36,12 @@ public static class UpdateChecker
     /// <summary>最近一次 FetchLatestSingBoxAsync 的失败原因，供检查文案区分「网络不可达 / 无 windows 资产」。</summary>
     private static string? _lastSingBoxFetchIssue;
 
-    /// <summary>mihomo 上游仓库（第三内核；只纳入安装/版本/更新管理，连接层暂未启用）。</summary>
+    /// <summary>mihomo 上游仓库（SSR / Clash 辅助内核）。</summary>
     private const string MihomoOwner = "MetaCubeX";
     private const string MihomoRepo = "mihomo";
     private static string? _lastMihomoFetchIssue;
 
-    /// 取 xray 官方最新 release（**非 API 通道**，避开匿名 60次/小时 配额）。
-    /// 官方从不把新版本转正，`releases/latest` 会停在最后一个 stable，
-    /// 因此这里走 atom 列表取**第一个**版本（含预发布），
-    /// 再按固定资产名 `Xray-windows-64.zip` 取下载地址。
+    /// 取 xray 官方发布；默认使用 /latest 稳定版，显式开启预发布后读取官方标记。
     public static Task<XrayRelease?> FetchLatestAsync(CancellationToken ct = default)
         => FetchLatestAsync(false, ct);
 
@@ -55,30 +52,32 @@ public static class UpdateChecker
     public static async Task<XrayRelease?> FetchLatestAsync(bool includePreRelease, CancellationToken ct = default)
     {
         var preferProxy = ConnectionService.IsConnected;
-        List<string> tags;
+        List<(string Tag, bool Prerelease)> candidates;
         if (includePreRelease)
         {
             var flags = await GitHubChannel.GetReleaseFlagsAsync(XrayOwner, XrayRepo, preferProxy, ct);
-            tags = flags is { Count: > 0 }
-                ? flags.Select(f => f.Tag).ToList()
-                : await GitHubChannel.GetTagsFromAtomAsync(XrayOwner, XrayRepo, preferProxy, ct);
+            candidates = flags ?? [];
         }
-        else
+        else candidates = [];
+        // A numeric tag can still be marked prerelease by GitHub. Atom does not
+        // carry that flag; /latest is the stable fallback even during API limits.
+        if (candidates.Count == 0)
         {
-            tags = await GitHubChannel.GetTagsFromAtomAsync(XrayOwner, XrayRepo, preferProxy, ct);
+            var stable = await GitHubChannel.GetLatestTagAsync(XrayOwner, XrayRepo, preferProxy, ct);
+            if (stable == null) return null;
+            candidates.Add((stable, false));
         }
-        if (tags.Count == 0) return null;
 
         // atom 里最新在前。官方每个正式版都带 Xray-windows-64.zip，
         // 因此最多试前 3 个即可（预发布偶尔缺资产，翻再多也几乎不会是有效发布）。
         var tried = 0;
-        foreach (var tag in tags)
+        foreach (var (tag, prerelease) in candidates)
         {
             if (tried >= 3) break;
             //   原实现取第一个 tag ⇒ 可能把预发布内核装给用户，且 UI 里 Prerelease 恒 false 不作提示。
             var ver = tag.TrimStart('v', 'V');
             // 未开启「检查预发布内核」时跳过带预发布后缀的 tag；开启后不再跳过。
-            if (!includePreRelease && ver.Contains('-')) continue;
+            if (!includePreRelease && prerelease) continue;
 
             tried++;
             var assets = await GitHubChannel.GetAssetsAsync(XrayOwner, XrayRepo, tag, preferProxy, ct);
@@ -86,9 +85,9 @@ public static class UpdateChecker
                 string.Equals(a.Name, "Xray-windows-64.zip", StringComparison.OrdinalIgnoreCase));
             if (asset == null) continue;   // 该版本无 x64 资产，看下一个
             // 官方 SHA-256：GitHub API 的 asset.digest（一次请求）；失败留给安装阶段用 .dgst 兜底。
-            var sha = await GitHubChannel.GetAssetDigestAsync(XrayOwner, XrayRepo, tag, asset.Name, preferProxy, ct);
+            var sha = asset.Sha256 ?? await GitHubChannel.GetAssetDigestAsync(XrayOwner, XrayRepo, tag, asset.Name, preferProxy, ct);
             if (!string.IsNullOrEmpty(sha)) KernelHashCache.Put(XrayOwner, XrayRepo, tag, asset.Name, sha);
-            return new XrayRelease(ver, tag, asset.DownloadUrl, asset.SizeBytes, false, sha);
+            return new XrayRelease(ver, tag, asset.DownloadUrl, asset.SizeBytes, prerelease, sha);
         }
         return null;
     }
@@ -99,18 +98,11 @@ public static class UpdateChecker
         var rel = await FetchLatestAsync(includePreRelease);
         if (rel == null) return (false, "检查失败：网络不可达（可先连接代理后再试）", null);
 
-        var cur = (currentVersion ?? "").Trim();
-        string verdict;
-        if (cur.Length == 0)
-            verdict = "无法读取本地内核版本。";
-        else if (CompareVersions(rel.Version, cur) > 0)
-            verdict = "发现新版本，可一键覆盖安装。";
-        else
-            verdict = "已是最新版本，无需更新。";
+        var decision = DescribeKernelUpdate(currentVersion, rel.Version, KernelCatalog.IsInstalled(CoreEngine.Xray));
 
         var preTag = rel.Prerelease ? " · 预发布" : "";
         var mode = includePreRelease ? "\n（已开启「检查预发布内核」：候选含上游标记为预发布的版本）" : "";
-        return (true, $"当前内核：xray {cur}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{verdict}{mode}", rel);
+        return (true, $"当前内核：xray {decision.Current}\n最新发布：xray {rel.Version}（{rel.Tag}{preTag}）\n\n{decision.Verdict}{mode}", decision.CanInstall ? rel : null);
     }
 
     /// 从上游官方 SagerNet/sing-box 取最新**稳定版**的 Windows amd64 内核资产。
@@ -146,7 +138,7 @@ public static class UpdateChecker
             LogBus.App(_lastSingBoxFetchIssue ?? "", "Warning");
             return null;
         }
-        var sbSha = await GitHubChannel.GetAssetDigestAsync(SingBoxOwner, SingBoxRepo, latest, asset.Name, preferProxy, ct);
+        var sbSha = asset.Sha256 ?? await GitHubChannel.GetAssetDigestAsync(SingBoxOwner, SingBoxRepo, latest, asset.Name, preferProxy, ct);
         if (!string.IsNullOrEmpty(sbSha)) KernelHashCache.Put(SingBoxOwner, SingBoxRepo, latest, asset.Name, sbSha);
         return new SingBoxRelease(coreVer, latest, asset.DownloadUrl, asset.SizeBytes, false, asset.Name, sbSha);
     }
@@ -182,20 +174,11 @@ public static class UpdateChecker
                 "只从 Windows amd64 资产更新；若上游该版本没有 windows-amd64 资产，或当前网络不可达，请稍后再试。",
                 null);
 
-        var cur = (currentVersion ?? "").Trim();
-        string verdict;
-        if (cur.Length == 0)
-            verdict = "无法读取本地内核版本。";
-        else if (CompareVersions(StripSuffix(rel.Version), StripSuffix(cur)) > 0)
-            verdict = "发现新版本，可一键覆盖安装。";
-        else if (CompareVersions(StripSuffix(rel.Version), StripSuffix(cur)) == 0)
-            verdict = "已是最新版本，无需更新。";
-        else
-            verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
+        var decision = DescribeKernelUpdate(currentVersion, rel.Version, KernelCatalog.IsInstalled(CoreEngine.SingBox));
 
         return (true,
-            $"当前内核：sing-box {cur}\n上游最新稳定：sing-box {rel.Version}（{rel.Tag}）\n\n{verdict}",
-            rel);
+            $"当前内核：sing-box {decision.Current}\n上游最新稳定：sing-box {rel.Version}（{rel.Tag}）\n\n{decision.Verdict}",
+            decision.CanInstall ? rel : null);
     }
 
 
@@ -226,7 +209,7 @@ public static class UpdateChecker
             LogBus.App($"mihomo 内核更新：{_lastMihomoFetchIssue}", "Warning");
             return null;
         }
-        var mhSha = await GitHubChannel.GetAssetDigestAsync(MihomoOwner, MihomoRepo, tag, asset.Name, preferProxy, ct);
+        var mhSha = asset.Sha256 ?? await GitHubChannel.GetAssetDigestAsync(MihomoOwner, MihomoRepo, tag, asset.Name, preferProxy, ct);
         if (!string.IsNullOrEmpty(mhSha)) KernelHashCache.Put(MihomoOwner, MihomoRepo, tag, asset.Name, mhSha);
         return new MihomoRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, false, mhSha);
     }
@@ -241,110 +224,17 @@ public static class UpdateChecker
                 "只取 Windows amd64 的 v1 系列资产。若上游该版本没有对应资产，请稍后再试。",
                 null);
 
-        var cur = (currentVersion ?? "").Trim();
-        string verdict;
-        if (cur.Length == 0) verdict = "本机未安装 mihomo 内核，可一键下载安装。";
-        else if (CompareVersions(rel.Version, cur) > 0) verdict = "发现新版本，可一键覆盖安装。";
-        else if (CompareVersions(rel.Version, cur) == 0) verdict = "已是最新版本，无需更新。";
-        else verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
-
-        var curText = cur.Length == 0 ? "未安装" : cur;
-        return (true, $"当前内核：mihomo {curText}\n上游最新稳定：mihomo {rel.Version}（{rel.Tag}）\n\n{verdict}", rel);
+        var decision = DescribeKernelUpdate(currentVersion, rel.Version, KernelCatalog.IsInstalled(CoreEngine.Mihomo));
+        return (true, $"当前内核：mihomo {decision.Current}\n上游最新稳定：mihomo {rel.Version}（{rel.Tag}）\n\n{decision.Verdict}", decision.CanInstall ? rel : null);
     }
 
     /// 下载并安装 mihomo：下载 zip → 解压找 exe → 版本自校验 → 备份 → 覆盖 runtime\mihomo.exe → 复核。
-    /// mihomo 目前不参与拨号（TUN/系统代理仍由 xray / sing-box 承载），所以无需先断开连接。
-    public static async Task<(bool Ok, string Message)> DownloadAndInstallMihomoAsync(
+    /// 更新辅助内核也要等待当前会话退出，避免占用文件及恢复竞态。
+    public static Task<(bool Ok, string Message)> DownloadAndInstallMihomoAsync(
         MihomoRelease rel, Action<string> progress, CancellationToken ct = default,
         Action<DownloadProgress>? onProgress = null)
-    {
-        var zipPath = Path.Combine(Path.GetTempPath(), "neo-mihomo-update.zip");
-        var extractDir = Path.Combine(Path.GetTempPath(), "neo-mihomo-update");
-
-        var mhSha = rel.Sha256 ?? KernelHashCache.TryGet(MihomoOwner, MihomoRepo, rel.Tag, rel.AssetName);
-        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, rel.AssetName,
-            mhSha, progress, onProgress, ct, MihomoOwner, MihomoRepo, rel.Tag, rel.AssetName);
-        if (!fetched.Ok) return (false, fetched.Message);
-
-        try
-        {
-            progress("解压校验…");
-                // zip 已由 FetchKernelZipAsync 落盘并校验，这里只解压
-            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
-            ZipFile.ExtractToDirectory(zipPath, extractDir);
-
-            var newExe = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories).FirstOrDefault();
-            if (newExe == null) return (false, "解压后未找到可执行文件，安装中止。");
-
-            var verOut = RunMihomoVersion(newExe);
-            if (!MihomoVersionMatches(rel.Version, verOut))
-                return (false, $"新内核版本自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
-
-            var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "mihomo.exe");
-            var backup = target + ".bak-prev";
-
-            progress("覆盖安装…");
-            KernelInstall.ReplaceAtomically(newExe, target, backup);
-
-            var installed = RunMihomoVersion(target);
-            if (!MihomoVersionMatches(rel.Version, installed))
-            {
-                try { File.Copy(backup, target, true); } catch { }
-                return (false, "安装后校验失败，已回滚到旧内核。");
-            }
-
-            KernelCatalog.ResetVersion(CoreEngine.Mihomo);
-
-            progress("清理临时文件…");
-            try { Directory.Delete(extractDir, true); } catch { }
-            try { File.Delete(zipPath); } catch { }
-
-            return (true, $"mihomo 已更新到 {rel.Version}。\n\n说明：mihomo 目前只作为「可选内核」纳入安装与更新管理，"
-                          + "连接仍由 xray / sing-box 承载（TUN 稳定优先）；它不会自动参与拨号。");
-        }
-        catch (Exception ex)
-        {
-            return (false, "安装失败：" + ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// mihomo 的版本输出形如 "Mihomo Meta v1.19.33 windows amd64 with go1.25.4 …"，
-    /// 不是 sing-box 的 "sing-box version x" 格式，必须单独抽 semver 比较（否则安装后自校验会永远失败）。
-    /// </summary>
-    private static bool MihomoVersionMatches(string expected, string output)
-    {
-        static string Semver(string s)
-        {
-            var m = System.Text.RegularExpressions.Regex.Match(s ?? "", @"(\d+)\.(\d+)\.(\d+)");
-            return m.Success ? $"{m.Groups[1].Value}.{m.Groups[2].Value}.{m.Groups[3].Value}" : "";
-        }
-        var e = Semver(expected);
-        return e.Length > 0 && e == Semver(output);
-    }
-
-    private static string RunMihomoVersion(string exe)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exe,
-                Arguments = "-v",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            using var p = Process.Start(psi);
-            if (p == null) return "";
-            var so = p.StandardOutput.ReadToEnd();
-            var se = p.StandardError.ReadToEnd();
-            p.WaitForExit(5000);
-            return (so + "\n" + se).Trim();
-        }
-        catch { return ""; }
-    }
+        => InstallReleaseAsync(CoreEngine.Mihomo, rel.Version, rel.Tag, rel.DownloadUrl,
+            rel.AssetName, rel.Sha256, rel.SizeBytes, progress, onProgress, ct);
 
     /// 版本号去掉 `-noGate` / `-neo` 这类后缀，只留数字主干。
     /// 保留原因：兼容用户机器上已装的旧自编译内核（如 `1.14.2-noGate`）与历史资产名，
@@ -373,7 +263,7 @@ public static class UpdateChecker
         }
 
         progress($"下载 {displayName}…");
-        var (ok, msg) = await KernelDownloader.DownloadAsync(url, zipPath, onProgress, ct);
+        var (ok, msg) = await KernelDownloader.DownloadAsync(url, zipPath, onProgress, ct, progress);
         if (!ok) return (false, msg);
 
         progress("校验 SHA-256…");
@@ -404,81 +294,15 @@ public static class UpdateChecker
     }
 
     /// 下载并覆盖安装内核：下载 zip → 解压校验 → （必要时自动断开连接）→ 备份 → 覆盖 → 运行验证，失败自动回滚。
-    public static async Task<(bool Ok, string Message)> DownloadAndInstallAsync(
+    public static Task<(bool Ok, string Message)> DownloadAndInstallAsync(
         XrayRelease rel, Action<string> progress, CancellationToken ct = default,
         Action<DownloadProgress>? onProgress = null)
-    {
-        var zipPath = Path.Combine(Path.GetTempPath(), "neo-xray-update.zip");
-        var extractDir = Path.Combine(Path.GetTempPath(), "neo-xray-update");
-
-        // 官方哈希：优先用检查更新时拿到的 API digest；拿不到再退回 xray 官方 .dgst。
-        var expectedSha = rel.Sha256;
-        if (string.IsNullOrEmpty(expectedSha))
-        {
-            var dgstText = await FetchReleaseTextAsync(XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip.dgst", ct);
-            if (dgstText != null && KernelInstall.TryParseSha256(dgstText, out var fromDgst)) expectedSha = fromDgst;
-        }
-
-        // 断点续传 + 实时进度 + SHA-256 校验（失败/取消保留 .part，可续传）。
-        // 缓存里可能已有上次拿到的官方哈希（API 限流时仍能校验同一个包）。
-        expectedSha ??= KernelHashCache.TryGet(XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip");
-        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, "Xray-windows-64.zip",
-            expectedSha, progress, onProgress, ct, XrayOwner, XrayRepo, rel.Tag, "Xray-windows-64.zip");
-        if (!fetched.Ok) return (false, fetched.Message);
-
-        try
-        {
-            progress("解压校验…");
-            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
-            ZipFile.ExtractToDirectory(zipPath, extractDir);
-
-            var newExe = Path.Combine(extractDir, "xray.exe");
-            if (!File.Exists(newExe)) return (false, "解压后未找到 xray.exe，安装中止。");
-
-            var verOut = RunXrayVersion(newExe);
-            if (!verOut.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
-                return (false, $"新内核自校验不符（期望 {rel.Version}），安装中止，未改动现有文件。");
-
-            progress("用当前配置预检新内核…");
-            var preflight = await PreflightWithCurrentConfigAsync(newExe, KernelKind.Xray, ct);
-            if (!preflight.Ok) return (false, preflight.Message);
-
-            if (ConnectionService.IsConnected)
-            {
-                progress("断开当前连接（内核文件被占用）…");
-                ConnectionService.Disconnect("安装新内核前断开");
-            }
-
-            var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "xray.exe");
-            var backup = target + ".bak-prev";
-
-            progress("覆盖安装…");
-            KernelInstall.ReplaceAtomically(newExe, target, backup);
-
-            var installed = RunXrayVersion(target);
-            if (!installed.Contains(rel.Version, StringComparison.OrdinalIgnoreCase))
-            {
-                File.Copy(backup, target, true);
-                return (false, "安装后校验失败，已回滚到旧内核。");
-            }
-
-            ConnectionService.ResetXrayVersion();
-
-            progress("清理临时文件…");
-            try { Directory.Delete(extractDir, true); } catch { }
-            try { File.Delete(zipPath); } catch { }
-
-            return (true, $"xray 已更新到 {rel.Version}！重新连接即使用新内核。");
-        }
-        catch (Exception ex)
-        {
-            return (false, "安装失败：" + ex.Message);
-        }
-    }
+        => InstallReleaseAsync(CoreEngine.Xray, rel.Version, rel.Tag, rel.DownloadUrl,
+            "Xray-windows-64.zip", rel.Sha256, rel.SizeBytes, progress, onProgress, ct);
 
     /// <summary>
     /// 安装内核前用「当前配置」预检新 exe：跑一次 `xray run -test` / `sing-box check`。
-    /// 当前没有 config.json、或它不是该内核的配置、或预检本身跑不起来（超时/缺 exe）→ 不阻断安装，只记 Warning。
+    /// 当前没有该内核配置时跳过；有配置但预检失败或超时则保留旧内核。
     /// 预检明确失败（配置被新内核拒绝）→ 中止安装并保留旧内核。
     /// </summary>
     private static async Task<(bool Ok, string Message)> PreflightWithCurrentConfigAsync(string newExe, KernelKind kind, CancellationToken ct)
@@ -499,7 +323,7 @@ public static class UpdateChecker
                 return (true, "");
             }
 
-            var r = await Task.Run(() => KernelCompat.RunCheck(newExe, kind, cfgPath, 8000), ct);
+            var r = await Task.Run(() => KernelCompat.RunCheck(newExe, kind, cfgPath, 8000, NeoPaths.RuntimeDir), ct);
             if (r.Ok)
             {
                 LogBus.App($"新内核预检通过：当前配置可被新 {kindName} 接受", "Debug");
@@ -507,8 +331,7 @@ public static class UpdateChecker
             }
             if (r.InfraFailed)
             {
-                LogBus.App($"新内核预检无法执行（不阻断安装）：{r.Output}", "Warning");
-                return (true, "");
+                return (false, $"新内核预检无法完成，已保留原内核：{KernelCompat.FirstLines(r.Output, 3)}");
             }
 
             var lines = KernelCompat.FirstLines(r.Output, 3);
@@ -516,163 +339,21 @@ public static class UpdateChecker
             IncidentLog.Record("compat", $"新 {kindName} 内核预检失败，已保留旧内核", lines);
             return (false, $"新内核无法通过当前配置的预检，已中止安装并保留旧内核。\n\n{lines}");
         }
-        catch (OperationCanceledException) { return (true, ""); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            LogBus.App($"新内核预检异常（不阻断安装）：[{ex.GetType().Name}] {ex.Message}", "Warning");
-            return (true, "");
+            return (false, "新内核预检异常，已保留原内核：" + ex.Message);
         }
-    }
-
-    private static string RunXrayVersion(string exe)
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                ArgumentList = { "version" },
-                RedirectStandardOutput = true,
-                // 不重定向 stderr：重定向却不读会因管道缓冲写满而死锁（只需 stdout）。
-                RedirectStandardError = false,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (p == null) return "";
-            var txt = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(5000);
-            return txt;
-        }
-        catch { return ""; }
     }
 
     /// 下载并覆盖安装 **sing-box 内核**（上游官方稳定版资产）。
-    /// 流程：下载 →（sha256 仅记录追溯）→ 解压并确认含 sing-box.exe → 新 exe `version` 版本号自校验
-    /// → 用当前配置预检 → 断开 → KernelInstall 原子替换（.bak-prev 备份）→ 安装后版本自校验（失败回滚）。
-    /// 上游不提供 .sha256，不再用「缺校验文件」中止。
-    public static async Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
+    /// 流程：官方 SHA-256 → 解压/版本预检 → 等待会话退出 → exe/DLL 事务替换 → 复核/回滚。
+    public static Task<(bool Ok, string Message)> DownloadAndInstallSingBoxAsync(
         SingBoxRelease rel, Action<string> progress, CancellationToken ct = default,
         Action<DownloadProgress>? onProgress = null)
-    {
-        var zipPath = Path.Combine(Path.GetTempPath(), "neo-singbox-update.zip");
-        var extractDir = Path.Combine(Path.GetTempPath(), "neo-singbox-update");
-
-        var assetName = string.IsNullOrEmpty(rel.AssetName) ? "sing-box.exe" : rel.AssetName;
-        var sboxSha = rel.Sha256 ?? KernelHashCache.TryGet(SingBoxOwner, SingBoxRepo, rel.Tag, assetName);
-        var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath,
-            string.IsNullOrEmpty(rel.AssetName) ? "sing-box 内核" : rel.AssetName,
-            sboxSha, progress, onProgress, ct, SingBoxOwner, SingBoxRepo, rel.Tag, assetName);
-        if (!fetched.Ok) return (false, fetched.Message);
-
-        string? backup = null;
-        var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "sing-box.exe");
-        try
-        {
-            // 上游官方发行版不提供 .sha256 资产：不再用「缺校验文件」中止。
-            // 完整性 = 可解压且内含 sing-box.exe + 新 exe `version` 版本串自校验；
-            // sha256 只作为可追溯信息记录（日志 + IncidentLog），不作为放行条件。
-            var actualSha = KernelInstall.Sha256Hex(await File.ReadAllBytesAsync(zipPath, ct));
-            LogBus.App($"sing-box 内核包 SHA-256（仅追溯）：{actualSha} · {rel.AssetName}", "Debug");
-            IncidentLog.Record("kernel-install", $"sing-box 内核包 SHA-256：{actualSha}", rel.AssetName);
-
-            progress("解压校验…");
-            try
-            {
-            // zip 已由 FetchKernelZipAsync 落盘并校验，这里只解压
-                if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
-                ZipFile.ExtractToDirectory(zipPath, extractDir);
-            }
-            catch (Exception ex)
-            {
-                return (false, "更新包解压失败（下载可能不完整），安装中止，未改动现有文件：" + ex.Message);
-            }
-
-            // zip 内可能带一层目录（上游发布包布局），递归找一个 sing-box.exe。
-            var newExe = Directory.EnumerateFiles(extractDir, "sing-box.exe", SearchOption.AllDirectories)
-                .FirstOrDefault();
-            if (newExe == null) return (false, "解压后未找到 sing-box.exe，安装中止。");
-
-            progress("校验内核版本…");
-            var verOut = RunSingBoxVersion(newExe);
-            if (!VersionMatches(rel.Version, verOut))
-                return (false, $"新内核版本自校验不符（期望 {rel.Version}，实得 {(verOut.Trim().Length > 0 ? verOut.Trim() : "无输出")}），安装中止，未改动现有文件。");
-
-            progress("用当前配置预检新内核…");
-            var preflight2 = await PreflightWithCurrentConfigAsync(newExe, KernelKind.SingBox, ct);
-            if (!preflight2.Ok) return (false, preflight2.Message);
-
-            if (ConnectionService.IsConnected)
-            {
-                progress("断开当前连接（内核文件被占用）…");
-                ConnectionService.Disconnect("安装新内核前断开");
-            }
-
-            backup = target + ".bak-prev";
-            progress("覆盖安装…");
-            KernelInstall.ReplaceAtomically(newExe, target, backup);
-
-            var installed = RunSingBoxVersion(target);
-            if (!VersionMatches(rel.Version, installed))
-            {
-                File.Copy(backup, target, true);
-                return (false, "安装后版本校验失败，已回滚到旧内核。");
-            }
-            ConnectionService.ResetSingBoxVersion();
-
-            progress("清理临时文件…");
-            try { Directory.Delete(extractDir, true); } catch { }
-            try { File.Delete(zipPath); } catch { }
-
-            return (true, $"sing-box 已更新到 {rel.Version}（官方发行版）！重新连接即使用新内核。");
-        }
-        catch (Exception ex)
-        {
-            // 中途失败：文件可能已覆盖但校验没过，尽力回滚。
-            try
-            {
-                if (backup != null && File.Exists(backup) && File.Exists(target))
-                {
-                    var iv = RunSingBoxVersion(target);
-                    if (!VersionMatches(rel.Version, iv))
-                        File.Copy(backup, target, true);
-                }
-            }
-            catch { }
-            return (false, "安装失败：" + ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// 校验 `sing-box version` 输出与期望版本一致：按解析后的 Version 比较，
-    /// 避免 "1.14.3" 子串命中 "1.14.30" 之类的误判；任一侧解析失败一律视为不一致。
-    /// </summary>
-    private static bool VersionMatches(string expected, string versionOutput)
-    {
-        var exp = KernelCompat.ParseSingBoxVersion(expected);
-        var got = KernelCompat.ParseSingBoxVersion(versionOutput);
-        return exp != null && got != null && got == exp;
-    }
-
-    private static string RunSingBoxVersion(string exe)
-    {
-        try
-        {
-            using var p = Process.Start(new ProcessStartInfo
-            {
-                FileName = exe,
-                ArgumentList = { "version" },
-                RedirectStandardOutput = true,
-                RedirectStandardError = false,   // 重定向却不读 = 死锁风险（本项目已踩过）
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            });
-            if (p == null) return "";
-            var txt = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(5000);
-            return txt;
-        }
-        catch { return ""; }
-    }
+        => InstallReleaseAsync(CoreEngine.SingBox, rel.Version, rel.Tag, rel.DownloadUrl,
+            string.IsNullOrEmpty(rel.AssetName) ? $"sing-box-{rel.Version}-windows-amd64.zip" : rel.AssetName,
+            rel.Sha256, rel.SizeBytes, progress, onProgress, ct);
 
     /// 取同一 tag 下的小文本资产（目前只用于 xray 官方 .dgst）。
     /// 三路（socks / 系统代理 / 直连）依次尝试；取不到返回 null
@@ -724,10 +405,23 @@ public static class UpdateChecker
         return null;
     }
 
+    internal static (string Current, string Verdict, bool CanInstall) DescribeKernelUpdate(
+        string? currentVersion, string releaseVersion, bool installed)
+    {
+        if (!installed) return ("未安装", "尚未安装，可下载安装。", true);
+        var current = currentVersion?.Trim();
+        if (string.IsNullOrEmpty(current) || !System.Text.RegularExpressions.Regex.IsMatch(current,
+            @"^[vV]?\d+(?:\.\d+){2,3}(?:-[0-9A-Za-z.]+)?(?:\+[0-9A-Za-z.]+)?$"))
+            return ("版本未识别", "本地内核存在，但版本读取失败，暂时无法判断是否需要更新。请重新检查。", false);
+        var compared = CompareVersions(releaseVersion, current);
+        return (current, compared > 0 ? "发现新版本，可一键覆盖安装。" : compared == 0
+            ? "已是最新版本，无需更新。" : "本地版本比发布版本更新，无需更新。", compared > 0);
+    }
+
     public static int CompareVersions(string a, string b)
     {
-        var pa = a.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        var pb = b.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        var pa = StripSuffix(a.Trim().TrimStart('v', 'V')).Split('.', StringSplitOptions.RemoveEmptyEntries);
+        var pb = StripSuffix(b.Trim().TrimStart('v', 'V')).Split('.', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < Math.Max(pa.Length, pb.Length); i++)
         {
             int va = i < pa.Length && int.TryParse(pa[i], out var x) ? x : 0;
@@ -766,7 +460,7 @@ public static class UpdateChecker
             LogBus.App($"naive 内核更新：{_lastNaiveFetchIssue}", "Warning");
             return null;
         }
-        var sha = await GitHubChannel.GetAssetDigestAsync(NaiveOwner, NaiveRepo, tag, asset.Name, preferProxy, ct);
+        var sha = asset.Sha256 ?? await GitHubChannel.GetAssetDigestAsync(NaiveOwner, NaiveRepo, tag, asset.Name, preferProxy, ct);
         if (!string.IsNullOrEmpty(sha)) KernelHashCache.Put(NaiveOwner, NaiveRepo, tag, asset.Name, sha);
         return new NaiveRelease(ver, tag, asset.Name, asset.DownloadUrl, asset.SizeBytes, sha);
     }
@@ -776,84 +470,18 @@ public static class UpdateChecker
         var rel = await FetchLatestNaiveAsync();
         if (rel == null)
             return (false, $"检查 naive 内核失败：{_lastNaiveFetchIssue ?? "网络不可达"}", null);
-        var cur = (currentVersion ?? "").Trim();
-        string verdict;
-        if (cur.Length == 0) verdict = "本机未安装 naive 内核，可一键下载安装。";
-        else if (CompareVersions(rel.Version, cur) > 0) verdict = "发现新版本，可一键覆盖安装。";
-        else if (CompareVersions(rel.Version, cur) == 0) verdict = "已是最新版本，无需更新。";
-        else verdict = "本地版本比发布版本更新（可能是手工替换的测试版），无需更新。";
-        var curText = cur.Length == 0 ? "未安装" : cur;
-        return (true, $"当前内核：naive {curText}\n上游最新：naive {rel.Version}（{rel.Tag}）\n\n{verdict}", rel);
+        var decision = DescribeKernelUpdate(currentVersion, rel.Version, KernelCatalog.IsInstalled(CoreEngine.Naive));
+        return (true, $"当前内核：naive {decision.Current}\n上游最新：naive {rel.Version}（{rel.Tag}）\n\n{decision.Verdict}", decision.CanInstall ? rel : null);
     }
 
-    /// <summary>下载并安装 naive：zip → 找 naive.exe → 版本自校验（取不到版本则只校验文件名）→ 原子替换 → 复核。</summary>
-    public static async Task<(bool Ok, string Message)> DownloadAndInstallNaiveAsync(
+    /// <summary>naive 使用与其他内核相同的校验、会话交接与事务替换流程。</summary>
+    public static Task<(bool Ok, string Message)> DownloadAndInstallNaiveAsync(
         NaiveRelease rel, Action<string> progress, CancellationToken ct = default,
         Action<DownloadProgress>? onProgress = null)
-    {
-        var zipPath = Path.Combine(Path.GetTempPath(), "neo-naive-update.zip");
-        var extractDir = Path.Combine(Path.GetTempPath(), "neo-naive-update");
-        try
-        {
-            var sha = rel.Sha256 ?? KernelHashCache.TryGet(NaiveOwner, NaiveRepo, rel.Tag, rel.AssetName);
-            var fetched = await FetchKernelZipAsync(rel.DownloadUrl, zipPath, rel.AssetName,
-                sha, progress, onProgress, ct, NaiveOwner, NaiveRepo, rel.Tag, rel.AssetName);
-            if (!fetched.Ok) return (false, fetched.Message);
-
-            progress("解压校验…");
-            if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
-            ZipFile.ExtractToDirectory(zipPath, extractDir);
-            var newExe = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories)
-                               .FirstOrDefault(f => Path.GetFileName(f).Equals("naive.exe", StringComparison.OrdinalIgnoreCase))
-                         ?? Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories).FirstOrDefault();
-            if (newExe == null) return (false, "解压后未找到 naive.exe，安装中止。");
-
-            var verOut = RunNaiveVersion(newExe);
-            if (verOut.Length > 0 && !verOut.Contains(rel.Version.Split('.')[0], StringComparison.Ordinal))
-                return (false, $"新 naive 版本自校验不符（期望 {rel.Version}，实得 {verOut}），安装中止，未改动现有文件。");
-
-            var target = Path.Combine(Neo.Core.NeoPaths.RuntimeDir, "naive.exe");
-            var backup = target + ".bak-prev";
-            progress("覆盖安装…");
-            KernelInstall.ReplaceAtomically(newExe, target, backup);
-            KernelCatalog.ResetVersion(CoreEngine.Naive);
-
-            progress("清理临时文件…");
-            try { Directory.Delete(extractDir, true); } catch { }
-            try { File.Delete(zipPath); } catch { }
-            return (true, $"naive 已更新到 {rel.Version}。\n\n说明：naive 只提供 socks 入口，连接时由 sing-box 前置承载 http/TUN。");
-        }
-        catch (Exception ex)
-        {
-            return (false, "安装失败：" + ex.Message);
-        }
-    }
+        => InstallReleaseAsync(CoreEngine.Naive, rel.Version, rel.Tag, rel.DownloadUrl,
+            rel.AssetName, rel.Sha256, rel.SizeBytes, progress, onProgress, ct);
 
     /// <summary>naive --version 的输出（Chromium 风格，可能是 "naive 154.0.x" 或只有版本号）。</summary>
-    public static string RunNaiveVersion(string exe)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exe,
-                Arguments = "--version",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                WorkingDirectory = Neo.Core.NeoPaths.RuntimeDir,
-            };
-            using var p = Process.Start(psi);
-            if (p == null) return "";
-            var so = p.StandardOutput.ReadToEnd();
-            var se = p.StandardError.ReadToEnd();
-            if (!p.WaitForExit(4000)) { try { p.Kill(); } catch { } }
-            var text = (so + "\n" + se).Trim();
-            var m = System.Text.RegularExpressions.Regex.Match(text, @"(\d+\.\d+\.\d+)");
-            return m.Success ? m.Groups[1].Value : "";
-        }
-        catch { return ""; }
-    }
+    public static string RunNaiveVersion(string exe) => ProbeCoreVersion(CoreEngine.Naive, exe);
 
 }

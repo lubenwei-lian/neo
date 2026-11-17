@@ -10,6 +10,16 @@
 
         
         <ResourceDictionary x:Key="Dark">
+            <SolidColorBrush x:Key="NeoSearchSurface" Color="#1F1F25" />
+            <SolidColorBrush x:Key="NeoControlSurface" Color="#2C2C32" />
+            <!-- Match styles.css :focus-visible; retain system high-contrast focus resources. -->
+            <SolidColorBrush x:Key="SystemControlFocusVisualPrimaryBrush" Color="#B35AA9FF" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualSecondaryBrush" Color="Transparent" />
+            <ImageBrush x:Key="NeoCardSurface" ImageSource="ms-appx:///Assets/surface-soft.png" Stretch="Fill" />
+            <LinearGradientBrush x:Key="NeoNodeSurface" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#0FFFFFFF" Offset="0"/><GradientStop Color="#06FFFFFF" Offset="1"/></LinearGradientBrush>
+            <LinearGradientBrush x:Key="NeoNodeSelected" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#335AA9FF" Offset="0"/><GradientStop Color="#1F5AA9FF" Offset="1"/></LinearGradientBrush>
+            <LinearGradientBrush x:Key="NeoNodeHover" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#17FFFFFF" Offset="0"/><GradientStop Color="#0BFFFFFF" Offset="1"/></LinearGradientBrush>
+
 
             
             <SolidColorBrush x:Key="NeoBackdrop" Color="#08080A" />
@@ -25,13 +35,13 @@
             <SolidColorBrush x:Key="NeoSurfaceHigh" Color="#35353A" />
 
             
-            <SolidColorBrush x:Key="NeoRim" Color="#61FFFFFF" />
+            <SolidColorBrush x:Key="NeoRim" Color="#0EFFFFFF" />
 
             
             <SolidColorBrush x:Key="NeoGlass" Color="#1C1C22" />
             <SolidColorBrush x:Key="NeoGlassStrong" Color="#35353A" />
             <!-- 弹层/菜单专用底色：不参与「玻璃透明度」缩放，保证任何档位下都清晰可读 -->
-            <SolidColorBrush x:Key="NeoPopupSurface" Color="#F20F1218" />
+            <SolidColorBrush x:Key="NeoPopupSurface" Color="#FF242429" />
             <SolidColorBrush x:Key="NeoGlass2" Color="#2C2C2E" />
             <SolidColorBrush x:Key="NeoGlass3" Color="#35353A" />
             <SolidColorBrush x:Key="NeoGlassBorder" Color="#21FFFFFF" />
@@ -42,7 +52,7 @@
 
             <SolidColorBrush x:Key="NeoText1" Color="#ECECEC" />
             <SolidColorBrush x:Key="NeoText2" Color="#9A9AA0" />
-            <SolidColorBrush x:Key="NeoText3" Color="#6E6E76" />
+            <SolidColorBrush x:Key="NeoText3" Color="#969BA5" />
 
             <SolidColorBrush x:Key="NeoAccent" Color="#5AA9FF" />
             <SolidColorBrush x:Key="NeoAccentSoft" Color="#245AA9FF" />
@@ -98,6 +108,15 @@
 
         
         <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="NeoSearchSurface" Color="#F7F7F9" />
+            <SolidColorBrush x:Key="NeoControlSurface" Color="#F7F7F9" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualPrimaryBrush" Color="#B35AA9FF" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualSecondaryBrush" Color="Transparent" />
+            <LinearGradientBrush x:Key="NeoCardSurface" StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#FFFFFF" Offset="0" />
+                <GradientStop Color="#F7F8FC" Offset="1" />
+            </LinearGradientBrush>
+
 
             <SolidColorBrush x:Key="NeoBackdrop" Color="#F2F2F4" />
             <LinearGradientBrush x:Key="NeoWinBg" StartPoint="0,0" EndPoint="0.55,1">
@@ -152,6 +171,22 @@
             <Color x:Key="NeoBarFrom">#2563EB</Color>
             <Color x:Key="NeoBarTo">#7CC4FF</Color>
 
+            <!-- Keep all surfaces resolvable when Windows switches themes at runtime. -->
+            <LinearGradientBrush x:Key="NeoNodeSurface" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#FFFFFF" Offset="0"/><GradientStop Color="#F7F8FC" Offset="1"/></LinearGradientBrush>
+            <LinearGradientBrush x:Key="NeoNodeSelected" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#242563EB" Offset="0"/><GradientStop Color="#142563EB" Offset="1"/></LinearGradientBrush>
+            <LinearGradientBrush x:Key="NeoNodeHover" StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#0E2563EB" Offset="0"/><GradientStop Color="#072563EB" Offset="1"/></LinearGradientBrush>
+            <SolidColorBrush x:Key="RingBlue" Color="#2563EB" />
+            <SolidColorBrush x:Key="RingBlueSoft" Color="#242563EB" />
+            <SolidColorBrush x:Key="RingBlueGlow" Color="#552563EB" />
+            <LinearGradientBrush x:Key="NeoCoolSurface" StartPoint="0.4,0" EndPoint="0.6,1">
+                <GradientStop Color="#142563EB" Offset="0"/><GradientStop Color="#0E2563EB" Offset="0.55"/><GradientStop Color="#082563EB" Offset="1"/>
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="NeoCoolBorder" Color="#382563EB" />
+            <SolidColorBrush x:Key="NeoCoolInsetBottom" Color="#142563EB" />
+            <LinearGradientBrush x:Key="NeoCoolTopLine" StartPoint="0,0.5" EndPoint="1,0.5">
+                <GradientStop Color="#002563EB" Offset="0"/><GradientStop Color="#382563EB" Offset="0.20"/><GradientStop Color="#382563EB" Offset="0.80"/><GradientStop Color="#002563EB" Offset="1"/>
+            </LinearGradientBrush>
+
             <SolidColorBrush x:Key="NeoKnobStroke" Color="#22000000" />
         </ResourceDictionary>
 
@@ -162,10 +197,11 @@
 
     
     <CornerRadius x:Key="NeoPanelRadius">26</CornerRadius>
-    <CornerRadius x:Key="NeoRowRadius">16</CornerRadius>
-    <CornerRadius x:Key="NeoPillRadius">10</CornerRadius>
+    <CornerRadius x:Key="NeoRowRadius">20</CornerRadius>
+    <CornerRadius x:Key="NeoPillRadius">14</CornerRadius>
+    <CornerRadius x:Key="OverlayCornerRadius">20</CornerRadius>
     
-    <Thickness x:Key="NeoRimThickness">2</Thickness>
+    <Thickness x:Key="NeoRimThickness">1</Thickness>
 
     <Style TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource NeoFont}" />
@@ -181,14 +217,18 @@
     </Style>
 
     
-    <Style x:Key="NeoCard" TargetType="Border" BasedOn="{StaticResource NeoGlassPanel}" />
-    <Style x:Key="NeoCardTight" TargetType="Border" BasedOn="{StaticResource NeoGlassPanel}">
+    <Style x:Key="NeoCard" TargetType="Border" BasedOn="{StaticResource NeoGlassPanel}">
+        <Setter Property="ui:SurfaceEdge.Enabled" Value="True"/>
+        <Setter Property="Background" Value="{ThemeResource NeoCardSurface}" />
+    </Style>
+    <Style x:Key="NeoCardTight" TargetType="Border" BasedOn="{StaticResource NeoCard}">
         <Setter Property="Padding" Value="14" />
     </Style>
 
     
     <Style x:Key="NeoInset" TargetType="Border">
-        <Setter Property="Background" Value="{ThemeResource NeoSurfaceHigh}" />
+        <Setter Property="ui:SurfaceEdge.Enabled" Value="True"/>
+        <Setter Property="Background" Value="{ThemeResource NeoCardSurface}" />
         <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="{StaticResource NeoRowRadius}" />
@@ -196,6 +236,7 @@
     </Style>
 
     <Style x:Key="NeoPill" TargetType="Border">
+        <Setter Property="ui:PillShape.Enabled" Value="True" />
         <Setter Property="CornerRadius" Value="{StaticResource NeoPillRadius}" />
         <Setter Property="Padding" Value="8,2.5" />
         <Setter Property="BorderThickness" Value="1" />
@@ -204,86 +245,42 @@
 
     
     
+    <!-- Source switch-d: geometry never follows AdaptiveText.Scale. -->
     <Style TargetType="ToggleSwitch">
+        <Setter Property="ui:SwitchMotion.Enabled" Value="True" />
         <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="HorizontalAlignment" Value="Right" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="UseSystemFocusVisuals" Value="True" />
         <Setter Property="OnContent" Value="" />
         <Setter Property="OffContent" Value="" />
-        
         <Setter Property="ManipulationMode" Value="System,TranslateX" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleSwitch">
-                    
-                    <Grid x:Name="SwitchRoot" Width="44" Height="26"
-                          Background="Transparent">
-                        <Border x:Name="Track" CornerRadius="13"
-                                Background="{ThemeResource NeoTrack}"
-                                BorderBrush="{ThemeResource NeoHairline}"
-                                BorderThickness="1" />
-                        
+                    <Grid x:Name="SwitchRoot" Width="44" Height="26" Background="Transparent" CornerRadius="13">
+                        <Border x:Name="Track" CornerRadius="13" Background="{ThemeResource NeoTrack}"
+                                BorderBrush="{ThemeResource NeoHairline}" BorderThickness="1" />
+                        <Ellipse x:Name="AccentReveal" Width="20" Height="20" Fill="{ThemeResource NeoAccent}"
+                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="2,0,0,0"
+                                 IsHitTestVisible="False" />
                         <Ellipse x:Name="Knob" Width="20" Height="20" Fill="#FFFFFFFF"
-                                 HorizontalAlignment="Left" VerticalAlignment="Center"
-                                 Margin="3,0,0,0">
-                            <Ellipse.RenderTransform>
-                                <TranslateTransform x:Name="KnobShift" X="0" />
-                            </Ellipse.RenderTransform>
-                        </Ellipse>
-
-                        
+                                 HorizontalAlignment="Left" VerticalAlignment="Center" Margin="3,0,0,0"
+                                 IsHitTestVisible="False" />
                         <Thumb x:Name="SwitchThumb" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                                AutomationProperties.AccessibilityView="Raw">
-                            <Thumb.Template>
-                                <ControlTemplate TargetType="Thumb">
-                                    <Rectangle Fill="Transparent" />
-                                </ControlTemplate>
-                            </Thumb.Template>
+                            <Thumb.Template><ControlTemplate TargetType="Thumb"><Rectangle Fill="Transparent" /></ControlTemplate></Thumb.Template>
                         </Thumb>
-
                         <VisualStateManager.VisualStateGroups>
-                            
-                            <VisualStateGroup x:Name="ToggleStates">
-                                <VisualState x:Name="Off">
-                                    <Storyboard>
-                                        
-                                        <DoubleAnimation Storyboard.TargetName="KnobShift"
-                                                         Storyboard.TargetProperty="X"
-                                                         To="0" Duration="0:0:0.22">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Track"
-                                                                       Storyboard.TargetProperty="Background">
-                                            <DiscreteObjectKeyFrame KeyTime="0:0:0.01"
-                                                                    Value="{ThemeResource NeoTrack}" />
-                                        </ObjectAnimationUsingKeyFrames>
-                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Track"
-                                                                       Storyboard.TargetProperty="BorderThickness">
-                                            <DiscreteObjectKeyFrame KeyTime="0:0:0.01" Value="1" />
-                                        </ObjectAnimationUsingKeyFrames>
-                                    </Storyboard>
-                                </VisualState>
-                                <VisualState x:Name="On">
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="KnobShift"
-                                                         Storyboard.TargetProperty="X"
-                                                         To="18" Duration="0:0:0.22">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Track"
-                                                                       Storyboard.TargetProperty="Background">
-                                            <DiscreteObjectKeyFrame KeyTime="0:0:0.01"
-                                                                    Value="{ThemeResource NeoAccent}" />
-                                        </ObjectAnimationUsingKeyFrames>
-                                        <ObjectAnimationUsingKeyFrames Storyboard.TargetName="Track"
-                                                                       Storyboard.TargetProperty="BorderThickness">
-                                            <DiscreteObjectKeyFrame KeyTime="0:0:0.01" Value="0" />
-                                        </ObjectAnimationUsingKeyFrames>
-                                    </Storyboard>
-                                </VisualState>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver" />
+                                <VisualState x:Name="Pressed" />
+                                <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="SwitchRoot.Opacity" Value="0.4" /></VisualState.Setters></VisualState>
                             </VisualStateGroup>
+                            <!-- Native ToggleSwitch owns state; SwitchMotion owns finite transforms. -->
+                            <VisualStateGroup x:Name="ToggleStates"><VisualState x:Name="Off" /><VisualState x:Name="On" /><VisualState x:Name="Dragging" /></VisualStateGroup>
                         </VisualStateManager.VisualStateGroups>
                     </Grid>
                 </ControlTemplate>
@@ -291,6 +288,29 @@
         </Setter>
     </Style>
 
+    <!-- Other native menus share the same rounded surface as PopupList. -->
+    <Style TargetType="MenuFlyoutPresenter">
+        <Setter Property="CornerRadius" Value="20" />
+        <Setter Property="Padding" Value="6" />
+        <Setter Property="Background" Value="{ThemeResource NeoPopupSurface}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}" />
+        <Setter Property="BorderThickness" Value="1" />
+    </Style>
+    <Style TargetType="MenuFlyoutItem">
+        <Setter Property="CornerRadius" Value="16" />
+    </Style>
+    <Style TargetType="ToggleMenuFlyoutItem">
+        <Setter Property="CornerRadius" Value="16" />
+    </Style>
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="CornerRadius" Value="16" />
+    </Style>
+    <Style TargetType="FlyoutPresenter">
+        <Setter Property="CornerRadius" Value="20" />
+        <Setter Property="Background" Value="{ThemeResource NeoPopupSurface}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}" />
+        <Setter Property="BorderThickness" Value="1" />
+    </Style>
     <Style x:Key="Glyph" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="Segoe Fluent Icons" />
         <Setter Property="Foreground" Value="{ThemeResource NeoText2}" />
@@ -307,19 +327,19 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ui:CoolGlassCard">
                     <Grid>
-                        <Border Background="{ThemeResource NeoCoolSurface}"
-                                BorderBrush="{ThemeResource NeoCoolBorder}"
+                        <Border ui:SurfaceEdge.Enabled="True" Background="{ThemeResource NeoCardSurface}"
+                                BorderBrush="{ThemeResource NeoRim}"
                                 BorderThickness="1"
                                 CornerRadius="{Binding CornerRadius, RelativeSource={RelativeSource TemplatedParent}}" />
 
                         <Border CornerRadius="{Binding CornerRadius, RelativeSource={RelativeSource TemplatedParent}}"
                                 BorderThickness="1,1,0,0"
-                                BorderBrush="{ThemeResource NeoCoolTopLine}"
+                                BorderBrush="{ThemeResource NeoHairline}"
                                 IsHitTestVisible="False" />
 
                         <Border CornerRadius="{Binding CornerRadius, RelativeSource={RelativeSource TemplatedParent}}"
                                 BorderThickness="0,0,0,1"
-                                BorderBrush="{ThemeResource NeoCoolInsetBottom}"
+                                BorderBrush="{ThemeResource NeoHairline2}"
                                 IsHitTestVisible="False" />
 
                         <ContentPresenter Content="{TemplateBinding Content}"
@@ -333,4 +353,91 @@
         </Setter>
     </Style>
 
+    <!-- Explicit pill chrome: no default WinUI press-scale or hover fill can
+         override the prototype selection colors or stretch the content. -->
+    <Style x:Key="NeoPillButton" TargetType="Button">
+        <Setter Property="ui:PillShape.Enabled" Value="True" />
+        <Setter Property="Background" Value="{ThemeResource NeoTrack}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource NeoHairline}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{ThemeResource NeoText1}" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="CornerRadius" Value="16" />
+        <Setter Property="FontWeight" Value="Normal" />
+        <Setter Property="UseSystemFocusVisuals" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid x:Name="PillChrome" Background="{TemplateBinding Background}"
+                          BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                          CornerRadius="{TemplateBinding CornerRadius}">
+                        <Border x:Name="PillHover" Background="{ThemeResource NeoHover}"
+                                CornerRadius="{TemplateBinding CornerRadius}" Opacity="0" IsHitTestVisible="False" />
+                        <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Padding="{TemplateBinding Padding}" Foreground="{TemplateBinding Foreground}"
+                                          FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}"
+                                          FontWeight="{TemplateBinding FontWeight}"
+                                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualStateGroup.Transitions><VisualTransition GeneratedDuration="0:0:0.16" /></VisualStateGroup.Transitions>
+                                <VisualState x:Name="Normal"><VisualState.Setters><Setter Target="PillHover.Opacity" Value="0" /></VisualState.Setters></VisualState>
+                                <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="PillHover.Opacity" Value="1" /></VisualState.Setters></VisualState>
+                                <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="PillHover.Opacity" Value="0.5" /></VisualState.Setters></VisualState>
+                                <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="PillChrome.Opacity" Value="0.45" /></VisualState.Setters></VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <!-- Dedicated modal shell: the body owns the ONLY ScrollViewer. There is
+         no WinUI entrance zoom and no outer content scroller to steal its wheel. -->
+    <Style x:Key="NeoCapsuleDialog" TargetType="ContentDialog">
+        <Setter Property="Foreground" Value="{ThemeResource NeoText1}" />
+        <Setter Property="Background" Value="{ThemeResource NeoPopupSurface}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource NeoRim}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContentDialog">
+                    <Border x:Name="Container">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="DialogShowingStates">
+                                <VisualState x:Name="DialogHidden" />
+                                <VisualState x:Name="DialogShowing"><VisualState.Setters>
+                                    <Setter Target="LayoutRoot.Visibility" Value="Visible" />
+                                    <Setter Target="BackgroundElement.TabFocusNavigation" Value="Cycle" />
+                                </VisualState.Setters></VisualState>
+                                <VisualState x:Name="DialogShowingWithoutSmokeLayer"><VisualState.Setters>
+                                    <Setter Target="LayoutRoot.Visibility" Value="Visible" />
+                                </VisualState.Setters></VisualState>
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="DialogSizingStates"><VisualState x:Name="DefaultDialogSizing" /><VisualState x:Name="FullDialogSizing" /></VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <Grid x:Name="LayoutRoot" Visibility="Collapsed">
+                            <Rectangle x:Name="SmokeLayerBackground" Fill="#94000000" />
+                            <Canvas x:Name="MorphLayer" IsHitTestVisible="False" />
+                            <Border x:Name="BackgroundElement" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    MaxWidth="{ThemeResource ContentDialogMaxWidth}" MaxHeight="{ThemeResource ContentDialogMaxHeight}">
+                                <Grid>
+                                    <Border x:Name="RestChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="26" Opacity="0" />
+                                    <ContentPresenter x:Name="Content" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                      Foreground="{TemplateBinding Foreground}" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" Opacity="0" />
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 </ResourceDictionary>

@@ -63,17 +63,16 @@ public sealed partial class SubLogPage : UserControl
         catch { }
     }
 
-    private void OnFilterClick(object sender, RoutedEventArgs e)
+    private void OnResultSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is Button { Tag: string tag })
-        {
-            _resultFilter = tag;
-            RefreshList();
-        }
+        if (!_loaded) return;
+        _resultFilter = (LevelFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        RefreshList();
     }
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e)
     {
+        if (!_loaded) return;
         _keyword = (SearchBox.Text ?? "").Trim().ToLowerInvariant();
         RefreshList();
     }
@@ -99,7 +98,6 @@ public sealed partial class SubLogPage : UserControl
 
             LogList.ItemsSource = _filtered.Select(SubLogRow.From).ToList();
             UpdateHeader();
-            UpdateChips();
             EmptyHint.Visibility = _filtered.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         finally { _refreshing = false; }
@@ -109,25 +107,6 @@ public sealed partial class SubLogPage : UserControl
     {
         CountText.Text = $"共 {_filtered.Count} 条";
         FileText.Text = "· " + SubscriptionLogService.TodayFileName;
-    }
-
-    private void UpdateChips()
-    {
-        Apply(ChipAll, _resultFilter.Length == 0);
-        Apply(ChipSuccess, _resultFilter == "成功");
-        Apply(ChipFail, _resultFilter == "失败");
-        Apply(ChipPlaceholder, _resultFilter == "占位");
-        Apply(ChipRunning, _resultFilter == "进行中");
-    }
-
-    private static void Apply(Button chip, bool on)
-    {
-        var accent = ThemeUtil.Get("NeoAccent", Color.FromArgb(255, 0x25, 0x63, 0xEB));
-        var onText = ThemeUtil.Get("NeoOnAccent", Colors.White);
-        var text2 = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        chip.Background = on ? accent : new SolidColorBrush(Colors.Transparent);
-        chip.Foreground = on ? onText : text2;
-        chip.FontWeight = on ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
     }
 
     private void OnCopyClick(object sender, RoutedEventArgs e)
@@ -206,7 +185,7 @@ public sealed partial class SubLogPage : UserControl
         var dlg = new ContentDialog
         {
             Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 12.5 },
+            Content = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, }, 12.5),
             CloseButtonText = "知道了",
             XamlRoot = XamlRoot,
         };
@@ -225,6 +204,9 @@ public sealed partial class SubLogPage : UserControl
 /// <summary>订阅日志列表的展示行（由日志条目格式化而来）。</summary>
 public sealed class SubLogRow
 {
+    public string TimeText { get; init; } = "";
+    public string LevelText { get; init; } = "";
+    public Brush BadgeBackground { get; init; } = new SolidColorBrush(Colors.Transparent);
     public string HeadText { get; init; } = "";
     public string DetailText { get; init; } = "";
     public Visibility DetailVisibility { get; init; } = Visibility.Collapsed;
@@ -262,9 +244,12 @@ public sealed class SubLogRow
 
         return new SubLogRow
         {
-            HeadText = string.Join("  ", parts),
-            DetailText = string.Join(" · ", detail),
-            DetailVisibility = detail.Count > 0 ? Visibility.Visible : Visibility.Collapsed,
+            TimeText = e.StartTime.ToString("HH:mm:ss"),
+            LevelText = e.Result,
+            BadgeBackground = new SolidColorBrush(brush is SolidColorBrush solid ? Color.FromArgb(28, solid.Color.R, solid.Color.G, solid.Color.B) : Color.FromArgb(28, 90, 169, 255)),
+            HeadText = string.Join(" · ", parts.Skip(3)),
+            DetailText = "来源 · " + e.Subscription + (detail.Count > 0 ? " · " + string.Join(" · ", detail) : ""),
+            DetailVisibility = Visibility.Visible,
             HeadBrush = brush,
         };
     }

@@ -1,0 +1,219 @@
+/* neo 重构稿 · 令牌全部沿用源码资源键名（NeoTheme.xaml / Dark） */
+:root{
+  --NeoBackdrop:#08080A;
+  --NeoWinBg:linear-gradient(148deg,#0E0E14 0%,#08080A 55%,#08080A 100%);
+  --NeoPanel:#1C1C22;
+  --NeoSearchSurface:#1F1F25;
+  --NeoControlSurface:#2C2C32;
+  --NeoCardSurface:linear-gradient(180deg,#FFFFFF,#F7F8FC);
+  --NeoNodeSurface:linear-gradient(180deg,rgba(255,255,255,.059),rgba(255,255,255,.024));
+  --NeoNodeSelected:linear-gradient(180deg,rgba(90,169,255,.20),rgba(90,169,255,.12));
+  --NeoRim:rgba(255,255,255,.055);
+  --NeoHairline:rgba(255,255,255,.07);
+  --NeoHairline2:rgba(255,255,255,.05);
+  --NeoText1:#ECECEC;
+  --NeoText2:#9A9AA0;
+  --NeoText3:#969BA5;
+  --NeoAccent:#5AA9FF;
+  --NeoAccentSoft:rgba(90,169,255,.14);
+  --NeoAccentLine:rgba(90,169,255,.30);
+  --NeoOnAccent:#06203A;
+  --NeoGreen:#43D17F;
+  --NeoYellow:#F0A93B;
+  --NeoRed:#FF6B6B;
+  --NeoTrack:rgba(255,255,255,.08);
+  --NeoChipBg:rgba(255,255,255,.06);
+  --NeoCell:rgba(255,255,255,.055);
+  --NeoHover:rgba(255,255,255,.06);
+
+  --rPanel:26px; --rRow:20px; --rPill:14px; --rNode:22px;
+  --font:"Segoe UI Variable Text","Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,monospace;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--NeoBackdrop);color:var(--NeoText1);font-family:var(--font);
+  display:flex;flex-direction:column;overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid rgba(90,169,255,.7);outline-offset:2px}
+
+/* ---------- 标题栏 36 ---------- */
+.tbar{height:36px;flex:none;display:flex;align-items:center;padding-left:14px;gap:0}
+.tbar-l{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.mark{width:20px;height:20px;border-radius:6px;flex:none;
+  background:linear-gradient(160deg,#7CC4FF,#5AA9FF 45%,#2F6BD6);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+.wordmark{font-size:12.5px;font-weight:600;letter-spacing:.2px}
+.vr{width:1px;height:12px;background:var(--NeoHairline);flex:none}
+.ptitle{font-size:11.5px;color:var(--NeoText2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbar-r{display:flex;align-self:stretch}
+.winbtn{width:46px;font-family:"Segoe Fluent Icons";font-size:10px;color:var(--NeoText2);
+  transition:background .12s linear,color .12s linear}
+.winbtn:hover{background:rgba(255,255,255,.07);color:var(--NeoText1)}
+.winbtn.close:hover{background:#C42B1C;color:#fff}
+
+/* ---------- 外壳 ---------- */
+.shell{flex:1;min-height:0;display:grid;grid-template-columns:236px minmax(0,1fr);
+  gap:12px;padding:10px 14px 14px}
+
+/* ---------- 侧栏 ---------- */
+.side{
+  display:flex;flex-direction:column;gap:4px;padding:10px;border-radius:30px;
+  background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.022));
+  border:1px solid var(--NeoRim);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);
+  overflow:hidden;
+}
+.navlist{display:flex;flex-direction:column;gap:2px}
+.nav{
+  display:flex;align-items:center;gap:9px;height:34px;padding:0 10px;border-radius:16px;
+  color:var(--NeoText2);text-align:left;position:relative;
+  transition:background .16s linear,color .16s linear;
+}
+.nav:hover{background:var(--NeoHover)}
+.nav.on{background:rgba(255,255,255,.075);color:var(--NeoText1)}
+.nav.on::after{content:"";position:absolute;inset:0;border-radius:16px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);pointer-events:none}
+.nglyph{font-family:"Segoe Fluent Icons";font-size:15px;line-height:1;flex:none;opacity:.9}
+.nlabel{font-size:12.5px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nmeta{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--NeoText3);flex:none}
+.nmeta em{font-style:normal}
+.ndot{width:7px;height:7px;border-radius:50%;background:var(--NeoText3);flex:none}
+.ndot.ok{background:var(--NeoGreen)}
+.caret{font-family:"Segoe Fluent Icons";font-size:10px;transition:transform .22s cubic-bezier(.16,.84,.24,1)}
+.navset.open .caret{transform:rotate(180deg)}
+
+/* 今日已用 */
+.usage{
+  margin-top:auto;
+  flex:none;padding:12px;border-radius:20px;
+  background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02));
+  border:1px solid var(--NeoHairline);
+  display:flex;flex-direction:column;gap:5px;
+}
+.u1{font-size:10.5px;color:var(--NeoText2)}
+.u2{display:flex;align-items:baseline;gap:5px}
+.u2 b{font-size:18px;font-weight:600;letter-spacing:.2px;font-variant-numeric:tabular-nums}
+.u2 span{font-size:10.5px;color:var(--NeoText2)}
+.u3{display:flex;justify-content:space-between;font-size:10.5px;color:var(--NeoText2)}
+
+/* 设置分组展开：底部整块，展开时向上长 */
+.sfoot{display:flex;flex-direction:column;gap:4px;flex:none}
+.greveal{height:0;overflow:hidden;flex:none}
+.ginner{
+  margin-top:4px;padding:9px;border-radius:22px;display:grid;gap:6px;
+  grid-template-columns:1fr 1fr;grid-auto-rows:36px;
+  background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.025));
+  border:1px solid var(--NeoRim);
+}
+.gtag{grid-column:1/-1;height:18px;line-height:18px;padding-left:6px;font-size:10px;color:var(--NeoText3)}
+.gpill{
+  border-radius:16px;font-size:11px;color:var(--NeoText2);background:var(--NeoTrack);
+  transition:background .16s linear,color .16s linear;
+}
+.gpill:hover{background:rgba(255,255,255,.14);color:var(--NeoText1)}
+
+/* ---------- 内容 ---------- */
+.content{position:relative;min-width:0;min-height:0}
+.page{position:absolute;inset:0;visibility:hidden;opacity:0;
+  display:flex;flex-direction:column;gap:10px;transition:opacity .16s linear}
+.page.on{visibility:visible;opacity:1}
+
+/* 工具栏 */
+.ntool{flex:none;display:flex;flex-direction:column;gap:10px;padding:2px 2px 0}
+.nhead{display:flex;align-items:center;gap:10px}
+.ntitle{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.ntitle h1{font-size:19px;font-weight:600;letter-spacing:.2px}
+.ntitle span{font-size:11.5px;color:var(--NeoText3);white-space:nowrap}
+
+.search{
+  width:240px;height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 9px;
+  border-radius:16px;background:var(--NeoSearchSurface);border:1px solid var(--NeoRim);
+}
+.search:focus-within{border-color:var(--NeoAccentLine)}
+.sicon{font-family:"Segoe Fluent Icons";font-size:12px;color:var(--NeoText3)}
+.search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--NeoText1);font-size:11.5px}
+.search input::placeholder{color:var(--NeoText3)}
+
+.nactions{display:flex;gap:8px;flex:none}
+.btn{
+  height:30px;padding:0 14px;border-radius:16px;font-size:11.5px;
+  background:var(--NeoControlSurface);border:1px solid var(--NeoHairline);color:var(--NeoText1);
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:background .16s linear,border-color .16s linear,transform .09s linear;
+}
+.btn:hover{background:#34343B;border-color:rgba(255,255,255,.12)}
+.btn:active{transform:scale(.98)}
+.btn.primary{background:var(--NeoAccent);border-color:transparent;color:var(--NeoOnAccent);font-weight:600}
+.btn.primary:hover{background:#6FB5FF}
+.btn.icon{width:30px;padding:0;font-family:"Segoe Fluent Icons";font-size:12px}
+.btn.region{width:118px;padding:0 10px;justify-content:space-between;color:var(--NeoText2)}
+.btn.region .g{font-family:"Segoe Fluent Icons";font-size:10px}
+
+.nfilter{display:flex;align-items:center;gap:8px}
+.seg{display:flex;gap:3px;padding:3px;border-radius:18px;background:var(--NeoCell);
+  border:1px solid var(--NeoHairline);flex:none}
+.chip{height:26px;padding:0 10px;border-radius:16px;font-size:11.5px;font-weight:600;
+  color:var(--NeoText2);transition:background .16s linear,color .16s linear}
+.chip:hover{color:var(--NeoText1)}
+.chip.on{background:var(--NeoAccent);color:#fff}
+.hint{margin-left:auto;font-size:10.5px;color:var(--NeoText3);white-space:nowrap}
+
+/* 网格 */
+.nview{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;
+  scrollbar-color:transparent transparent}
+.nview::-webkit-scrollbar{width:10px}
+.nview::-webkit-scrollbar-thumb{background:transparent;border-radius:999px;border:3px solid transparent;
+  background-clip:content-box}
+.nview:hover::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);background-clip:content-box}
+.ngrid{display:grid;gap:10px;align-content:start;padding:2px 0 4px}
+
+/* 卡片 */
+.nc{
+  position:relative;height:72px;padding:6px 13px;border-radius:22px;
+  background:var(--NeoNodeSurface);border:1px solid var(--NeoRim);
+  display:flex;flex-direction:column;justify-content:center;gap:4px;
+  cursor:pointer;transform:translateZ(0);will-change:transform;
+}
+.nc.on{background:var(--NeoNodeSelected);border-color:var(--NeoAccentLine)}
+.nc .r1{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center}
+.flag{width:20px;height:14px;border-radius:3px;overflow:hidden;background:#fff;flex:none}
+.flag svg{width:100%;height:100%;display:block}
+.nc .nm{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nc .sel{font-size:9px;color:var(--NeoAccent);background:var(--NeoAccentSoft);
+  border-radius:8px;padding:2px 6px;line-height:1;flex:none;opacity:0;transform:scale(.9)}
+.nc .r2{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:7px;align-items:center}
+.nc .meta{font-size:10px;color:var(--NeoText3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 延迟：圆点 + 数字，无底色（源码 ● 123 ms） */
+.lat{
+  height:26px;display:flex;align-items:center;justify-content:flex-end;gap:4px;
+  font-size:11.5px;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.lat .dot{width:4px;height:4px;border-radius:50%;background:currentColor;flex:none}
+.lat .digits{display:inline-flex;height:16px;overflow:hidden}
+.lat .d{position:relative;width:6.7px;height:16px;overflow:hidden}
+.lat .col{position:absolute;left:0;top:0;display:flex;flex-direction:column;align-items:center;line-height:16px;transition:transform .42s cubic-bezier(.34,1.4,.55,1)}
+.lat .unit{margin-left:2px;font-size:10px;line-height:1;opacity:.85}
+.lat.ok{color:var(--NeoGreen)} .lat.warn{color:var(--NeoYellow)}
+.lat.bad{color:var(--NeoRed)}  .lat.dim{color:var(--NeoText3)}
+.lat.txt{font-size:11.5px}
+
+/* 底栏 */
+.nfoot{flex:none;display:flex;gap:6px;font-size:10.5px;color:var(--NeoText3);padding:0 2px}
+.nfoot .fc{margin-left:auto;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 占位页 */
+.wipbox{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  color:var(--NeoText3);font-size:11.5px}
+.wipbox b{font-size:13px;color:var(--NeoText2)}
+
+/* 尺寸断点：与 ComputeCols 一致 ≤900→2 / ≤1199→3 / <1600→5 / ≥1600→7 */
+@media (max-width:900px){ .ngrid{grid-template-columns:repeat(2,minmax(0,1fr))} .search{width:180px} }
+@media (min-width:901px) and (max-width:1199px){ .ngrid{grid-template-columns:repeat(3,minmax(0,1fr))} }
+@media (min-width:1200px) and (max-width:1599px){ .ngrid{grid-template-columns:repeat(5,minmax(0,1fr))} }
+@media (min-width:1600px){ .ngrid{grid-template-columns:repeat(7,minmax(0,1fr))} }

@@ -94,7 +94,7 @@ public static class CustomConfigBuilder
                 ["settings"] = new JsonObject { ["address"] = "127.0.0.1" },
             });
 
-        root["api"] = new JsonObject { ["tag"] = "api", ["services"] = new JsonArray("StatsService") };
+        root["api"] = new JsonObject { ["tag"] = "api", ["services"] = new JsonArray("StatsService", "RoutingService") };
 
         // 统计开关（本项目「内核卡」的上下行就是读这里）
         var policy = root["policy"] as JsonObject ?? new JsonObject();

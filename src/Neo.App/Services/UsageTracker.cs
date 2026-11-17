@@ -38,14 +38,14 @@ public static class UsageTracker
 
     private static string LastGoodPath => FilePath + ".lastgood";
 
-    public static long TodayBytes { get { lock (Lock) return _today; } }
+    public static long TodayBytes { get { lock (Lock) { Rollover(); return _today; } } }
     public static long TotalBytes { get { lock (Lock) return _total; } }
 
     /// <summary>最近 7 天（含今天）的用量。</summary>
-    public static long WeekBytes { get { lock (Lock) return SumLastDays(7); } }
+    public static long WeekBytes { get { lock (Lock) { Rollover(); return SumLastDays(7); } } }
 
     /// <summary>最近 30 天（含今天）的用量。</summary>
-    public static long MonthBytes { get { lock (Lock) return SumLastDays(30); } }
+    public static long MonthBytes { get { lock (Lock) { Rollover(); return SumLastDays(30); } } }
 
     /// 取最近 <paramref name="days"/> 天的每日用量，**按时间正序**返回（最后一项是今天）。
     /// 供趋势图使用：缺失的日期补 0，保证列数与天数严格一致（否则图会错位）。
@@ -53,6 +53,7 @@ public static class UsageTracker
     {
         lock (Lock)
         {
+            Rollover();
             var arr = new long[days];
             var today = DateTime.Now.Date;
             for (int i = 0; i < days; i++)
@@ -129,6 +130,7 @@ public static class UsageTracker
     {
         lock (Lock)
         {
+            Rollover();
             if (_lastUp < 0 || _lastDown < 0 || upTotal < _lastUp || downTotal < _lastDown)
             {
                 _lastUp = upTotal;
@@ -141,9 +143,21 @@ public static class UsageTracker
             _lastDown = downTotal;
             if (delta <= 0) return;
 
-            Rollover();
             _today += delta;
             _total += delta;
+            if ((DateTime.Now - _lastSave).TotalSeconds >= 30) SaveLocked();
+        }
+    }
+
+    /// <summary>Already deduplicated per-instance traffic, including retiring cores.</summary>
+    internal static void AddDelta(long bytes)
+    {
+        if (bytes <= 0) return;
+        lock (Lock)
+        {
+            Rollover();
+            _today += bytes;
+            _total += bytes;
             if ((DateTime.Now - _lastSave).TotalSeconds >= 30) SaveLocked();
         }
     }
@@ -159,7 +173,7 @@ public static class UsageTracker
 
     public static void Flush()
     {
-        lock (Lock) SaveLocked();
+        lock (Lock) { Rollover(); SaveLocked(); }
     }
 
     /// 跨天处理。**关键改动：归档而不是丢弃。**

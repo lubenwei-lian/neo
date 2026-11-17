@@ -22,7 +22,8 @@ public static class MihomoConfigBuilder
     {
         "port", "socks-port", "mixed-port", "redir-port", "tproxy-port",
         "allow-lan", "bind-address", "external-controller", "external-ui",
-        "secret", "mode", "log-level", "ipv6",
+        "secret", "mode", "log-level", "ipv6", "tun", "geo-auto-update",
+        "external-controller-tls", "external-controller-pipe", "external-controller-unix", "listeners",
     };
 
     public static string Build(NodeItem node, int httpPort, int socksPort, int apiPort, string logLevel)
@@ -33,6 +34,7 @@ public static class MihomoConfigBuilder
 
         var text = File.ReadAllText(yamlPath).Replace("\r\n", "\n").Replace('\r', '\n');
         var kept = new List<string>(text.Length / 40 + 16);
+        var skipChildren = false;
         foreach (var line in text.Split('\n'))
         {
             if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && line[0] != '#')
@@ -41,9 +43,18 @@ public static class MihomoConfigBuilder
                 if (colon > 0)
                 {
                     var key = line[..colon].Trim();
-                    if (OverriddenKeys.Contains(key)) continue;
+                    if (key.StartsWith('"') || key.StartsWith('\''))
+                    {
+                        if (key.Contains('\\')) throw new ArgumentException("Clash 顶层键带转义，无法安全重写本地接入配置");
+                        key = key.Trim('"', '\'');
+                    }
+                    skipChildren = OverriddenKeys.Contains(key);
+                    if (skipChildren) continue;
                 }
+                else if (line.Trim() is not ("---" or "..."))
+                    throw new ArgumentException("Clash 顶层键无法安全识别，请使用标准 key: value 格式");
             }
+            if (skipChildren) continue;
             kept.Add(line);
         }
 
@@ -71,6 +82,7 @@ public static class MihomoConfigBuilder
         sb.Append("log-level: ").Append(level).Append('\n');
         sb.Append("ipv6: false\n");
         sb.Append("geo-auto-update: false\n");
+        sb.Append("tun:\n  enable: false\n");
         if (!hasMmdb && hasGeoIpDat) sb.Append("geodata-mode: true\n");
         sb.Append(string.Join('\n', kept));
         if (!sb.ToString().EndsWith('\n')) sb.Append('\n');

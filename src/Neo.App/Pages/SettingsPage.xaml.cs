@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using Microsoft.UI;
 using Microsoft.UI.Text;
@@ -19,14 +19,17 @@ public sealed partial class SettingsPage : UserControl
     // 不再有点击主题分段的处理函数，也不再对外抛 ThemeRequested 事件
     //（留着它会因"从不触发"产生 CS0067 警告）。MainWindow 侧的订阅也已同步删除。
     public event EventHandler? OpenRulesRequested;
+    public event EventHandler? OpenNetworkDiagnosticsRequested;
+    internal event Action? GroupChanged;
+
+    private void OnNetworkDiagnosticsClicked(object sender, RoutedEventArgs e)
+        => OpenNetworkDiagnosticsRequested?.Invoke(this, EventArgs.Empty);
 
     private bool _syncing;
 
     private Neo.App.Ui.PopupList? _langList;
     private Neo.App.Ui.PopupList? _logLevelList;
     private Neo.App.Ui.PopupList? _logRetentionList;
-    private Neo.App.Ui.PopupList? _fixedExitNodeList;
-    private Neo.App.Ui.PopupList? _fixedExitEntryList;
     private Neo.App.Ui.PopupList? _dnsList;
 
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -40,25 +43,178 @@ public sealed partial class SettingsPage : UserControl
         ("debug", "调试"),
     };
 
+    internal int GroupItemCount(string group)
+    {
+        Panel? panel = group switch { "general" => SettingsGroup0, "kernel" => SettingsGroup1,
+            "network" => SettingsGroup2, "about" => SettingsGroup3, "routing" => SettingsGroup4,
+            "logs" => SettingsGroup5, _ => null };
+        return panel?.Children.OfType<FrameworkElement>().Count(row => row.Visibility == Visibility.Visible
+            && (row is Grid || row is Border)) ?? 0;
+    }
+    public FrameworkElement? ActiveSurface { get; private set; }
+    public string? OpenGroup { get; private set; }
+    internal object? DetailMotion => _detailMorph?.Inspect();
+    internal void ReviewLanguageHover()
+    {
+        if (!Neo.App.Ui.NativeUiReview.Enabled) throw new InvalidOperationException();
+        VisualStateManager.GoToState(LangBtn, "PointerOver", false);
+    }
+    private Neo.App.Ui.SurfaceMorph? _detailMorph;
+    private FrameworkElement? _detailAnchor;
+    private int _detailGeneration;
+    private Microsoft.UI.Xaml.Media.Animation.Storyboard? _sparkMotion;
+
+    public void ShowGroup(string group, FrameworkElement? anchor = null, bool animate = false)
+    {
+        FrameworkElement[] cards = [SettingsGroup0, SettingsGroup1, SettingsGroup2, SettingsGroup3, SettingsGroup4, SettingsGroup5];
+        var selectedSurface = group switch
+        {
+            "general" => SettingsGroup0,
+            "kernel" => SettingsGroup1,
+            "network" => SettingsGroup2,
+            "appearance" => SettingsGroup0,
+            "about" => SettingsGroup3,
+            "routing" => SettingsGroup4,
+            "logs" => SettingsGroup5,
+            "update" => SettingsGroup3,
+            _ => SettingsGroup0
+        };
+        foreach (var card in cards) card.Visibility = ReferenceEquals(card, selectedSurface) ? Visibility.Visible : Visibility.Collapsed;
+        var generation = ++_detailGeneration;
+        _detailMorph ??= new Neo.App.Ui.SurfaceMorph(SettingsDetailSurface, SettingsDetailInner);
+        _detailMorph.Cancel();
+        StopSettingsSpark();
+        ActiveSurface = SettingsDetailSurface;
+        SettingsDetailSurface.Visibility = Visibility.Visible;
+        SettingsStageHint.Visibility = Visibility.Collapsed;
+        SettingsDetailTitle.Text = group switch { "kernel" => "内核", "network" => "网络", "logs" => "日志", "appearance" => "通用", "about" => "关于", "routing" => "分流", "update" => "关于", _ => "通用" };
+        SettingsDetailIcon.Text = group switch { "kernel" => "\uE950", "network" => "\uE774", "logs" => "\uE9D5", "appearance" => "\uE713", "about" => "\uE946", "routing" => "\uE774", "update" => "\uE895", _ => "\uE713" };
+        OpenGroup = group;
+        GroupChanged?.Invoke();
+        SettingsDetailSurface.IsHitTestVisible = true;
+        if (anchor != null) _detailAnchor = anchor;
+        if (animate && anchor != null)
+        {
+            SettingsDetailSurface.UpdateLayout();
+            PlaySettingsSpark(anchor);
+            _ = OpenDetailMotionAsync(anchor, generation);
+        }
+    }
+
+    private async Task OpenDetailMotionAsync(FrameworkElement anchor, int generation)
+    {
+        SettingsDetailSurface.IsHitTestVisible = false;
+        try { await _detailMorph!.OpenAsync(anchor, true); }
+        catch (Exception ex) { _detailMorph?.Cancel(); LogBus.App("设置动效未能启动：" + ex.GetType().Name, "Warning"); }
+        if (generation == _detailGeneration) SettingsDetailSurface.IsHitTestVisible = true;
+    }
+
+    private void OnCloseSettingsDetail(object sender, RoutedEventArgs e)
+        => HideDetails();
+
+    public async void HideDetails(bool animate = true)
+    {
+        var generation = ++_detailGeneration;
+        OpenGroup = null;
+        GroupChanged?.Invoke();
+        SettingsStageHint.Visibility = Visibility.Visible;
+        SettingsDetailSurface.IsHitTestVisible = false;
+        StopSettingsSpark();
+        if (animate && _detailAnchor != null && _detailMorph != null)
+            try { await _detailMorph.CloseAsync(_detailAnchor, true); }
+            catch (Exception ex) { _detailMorph.Cancel(); LogBus.App("设置收回动效中断：" + ex.GetType().Name, "Warning"); }
+        if (generation != _detailGeneration) return;
+        SettingsDetailSurface.Visibility = Visibility.Collapsed;
+        _detailMorph?.Cancel();
+    }
+
+    private void StopSettingsSpark()
+    {
+        _sparkMotion?.Stop(); _sparkMotion = null; SettingsMotionLayer.Children.Clear();
+    }
+
+    private void PlaySettingsSpark(FrameworkElement anchor)
+    {
+        if (!Neo.App.Ui.PrototypeMotion.Enabled) return;
+        var point = anchor.TransformToVisual(SettingsMotionLayer).TransformPoint(
+            new Windows.Foundation.Point(anchor.ActualWidth / 2, anchor.ActualHeight / 2));
+        var transform = new CompositeTransform { CenterX = 5, CenterY = 5 };
+        var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 10, Height = 10,
+            Fill = ThemeUtil.Get("NeoAccent", Microsoft.UI.Colors.DodgerBlue), RenderTransform = transform };
+        Canvas.SetLeft(dot, point.X - 5); Canvas.SetTop(dot, point.Y - 5); SettingsMotionLayer.Children.Add(dot);
+        var board = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+        foreach (var property in new[] { "ScaleX", "ScaleY" })
+        {
+            var animation = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimationUsingKeyFrames
+                { Duration = TimeSpan.FromMilliseconds(378) };
+            foreach (var frame in new[] { (0d, .4), (.22, 1.15), (.48, 1), (1d, .6) })
+                animation.KeyFrames.Add(new Microsoft.UI.Xaml.Media.Animation.LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(378 * frame.Item1), Value = frame.Item2 });
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(animation, transform);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(animation, property); board.Children.Add(animation);
+        }
+        Neo.App.Ui.PrototypeMotion.Add(board, dot, "Opacity", 0, 1, 378, null, 0, .22);
+        // Finish with the original four opacity stops, rather than a continuous pulse.
+        var fade = (Microsoft.UI.Xaml.Media.Animation.DoubleAnimationUsingKeyFrames)board.Children.Last();
+        fade.KeyFrames.RemoveAt(fade.KeyFrames.Count - 1);
+        fade.KeyFrames.Add(new Microsoft.UI.Xaml.Media.Animation.LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(378 * .48), Value = 1 });
+        fade.KeyFrames.Add(new Microsoft.UI.Xaml.Media.Animation.LinearDoubleKeyFrame { KeyTime = TimeSpan.FromMilliseconds(378), Value = 0 });
+        _sparkMotion = board;
+        board.Completed += (_, _) => { if (ReferenceEquals(_sparkMotion, board)) StopSettingsSpark(); };
+        board.Begin();
+    }
+
+    private void OnSettingsSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        _detailMorph?.Cancel(); StopSettingsSpark();
+        SettingsStage.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0,
+            Math.Max(0, e.NewSize.Width), Math.Max(0, e.NewSize.Height)) };
+        if (SettingsDetailSurface != null && e.NewSize.Height > 10)
+            SettingsDetailSurface.MaxHeight = e.NewSize.Height - 6;
+    }
+
     public SettingsPage()
     {
         InitializeComponent();
-        Loaded += (_, _) => RefreshState();
+        Loaded += (_, _) => RefreshFromState();
         ConnectionService.StateChanged += RefreshState;
     }
 
-    public void RefreshFromState() => RefreshState();
+    private bool _released, _versionRefreshPending;
+    public void RefreshFromState()
+    {
+        RefreshState();
+        RefreshKernelDisplayAsync();
+    }
+    private async void RefreshKernelDisplayAsync()
+    {
+        if (_released || App.IsShuttingDown || _versionRefreshPending) return;
+        _versionRefreshPending = true;
+        try
+        {
+            await ConnectionService.WarmVersionCacheAsync();
+            await Task.Run(() =>
+            {
+                foreach (var engine in new[] { CoreEngine.Mihomo, CoreEngine.Naive })
+                    if (KernelCatalog.IsInstalled(engine)) _ = KernelCatalog.ReadVersion(engine);
+            });
+            if (!_released && !App.IsShuttingDown) RefreshState();
+        }
+        catch (Exception ex) { LogBus.App("后台内核版本检测失败：" + ex.GetType().Name, "Warning"); }
+        finally { _versionRefreshPending = false; }
+    }
 
     /// 退出时落盘一次，保证最后一次改动已持久化（原玻璃滑杆的防抖计时器已随设置项移除）。
     /// <summary>空闲释放：停计时器 + 退订 ConnectionService 静态事件。</summary>
     public void Release()
     {
+        _released = true;
         StopTimers();
         try { ConnectionService.StateChanged -= RefreshState; } catch { }
     }
 
     public void StopTimers()
     {
+        ++_detailGeneration; _detailMorph?.Cancel(); StopSettingsSpark();
         try { AppState.Save(); } catch { }
     }
 
@@ -127,9 +283,6 @@ public sealed partial class SettingsPage : UserControl
     {
         if (_syncing) return;
         AppState.State.MinimizeToTray = SwitchMinTray.IsOn;
-        StartMinHint.Text = SwitchMinTray.IsOn
-            ? "开机自启时静默启动，不弹主窗口（可点托盘图标或再次启动 neo 唤出）"
-            : "当前「关闭窗口时最小化到托盘」已关闭，此项不会生效";
         AppState.Save();
     }
 
@@ -215,116 +368,6 @@ public sealed partial class SettingsPage : UserControl
         LogBus.App(SwitchAutoRepairProxy.IsOn ? "自动修复系统代理：已开启" : "自动修复系统代理：已关闭");
     }
 
-    // ---- 固定出口（多入口加速）----
-    // 出口固定为一个非 REALITY 节点，其他节点作为入口链路给它叠加带宽。
-    // 说明：xray 的 REALITY 不能作内层链路（实测报 received real certificate），
-    // 所以出口候选只列 ws/tls 节点；入口不受限制。
-    private void OnFixedExitToggled(object sender, RoutedEventArgs e)
-    {
-        if (_syncing) return;
-        bool on = SwitchFixedExit.IsOn;
-        AppState.State.FixedExitEnabled = on;
-        LogBus.App(on ? "固定出口：已开启" : "固定出口：已关闭");
-        AppState.Save();
-        UpdateFixedExitUi();
-        if (on && AppState.State.UseTun)
-            LogBus.App("固定出口：当前是 TUN 模式，该功能只在非 TUN（xray）下生效", "Warning");
-        _ = ReloadForFixedExitAsync();
-    }
-
-    private async Task ReloadForFixedExitAsync()
-    {
-        if (!ConnectionService.IsConnected) return;
-        try { await ConnectionService.ReloadForSettingsAsync(); } catch { }
-    }
-
-    private void OnFixedExitNodeTapped(object sender, TappedRoutedEventArgs e)
-    {
-        _fixedExitNodeList ??= new Neo.App.Ui.PopupList();
-        _fixedExitNodeList.ClearItems();
-        _fixedExitNodeList.AddItem("自动（最快）", null, async () =>
-        {
-            AppState.State.FixedExitExitKey = "";
-            AppState.Save();
-            UpdateFixedExitUi();
-            LogBus.App("固定出口：出口节点改为自动选择");
-            await ReloadForFixedExitAsync();
-        });
-        foreach (var n in AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).Take(30))
-        {
-            var node = n;
-            var key = AppState.NodeKey(node);
-            _fixedExitNodeList.AddItem(node.Name, null, async () =>
-            {
-                AppState.State.FixedExitExitKey = key;
-                AppState.Save();
-                UpdateFixedExitUi();
-                LogBus.App("固定出口：出口已设为「" + node.Name + "」");
-                await ReloadForFixedExitAsync();
-            });
-        }
-        _fixedExitNodeList.AddDisabled("出口必须是 ws/tls 等非 REALITY 节点：REALITY 不能作为内层链路");
-        ShowListBelow(_fixedExitNodeList, sender, FixedExitNodeBox);
-    }
-
-    private void OnFixedExitEntryTapped(object sender, TappedRoutedEventArgs e)
-    {
-        _fixedExitEntryList ??= new Neo.App.Ui.PopupList();
-        _fixedExitEntryList.ClearItems();
-        foreach (var v in new[] { 3, 6, 8 })
-        {
-            var val = v;
-            _fixedExitEntryList.AddItem(val + " 个", null, async () =>
-            {
-                AppState.State.FixedExitEntryCount = val;
-                AppState.Save();
-                UpdateFixedExitUi();
-                LogBus.App("固定出口：入口数量设为 " + val);
-                await ReloadForFixedExitAsync();
-            });
-        }
-        _fixedExitEntryList.AddItem("全部", null, async () =>
-        {
-            AppState.State.FixedExitEntryCount = 0;
-            AppState.Save();
-            UpdateFixedExitUi();
-            LogBus.App("固定出口：入口使用全部可用节点");
-            await ReloadForFixedExitAsync();
-        });
-        _fixedExitEntryList.AddDisabled("入口越多总带宽越高，但每条连接仍只走一条链路；上限 8 条（太多容易被商家限制）");
-        ShowListBelow(_fixedExitEntryList, sender, FixedExitEntryBox);
-    }
-
-    private void UpdateFixedExitUi()
-    {
-        var cands = AppState.Nodes.Where(XrayConfigBuilder.CanBeFixedExit).ToList();
-        var key = AppState.State.FixedExitExitKey ?? "";
-        var node = key.Length > 0 ? cands.FirstOrDefault(n => AppState.NodeKey(n) == key) : null;
-        FixedExitNodeText.Text = node?.Name ?? "自动";
-        FixedExitNodeHint.Text = node != null
-            ? "手动指定；出口 IP 固定，不随入口变化"
-            : "自动：从 " + cands.Count + " 个非 REALITY 节点里挑最快的";
-        var c = AppState.State.FixedExitEntryCount;
-        FixedExitEntryText.Text = c <= 0 ? "全部" : c + " 个";
-
-        bool fx = AppState.State.FixedExitEnabled;
-        FixedExitHint.Text = fx
-            ? "已开启：所有流量固定从「出口节点」出去，其他节点只负责帮它加速。流量按两跳计。"
-            : "打开后：流量固定从一个节点出去，其他节点帮它加速；出口只支持 ws/tls 节点，流量按两跳计。";
-
-        // 用不上的子选项直接灰掉，避免用户以为改了会生效
-        SetRowEnabled(FixedExitNodeRow, fx);
-        SetRowEnabled(FixedExitEntryRow, fx);
-    }
-
-    private static void SetRowEnabled(FrameworkElement row, bool on)
-    {
-        // Grid/Panel 没有 IsEnabled（那是 Control 的成员），
-        // 用 IsHitTestVisible 挡住点击 + 透明度表达“这项现在用不上”。
-        row.IsHitTestVisible = on;
-        row.Opacity = on ? 1.0 : 0.45;
-    }
-
     private bool _checkingAppUpdate;
     private bool _downloadingUpdate;
     private AppUpdateService.UpdateInfo? _pendingUpdate;
@@ -357,7 +400,7 @@ public sealed partial class SettingsPage : UserControl
         var dlg = new ContentDialog
         {
             Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 12.5 },
+            Content = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, }, 12.5),
             CloseButtonText = "知道了",
             XamlRoot = XamlRoot,
         };
@@ -492,7 +535,7 @@ public sealed partial class SettingsPage : UserControl
         var confirm = new ContentDialog
         {
             Title = "安装更新",
-            Content = new TextBlock
+            Content = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
             {
                 Text = $"新版本 {u.LatestTag} 已下载完成（{sizeMb:F0} MB）。\n"
                      + (string.IsNullOrEmpty(u.Sha256)
@@ -500,8 +543,7 @@ public sealed partial class SettingsPage : UserControl
                          : "安装包 SHA-256 已校验通过。\n")
                      + "\n点「立即更新」后 neo 会先断开当前连接并自动关闭，然后开始安装；安装器的 [Run] 项会尝试重新启动 neo，若未自动出现，请手动打开。",
                 TextWrapping = TextWrapping.Wrap,
-                FontSize = 12.5,
-            },
+            }, 12.5),
             PrimaryButtonText = "立即更新",
             CloseButtonText = "稍后",
             DefaultButton = ContentDialogButton.Primary,
@@ -728,12 +770,11 @@ public sealed partial class SettingsPage : UserControl
             FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
         };
         var panel = new StackPanel { Spacing = 8 };
-        var hint = new TextBlock
+        var hint = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
             Text = "内置已覆盖：TslGame.exe（PUBG）、cs2.exe、left4dead2.exe、HTGame.exe（NTE）等，无需重复填写。",
-            FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
-        };
+        }, 12);
         panel.Children.Add(hint);
         panel.Children.Add(box);
         var dialog = new ContentDialog
@@ -934,7 +975,7 @@ public sealed partial class SettingsPage : UserControl
         }
         finally
         {
-            RefreshState();
+            RefreshFromState();
         }
     }
 
@@ -1015,7 +1056,7 @@ public sealed partial class SettingsPage : UserControl
             _pendingMihomoRelease = null;
             await RunKernelTaskAsync($"安装 mihomo {pending.Version}", (stage, prog, ct) =>
                 UpdateChecker.DownloadAndInstallMihomoAsync(pending, stage, ct, prog));
-            RefreshState();
+            RefreshFromState();
             return;
         }
 
@@ -1046,7 +1087,7 @@ public sealed partial class SettingsPage : UserControl
             _pendingNaiveRelease = null;
             await RunKernelTaskAsync($"安装 naive {pending.Version}", (stage, prog, ct) =>
                 UpdateChecker.DownloadAndInstallNaiveAsync(pending, stage, ct, prog));
-            RefreshState();
+            RefreshFromState();
             return;
         }
 
@@ -1096,22 +1137,21 @@ public sealed partial class SettingsPage : UserControl
         };
 
         var panel = new StackPanel { Spacing = 6 };
-        panel.Children.Add(new TextBlock
+        panel.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
             Text = "默认「自动」：按节点传输/加密能力选择内核。手动指定只在能力允许时生效"
                  + "（例如 Hysteria2 / TUIC / AnyTLS 只能 sing-box；xhttp / mKCP / VLESS 加密只能 xray）。"
-                 + "TUN 模式固定 sing-box，映射会被忽略。",
+                 + "TUN 接管由独立 sing-box 完成，不改变节点内核映射。",
             TextWrapping = TextWrapping.Wrap,
-            FontSize = 11.5,
             Opacity = 0.75,
             Margin = new Thickness(0, 0, 0, 6),
-        });
+        }, 11.5));
 
         var combos = new List<(string Key, ComboBox Box)>();
         foreach (var (key, label) in protos)
         {
             var row = new Grid { Padding = new Thickness(0, 2, 0, 2) };
-            row.Children.Add(new TextBlock { Text = label, FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center }, 12.5));
             var combo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Right, MinWidth = 140, FontSize = 11.5 };
             combo.Items.Add("自动");
             combo.Items.Add("xray");
@@ -1141,7 +1181,8 @@ public sealed partial class SettingsPage : UserControl
             var val = box.SelectedIndex switch { 1 => "xray", 2 => "sing-box", _ => "" };
             if (val.Length > 0) AppState.State.CoreMap[key] = val;
         }
-        AppState.Save();   // Save 内会同步到 KernelRouter
+        AppState.SyncCoreMap();
+        AppState.Save();
 
         var custom = AppState.State.CoreMap.Count;
         LogBus.App(custom == 0
@@ -1275,7 +1316,7 @@ public sealed partial class SettingsPage : UserControl
                 PortHintText.Text = $"端口 {busyPort} 已被其他程序占用，请换一个（可关闭占用该端口的程序后重试）";
                 return;
             }
-            var err = LocalPorts.TryApply(socks, http);
+            var err = LocalPorts.Validate(socks, http);
             if (err != null)
             {
                 PortHintText.Text = err;
@@ -1283,10 +1324,11 @@ public sealed partial class SettingsPage : UserControl
             }
             AppState.State.SocksPort = socks;
             AppState.State.HttpPort = http;
-            AppState.Save();   // Save 内会 ApplyLocalPorts
-            PortHintText.Text = $"已应用：SOCKS {socks} / HTTP {http}（内核将按新端口重建）";
-            LogBus.App($"本地端口已修改：SOCKS {socks} / HTTP {http}", "Info");
-            await ConnectionService.ReloadForSettingsAsync();
+            AppState.Save();   // Persist desired ports; the session controller applies them after cleanup.
+            var applied = await ConnectionService.ReloadForSettingsAsync();
+            PortHintText.Text = applied && LocalPorts.Socks == socks && LocalPorts.Http == http
+                ? $"已应用：SOCKS {socks} / HTTP {http}"
+                : "端口设置已保存；当前操作未完成，下次连接时生效";
         }
         catch (Exception ex)
         {
@@ -1462,7 +1504,7 @@ public sealed partial class SettingsPage : UserControl
         st.LogLevel = "warning"; st.DnsServer = "223.5.5.5"; st.Language = "zh-CN"; st.UseTun = false;
         st.UseRustConfig = false;
         st.MinimizeToTray = true; st.CompactLayout = false; st.AutoConnect = false; st.AutoUpdate = true;
-        st.FailoverEnabled = true;
+        st.FailoverEnabled = false;
         st.AutoRepairSystemProxy = true; st.AutoRestartCore = true;
         st.SafeModeAt = ""; st.SafeModePrevTun = false; st.SafeModePrevFixedExit = false;
         st.FixedExitEnabled = false; st.FixedExitExitKey = ""; st.FixedExitEntryCount = 6;
@@ -1490,7 +1532,6 @@ public sealed partial class SettingsPage : UserControl
         SwitchFailover.IsOn = AppState.State.FailoverEnabled;
         SwitchAutoRepairProxy.IsOn = AppState.State.AutoRepairSystemProxy;
         SwitchAutoRestartCore.IsOn = AppState.State.AutoRestartCore;
-        SwitchFixedExit.IsOn = AppState.State.FixedExitEnabled;
         SwitchAutoCheckUpdate.IsOn = AppState.State.AutoCheckUpdate;
         AppVersionText.Text = $"当前版本 {AppUpdateService.CurrentVersion}";
         RefreshUpdateStatusHint();
@@ -1506,7 +1547,6 @@ public sealed partial class SettingsPage : UserControl
 
         LogLevelText.Text = LogLevels.FirstOrDefault(l => l.Key == AppState.State.LogLevel).Label ?? "警告";
         RefreshLogSettingsUi();
-        UpdateFixedExitUi();
         RefreshSafeModeRow();
         UpdateRuleSetCount();
         UpdateDnsUi();
@@ -1523,7 +1563,7 @@ public sealed partial class SettingsPage : UserControl
             : ThemeUtil.Get("NeoChipBg", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21));
         KernelBadgeBg.BorderBrush = KernelBadgeBg.Background;
 
-        var ver = ConnectionService.XrayVersion;
+        var ver = ConnectionService.CachedXrayVersion;
         if (ver != null)
         {
             XrayVersionText.Text = ver;
@@ -1532,7 +1572,7 @@ public sealed partial class SettingsPage : UserControl
         }
 
         // sing-box 单列一行显示版本与可用性。
-        var sbVer = ConnectionService.SingBoxVersion;
+        var sbVer = ConnectionService.CachedSingBoxVersion;
         SingBoxVersionText.Text = sbVer ?? "—";
         SingBoxVersionHint.Text = sbVer == null ? "未检测到内核文件" : "本机内置内核 · 就绪";
         SingBoxVersionHint.Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
@@ -1540,17 +1580,17 @@ public sealed partial class SettingsPage : UserControl
         // mihomo（第三内核）：只展示安装状态/版本，不参与拨号。
         var mihomoInstalled = KernelCatalog.IsInstalled(CoreEngine.Mihomo);
         MihomoVersionText.Text = mihomoInstalled
-            ? (KernelCatalog.ReadVersion(CoreEngine.Mihomo) ?? "版本未知")
+            ? (KernelCatalog.CachedVersion(CoreEngine.Mihomo) ?? "版本检测中")
             : "未安装";
         MihomoVersionHint.Text = mihomoInstalled
-            ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Mihomo)}"
+            ? $"可选内核 · {KernelCatalog.CachedVersion(CoreEngine.Mihomo) ?? "版本检测中"}"
             : "可选内核 · 未安装（按需下载）";
 
         // naive（辅助内核）：naive.exe + sing-box 前置。
         var naiveInstalled = KernelCatalog.IsInstalled(CoreEngine.Naive);
-        NaiveVersionText.Text = naiveInstalled ? (KernelCatalog.ReadVersion(CoreEngine.Naive) ?? "已安装") : "—";
+        NaiveVersionText.Text = naiveInstalled ? (KernelCatalog.CachedVersion(CoreEngine.Naive) ?? "版本检测中") : "—";
         NaiveVersionHint.Text = naiveInstalled
-            ? $"可选内核 · {KernelCatalog.Describe(CoreEngine.Naive)}（辅助进程）"
+            ? $"可选内核 · {KernelCatalog.CachedVersion(CoreEngine.Naive) ?? "版本检测中"}（辅助进程）"
             : "可选内核 · 未安装（按需下载；辅助进程）";
 
         // 分流数据：显示上次通过本程序更新的时间。

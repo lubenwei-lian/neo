@@ -1,0 +1,374 @@
+{
+  "entries": [
+    {
+      "key": "ball:0",
+      "x": 4,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:1",
+      "x": 20,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:2",
+      "x": 36,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:3",
+      "x": 52,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:4",
+      "x": 68,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:5",
+      "x": 84,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:6",
+      "x": 100,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:7",
+      "x": 116,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.25
+    },
+    {
+      "key": "ball:8",
+      "x": 132,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:9",
+      "x": 148,
+      "y": 4,
+      "width": 12,
+      "height": 20,
+      "advance": 8.53125
+    },
+    {
+      "key": "ball:.",
+      "x": 164,
+      "y": 4,
+      "width": 8,
+      "height": 20,
+      "advance": 3.828125
+    },
+    {
+      "key": "ball:—",
+      "x": 176,
+      "y": 4,
+      "width": 20,
+      "height": 20,
+      "advance": 15.203125
+    },
+    {
+      "key": "unit:K",
+      "x": 200,
+      "y": 4,
+      "width": 8,
+      "height": 12,
+      "advance": 5.515625
+    },
+    {
+      "key": "unit:M",
+      "x": 212,
+      "y": 4,
+      "width": 12,
+      "height": 12,
+      "advance": 8.53125
+    },
+    {
+      "key": "bytes:0",
+      "x": 228,
+      "y": 4,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:1",
+      "x": 4,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:2",
+      "x": 20,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:3",
+      "x": 36,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:4",
+      "x": 52,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:5",
+      "x": 68,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:6",
+      "x": 84,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:7",
+      "x": 100,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.171875
+    },
+    {
+      "key": "bytes:8",
+      "x": 116,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:9",
+      "x": 132,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.390625
+    },
+    {
+      "key": "bytes:.",
+      "x": 148,
+      "y": 28,
+      "width": 8,
+      "height": 16,
+      "advance": 2.78125
+    },
+    {
+      "key": "bytes:K",
+      "x": 160,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 7.03125
+    },
+    {
+      "key": "bytes:B",
+      "x": 176,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.953125
+    },
+    {
+      "key": "bytes:M",
+      "x": 192,
+      "y": 28,
+      "width": 16,
+      "height": 16,
+      "advance": 10.640625
+    },
+    {
+      "key": "bytes:G",
+      "x": 212,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 8.03125
+    },
+    {
+      "key": "bytes:T",
+      "x": 228,
+      "y": 28,
+      "width": 12,
+      "height": 16,
+      "advance": 6.359375
+    },
+    {
+      "key": "bytes:P",
+      "x": 4,
+      "y": 48,
+      "width": 12,
+      "height": 16,
+      "advance": 6.734375
+    },
+    {
+      "key": "bytes: ",
+      "x": 20,
+      "y": 48,
+      "width": 8,
+      "height": 16,
+      "advance": 3.171875
+    },
+    {
+      "key": "bytes:/",
+      "x": 32,
+      "y": 48,
+      "width": 8,
+      "height": 16,
+      "advance": 4.765625
+    },
+    {
+      "key": "bytes:s",
+      "x": 44,
+      "y": 48,
+      "width": 8,
+      "height": 16,
+      "advance": 4.96875
+    },
+    {
+      "key": "bytes:—",
+      "x": 56,
+      "y": 48,
+      "width": 16,
+      "height": 16,
+      "advance": 11.5
+    },
+    {
+      "key": "status:已连接",
+      "x": 76,
+      "y": 48,
+      "width": 40,
+      "height": 16,
+      "advance": 36
+    },
+    {
+      "key": "status:未连接",
+      "x": 120,
+      "y": 48,
+      "width": 40,
+      "height": 16,
+      "advance": 36
+    },
+    {
+      "key": "status:连接中",
+      "x": 164,
+      "y": 48,
+      "width": 40,
+      "height": 16,
+      "advance": 36
+    },
+    {
+      "key": "label:订阅用量",
+      "x": 4,
+      "y": 68,
+      "width": 48,
+      "height": 16,
+      "advance": 46
+    },
+    {
+      "key": "label:本次上传",
+      "x": 56,
+      "y": 68,
+      "width": 48,
+      "height": 16,
+      "advance": 46
+    },
+    {
+      "key": "label:本次下载",
+      "x": 108,
+      "y": 68,
+      "width": 48,
+      "height": 16,
+      "advance": 46
+    },
+    {
+      "key": "label:实时上传",
+      "x": 160,
+      "y": 68,
+      "width": 48,
+      "height": 16,
+      "advance": 46
+    },
+    {
+      "key": "label:实时下载",
+      "x": 4,
+      "y": 88,
+      "width": 48,
+      "height": 16,
+      "advance": 46
+    },
+    {
+      "key": "stop:断开连接",
+      "x": 56,
+      "y": 88,
+      "width": 52,
+      "height": 16,
+      "advance": 48
+    },
+    {
+      "key": "button:连接",
+      "x": 112,
+      "y": 88,
+      "width": 28,
+      "height": 16,
+      "advance": 24
+    },
+    {
+      "key": "button:连接中",
+      "x": 144,
+      "y": 88,
+      "width": 40,
+      "height": 16,
+      "advance": 36
+    }
+  ],
+  "width": 256,
+  "height": 108
+}

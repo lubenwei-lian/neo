@@ -258,6 +258,13 @@ public static class ClashYamlParser
                 node.PluginOpts = PluginOptsToString(item);
                 break;
 
+            case "ssr":
+                node.Protocol = NodeProtocol.ShadowsocksR;
+                node.Method = Str(item, "cipher"); node.Password = Str(item, "password");
+                node.Extras["ssr_protocol"] = Str(item, "protocol"); node.Extras["ssr_obfs"] = Str(item, "obfs");
+                node.Extras["ssr_protocol_param"] = Str(item, "protocol-param"); node.Extras["ssr_obfs_param"] = Str(item, "obfs-param");
+                break;
+
             case "vmess":
                 node.Protocol = NodeProtocol.VMess;
                 node.Uuid = Str(item, "uuid");
@@ -291,7 +298,6 @@ public static class ClashYamlParser
                 break;
 
             case "hysteria2":
-            case "hysteria":
                 node.Protocol = NodeProtocol.Hysteria2;
                 node.Password = Str(item, "password");
                 node.Sni = sni;

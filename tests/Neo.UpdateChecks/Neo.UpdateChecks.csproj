@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Neo.Core/Neo.Core.csproj" />
+    <Compile Include="../../src/Neo.App/Services/UpdateChecker.cs" Link="Source/UpdateChecker.cs" />
+    <Compile Include="../../src/Neo.App/Services/UpdateChecker.Install.cs" Link="Source/UpdateChecker.Install.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelDownloader.cs" Link="Source/KernelDownloader.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelInstall.cs" Link="Source/KernelInstall.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelInstall.Bundle.cs" Link="Source/KernelInstall.Bundle.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelCatalog.cs" Link="Source/KernelCatalog.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelHashCache.cs" Link="Source/KernelHashCache.cs" />
+    <Compile Include="../../src/Neo.App/Services/GitHubChannel.cs" Link="Source/GitHubChannel.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,57 @@
+/* ===== 字体方案 V5「大而松」落地 =====
+   正文等比放大 ~1.28；控件（chip/按钮/胶囊）只放到 ~1.09，避免挤爆工具栏 */
+
+:root{
+  --t1:#F4F7FB;   /* 标题 */
+  --t2:#E7ECF4;   /* 主文字 */
+  --t3:#BFC6D2;   /* 次要 */
+  --t4:#9AA2B0;   /* 极小 */
+  --ls:.3px;
+}
+
+/* 标题 */
+.ph h1,.page h1{ font-size:24px!important; color:var(--t1)!important; font-weight:620!important; letter-spacing:var(--ls)!important }
+
+/* 主文字：节点名 / 订阅名 / 侧栏 */
+.node-name b,.nmtext,.nav .nlabel,.srow .nm b,.srow .nmtext{
+  font-size:18px!important; color:var(--t2)!important; font-weight:600!important; letter-spacing:var(--ls)!important }
+
+/* 次要说明 */
+.sub,.pr,.fhint,.hint{ font-size:14px!important; color:var(--t3)!important; letter-spacing:.15px!important }
+.props,.node-proto,.nmeta em,.badge,.lgtime,.fstat{ font-size:11.5px!important; color:var(--t4)!important }
+.unit,.lat .unit{ font-size:11px!important; color:var(--t4)!important }
+
+/* 控件：只小放一点 */
+.chip{ font-size:12.5px!important; font-weight:600!important; color:var(--t2)!important }
+.btn,.pill-select,.testgroup .btn{ font-size:12px!important; color:var(--t2)!important }
+
+/* 数字 */
+.node-test{ font-size:17px!important; font-weight:620!important; color:var(--t2)!important; font-variant-numeric:tabular-nums }
+.lat .v,.kv .v,.stat b{ font-size:16.5px!important; font-weight:600!important; color:var(--t2)!important; font-variant-numeric:tabular-nums }
+.big{ font-size:28px!important; font-weight:620!important; color:var(--t1)!important; font-variant-numeric:tabular-nums }
+
+/* 日志 */
+.log,.logstream,.lgrow,.xrow{ font-size:12.5px!important; color:var(--t3)!important; line-height:1.9!important }
+
+/* 行内容跟着放开，别把大字裁掉 */
+.node-card{ padding-top:6px; padding-bottom:6px }
+.srow{padding-top:12px!important; padding-bottom:12px!important}
+.row,.kv{padding-top:10px!important; padding-bottom:10px!important}
+
+/* ===== 收尾：节点卡在 6 列下装不下 18px，改 5 列 + 卡内 16px ===== */
+/* 放大的字要更多横向空间：按宽度重排列数（要压过 finalize 里 #listD.dgrid 的 ID 权重） */
+#listD.dgrid{ grid-template-columns:repeat(5,minmax(0,1fr))!important }
+@media (min-width:1601px) and (max-width:1900px){ #listD.dgrid{ grid-template-columns:repeat(6,minmax(0,1fr))!important } }
+@media (min-width:1901px){ #listD.dgrid{ grid-template-columns:repeat(7,minmax(0,1fr))!important } }
+@media (max-width:1399px){ #listD.dgrid{ grid-template-columns:repeat(4,minmax(0,1fr))!important } }
+@media (min-width:1600px){ #listD.dgrid > .node-card{ height:70px!important; padding:8px 10px!important } }
+#listD .node-name b{ font-size:15px!important; letter-spacing:.1px!important }
+#listD .node-proto{ font-size:10.5px!important }
+#listD .node-test{ font-size:15px!important }
+.node-card .node-proto{ font-size:10.5px!important }
+.node-card .node-test{ font-size:15px!important }
+
+/* 订阅行里被落下的小字 */
+.srow .url{ font-size:12.5px!important; color:var(--t4)!important }
+.srow .cell{ font-size:13.5px!important; color:var(--t3)!important }
+.srow b{ font-size:14px!important }

@@ -8,9 +8,21 @@ public static class ThemeUtil
 {
     public static Brush Get(string key, Color fallback)
     {
-        if (Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush)
-            return brush;
-        return new SolidColorBrush(fallback);
+        var theme = (App.MainWindowInstance?.Content as FrameworkElement)?.ActualTheme
+            ?? (Application.Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light);
+        Brush? Find(ResourceDictionary dictionary)
+        {
+            if (dictionary.ThemeDictionaries.TryGetValue(theme.ToString(), out var themed) && themed is ResourceDictionary selected && Find(selected) is { } brush) return brush;
+            if (dictionary.ThemeDictionaries.TryGetValue("Default", out var common) && common is ResourceDictionary defaults && Find(defaults) is { } defaultBrush) return defaultBrush;
+            for (var i = dictionary.MergedDictionaries.Count - 1; i >= 0; i--)
+                if (Find(dictionary.MergedDictionaries[i]) is { } merged) return merged;
+            // A top-level TryGetValue also traverses merged theme dictionaries using
+            // Application.RequestedTheme, which can differ from this window's theme.
+            // Prefer the explicitly selected dictionary before that implicit fallback.
+            if (dictionary.TryGetValue(key, out var value) && value is Brush direct) return direct;
+            return null;
+        }
+        return Find(Application.Current.Resources) ?? new SolidColorBrush(fallback);
     }
 
     public static readonly Color LightAccent = Color.FromArgb(255, 0x25, 0x63, 0xEB);

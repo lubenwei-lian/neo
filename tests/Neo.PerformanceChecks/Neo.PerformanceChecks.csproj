@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>CS0436;CS9113;CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Neo.Core/Neo.Core.csproj" />
+    <Compile Include="../../src/Neo.App/Services/StartupSpeedTest.cs" Link="Production/StartupSpeedTest.cs" />
+    <Compile Include="../../src/Neo.App/Services/UiActivity.cs" Link="Production/UiActivity.cs" />
+    <Compile Include="../../src/Neo.App/Services/KernelCatalog.cs" Link="Production/KernelCatalog.cs" />
+    <Compile Include="../../src/Neo.App/Services/DelayCache.cs" Link="Production/DelayCache.cs" />
+    <Compile Include="../../src/Neo.App/Services/LogBus.cs" Link="Production/LogBus.cs" />
+    <Compile Include="../../src/Neo.App/Services/PortRelay.cs" Link="Production/PortRelay.cs" />
+    <Compile Include="../../src/Neo.Core/Core/DelayTestRunner.cs" Link="Production/DelayTestRunner.cs" />
+  </ItemGroup>
+</Project>

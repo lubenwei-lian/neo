@@ -1,8 +1,10 @@
-using System.Linq;
+﻿using System.Linq;
+using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using Neo.App.Services;
 using Neo.App.Ui;
 using Neo.Core;
@@ -16,6 +18,9 @@ namespace Neo.App.Pages;
 public sealed partial class NodesPage : UserControl
 {
     private List<NodeTile> _tiles = new();
+    private readonly ObservableCollection<NodeTile> _visibleTiles = new();
+    private ScrollViewer? _nodeScrollViewer;
+    private double? _scrollOffsetBeforeSort;
     private NodeTile? _selected;
     private bool _realTesting;
     private int _phaseNo;
@@ -25,7 +30,6 @@ public sealed partial class NodesPage : UserControl
     private bool _tcpTesting;
     private bool userPickedDuringTest;
     private CancellationTokenSource? _realCts;
-    private int _lastCols;
     private DateTime _lastLayoutWidthApply = DateTime.MinValue;
 
     /// 显示的是「当前时间」，并非测速时间 —— 界面上的「上次真连测速 HH:mm:ss」因此永远等于现在。
@@ -36,6 +40,7 @@ public sealed partial class NodesPage : UserControl
     // 节点列表筛选：只看可用 / 只看未测 / 限定地区（空 = 全部）
     private bool _onlyAvailable;
     private bool _onlyUntested;
+    private bool _onlyTimeout;
     private string _regionFilter = "";
     private Neo.App.Ui.PopupList? _filterList;
 
@@ -43,11 +48,15 @@ public sealed partial class NodesPage : UserControl
     {
         InitializeComponent();
         AppState.NodesChanged += RebuildList;
+        StartupSpeedTest.LatencyChanged += OnStartupLatencyChanged;
         AppState.UiSettingsChanged += OnUiSettingsChanged;
+        CurrentExitService.Changed += OnCurrentExitChanged;
         Loaded += (_, _) =>
         {
             UpdateTestButtonMode();
-            RebuildList();
+            // NavigateTo may already have populated the list before Loaded. Do not replace
+            // every item/container a second time during the same first navigation.
+            if (_tiles.Count == 0 || _pendingRebuild) RebuildList();
             try { Ui.Ripple.Attach(RealTestBtn, App.MainWindowInstance?.RippleLayerHost); } catch { }
             // 自动检测只在「页面真正可见」时触发（见 Visibility 回调），
             // 不在启动阶段就把 60+ 个节点全查一遍。
@@ -71,6 +80,8 @@ public sealed partial class NodesPage : UserControl
     public void StopTimers()
     {
         try { _resizeTrailTimer?.Stop(); } catch { }
+        NodeList.LayoutUpdated -= RestoreScrollAfterSort;
+        _scrollOffsetBeforeSort = null;
     }
 
     /// <summary>
@@ -80,23 +91,37 @@ public sealed partial class NodesPage : UserControl
     /// </summary>
     public void ReleaseTiles()
     {
+        // 测速/检测进行中不能清卡片树：RunBatchAsync 持有这些 NodeTile 的引用，
+        // 清空后即使测速结束也只剩空列表（实测：切到连接页再回来，节点整页空白）。
+        if (_realTesting || _tcpTesting || _geoTesting)
+        {
+            LogBus.App("内存优化：测速/检测进行中，跳过节点卡片释放", "Debug");
+            return;
+        }
         // 只清 ItemsSource 没用：本页 _tiles 还持有全部 NodeTile，且订阅刷新会立刻重建列表。
         // 必须同时清 _tiles 并在释放期间忽略 NodesChanged，才能真正把卡片树交出去。
         _tilesReleased = true;
         try { NodeList.ItemsSource = null; } catch { }
-        try { _tiles = new List<NodeTile>(); } catch { }
+        // Retain the small view-model list. Clearing ItemsSource releases native
+        // containers; rebuilding all models/brushes is unnecessary on the next visit.
     }
 
     /// 释放期间忽略「节点列表变化」导致的自动重建（否则后台刷新一跑就白释放了）。
     private bool _tilesReleased;
+
+    /// 测速期间收到了重建请求（订阅刷新等）：测速结束后补一次，避免列表停在旧数据。
+    private bool _pendingRebuild;
+    private bool? _builtPreferReal;
 
     /// <summary>回到节点页时若卡片树已被释放则重建（幂等）。</summary>
     public void EnsureTiles()
     {
         try
         {
+            var released = _tilesReleased;
             _tilesReleased = false;
-            if (NodeList.ItemsSource == null || _tiles.Count == 0) RebuildList();
+            if (released || NodeList.ItemsSource == null || _tiles.Count == 0 || _pendingRebuild) RebuildList();
+            else { ApplyFilter(); UpdateLayoutWidth(); }
         }
         catch { }
     }
@@ -109,7 +134,9 @@ public sealed partial class NodesPage : UserControl
     {
         StopTimers();
         try { AppState.NodesChanged -= RebuildList; } catch { }
+        StartupSpeedTest.LatencyChanged -= OnStartupLatencyChanged;
         try { AppState.UiSettingsChanged -= OnUiSettingsChanged; } catch { }
+        CurrentExitService.Changed -= OnCurrentExitChanged;
         try { NodeList.ItemsSource = null; } catch { }
     }
 
@@ -132,7 +159,8 @@ public sealed partial class NodesPage : UserControl
         {
             var real = AppState.State.RealDelayTestEnabled;
             RealTestBtn.Visibility = real ? Visibility.Visible : Visibility.Collapsed;
-            TcpTestBtn.Style = (Style)Resources[real ? "ToolBtn" : "ToolBtnPrimary"];
+            TcpTestBtn.Visibility = real ? Visibility.Collapsed : Visibility.Visible;
+            TcpTestBtn.Style = (Style)Resources["ToolBtnPrimary"];
         }
         catch (Exception ex)
         {
@@ -142,13 +170,38 @@ public sealed partial class NodesPage : UserControl
 
     private void RebuildList()
     {
-        if (_realTesting) return;
+        if (_realTesting || _tcpTesting)
+        {
+            // 测速期间不能换卡片对象（tileMap 持有的是旧引用，换了结果就落不到界面）；
+            // 但必须记住这次请求，测速结束统一重建，否则订阅刷新/切页回来会一直空白。
+            _pendingRebuild = true;
+            return;
+        }
         // 空闲释放期间不重建（后台订阅刷新会频繁触发 NodesChanged），
         // 等用户回到节点页时 EnsureTiles 再统一重建。
-        if (_tilesReleased && Visibility != Visibility.Visible) return;
+        if (Visibility != Visibility.Visible)
+        {
+            _pendingRebuild = true;
+            return;
+        }
 
+        _pendingRebuild = false;
+        // A subscription refresh can replace NodeItem instances while startup probes still
+        // complete against the previous snapshot. Hydrate the current models by fingerprint
+        // before sorting/rendering; Apply preserves any result already on a current model.
+        foreach (var node in AppState.Nodes) DelayCache.Apply(node);
+        var currentModels = AppState.Nodes.ToHashSet();
+        if (_builtPreferReal == AppState.State.RealDelayTestEnabled && _tiles.Count == currentModels.Count && _tiles.All(t => currentModels.Contains(t.Node) && t.PresentationMatches))
+        {
+            // Cached/background results change order without replacing the models or source.
+            foreach (var tile in _tiles) { tile.RefreshDelay(); tile.RefreshLocation(); }
+            RefreshLatencyOrder();
+            UpdateFooter();
+            return;
+        }
         // 排序口径必须与卡片显示一致（NodeItem.DisplayDelay）：关闭真连测速时界面显示的是 TCP，
         var preferReal = AppState.State.RealDelayTestEnabled;
+        _builtPreferReal = preferReal;
         var nodes = AppState.Nodes
             .OrderBy(n => { var d = n.DisplayDelay(preferReal); return d <= 0 ? int.MaxValue : d; })
             .ToList();
@@ -159,36 +212,128 @@ public sealed partial class NodesPage : UserControl
         UpdateFooter();
     }
 
-    private void ApplyFilter()
+    private void RefreshLatencyOrder(NodeTile? updatedTile = null)
+    {
+        // OrderBy is stable: equal delays and unmeasured/failed results retain their order.
+        // RealValue uses the same TCP/real preference and fallback as the visible badge.
+        _tiles = _tiles.OrderBy(t => t.RealValue > 0 ? t.RealValue : int.MaxValue).ToList();
+        ApplyFilter(updatedTile);
+    }
+
+    private void ApplyLatencyResult(NodeTile tile, int ms, bool tcp = false)
+    {
+        if (tcp) tile.SetTcpResult(ms); else tile.SetResult(ms);
+        RefreshLatencyOrder(tile);
+    }
+
+    private void OnStartupLatencyChanged(NodeItem node)
+    {
+        if (App.IsShuttingDown) return;
+        if (_tilesReleased || Visibility != Visibility.Visible) { _pendingRebuild = true; return; }
+        // Subscription refresh may have replaced the model the background probe captured.
+        var tile = _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))
+            ?? _tiles.FirstOrDefault(t => AppState.NodeKey(t.Node) == AppState.NodeKey(node));
+        if (tile == null) return;
+        tile.Node.RealDelay = node.RealDelay;
+        tile.Node.RealDelayNote = node.RealDelayNote;
+        tile.RefreshDelay();
+        RefreshLatencyOrder(tile);
+    }
+
+    private void ApplyFilter(NodeTile? updatedTile = null)
     {
         var q = SearchBox.Text.Trim().ToLowerInvariant();
         IEnumerable<NodeTile> qry = _tiles;
         if (q.Length > 0) qry = qry.Where(t => t.SearchText.Contains(q));
         if (_onlyAvailable) qry = qry.Where(t => t.RealValue > 0);
-        if (_onlyUntested) qry = qry.Where(t => t.RealValue <= 0);
+        if (_onlyUntested) qry = qry.Where(t => t.RealValue == 0);
+        if (_onlyTimeout) qry = qry.Where(t => t.RealValue < 0);
         if (_regionFilter.Length > 0) qry = qry.Where(t => NodeGrouper.RegionOf(t.Node.Name) == _regionFilter);
         var list = qry.ToList();
 
         var cur = AppState.CurrentNode;
+        // A connection can complete against the pre-refresh snapshot. Match the stable
+        // identity for presentation without replacing or switching the connected node.
+        var selected = cur == null ? null : list.FirstOrDefault(t => ReferenceEquals(t.Node, cur));
+        if (selected == null && cur != null)
+        {
+            var currentKey = AppState.NodeKey(cur);
+            selected = list.FirstOrDefault(t => AppState.NodeKey(t.Node) == currentKey);
+        }
         foreach (var t in list)
-            t.SetSelected(cur != null && ReferenceEquals(t.Node, cur));
+            t.SetSelected(ReferenceEquals(t, selected));
+        _selected = selected;
 
-        NodeList.ItemsSource = list;
-        EmptyState.Visibility = _tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        // Keep a single observable source. A completed probe moves its own card once,
+        // rather than rebinding the grid or moving every card it passes on the way down.
+        var wanted = list.ToHashSet();
+        if (_visibleTiles.Count == list.Count && _visibleTiles.All(wanted.Contains) && !_visibleTiles.SequenceEqual(list))
+            PreserveScrollDuringSort();
+        for (var i = _visibleTiles.Count - 1; i >= 0; i--)
+            if (!wanted.Contains(_visibleTiles[i])) _visibleTiles.RemoveAt(i);
+        if (updatedTile != null)
+        {
+            var from = _visibleTiles.IndexOf(updatedTile);
+            var to = list.IndexOf(updatedTile);
+            if (from >= 0 && to >= 0 && to < _visibleTiles.Count && from != to) _visibleTiles.Move(from, to);
+        }
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (i < _visibleTiles.Count && ReferenceEquals(_visibleTiles[i], list[i])) continue;
+            var from = _visibleTiles.IndexOf(list[i]);
+            if (from >= 0) _visibleTiles.Move(from, i);
+            else _visibleTiles.Insert(i, list[i]);
+        }
+        if (!ReferenceEquals(NodeList.ItemsSource, _visibleTiles)) NodeList.ItemsSource = _visibleTiles;
+        // 空状态必须按「筛选后的列表」判断：只看可用/只看未测/搜索可能把 39 个节点全过滤掉，
+        // 原先按 _tiles.Count 判断会留下整页空白且没有任何提示。
+        var noTiles = _tiles.Count == 0;
+        EmptyState.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (EmptyState.Children.Count >= 2)
+        {
+            if (EmptyState.Children[0] is TextBlock title)
+                title.Text = noTiles ? "还没有节点" : "没有匹配的节点";
+            if (EmptyState.Children[1] is TextBlock hint)
+                hint.Text = noTiles
+                    ? "去「订阅」页添加订阅，或用工具栏「手动节点」粘贴分享链接导入"
+                    : "点击「全部」，或清空搜索与地区筛选";
+        }
         UpdateLayoutWidth();
+    }
+
+    private void PreserveScrollDuringSort()
+    {
+        if (_scrollOffsetBeforeSort != null || _tilesReleased || Visibility != Visibility.Visible) return;
+        static ScrollViewer? FindScroll(DependencyObject parent)
+        {
+            if (parent is ScrollViewer viewer) return viewer;
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+                if (FindScroll(VisualTreeHelper.GetChild(parent, i)) is { } found) return found;
+            return null;
+        }
+        _nodeScrollViewer ??= FindScroll(NodeList);
+        if (_nodeScrollViewer == null) return;
+        _scrollOffsetBeforeSort = _nodeScrollViewer.VerticalOffset;
+        NodeList.LayoutUpdated += RestoreScrollAfterSort;
+    }
+
+    private void RestoreScrollAfterSort(object? sender, object e)
+    {
+        NodeList.LayoutUpdated -= RestoreScrollAfterSort;
+        var offset = _scrollOffsetBeforeSort;
+        _scrollOffsetBeforeSort = null;
+        if (offset is not { } value || _nodeScrollViewer == null || App.IsShuttingDown) return;
+        // ItemsWrapGrid anchors the previous item when a collection moves. Preserve the
+        // user's viewport instead; coalesce a burst into one correction after layout.
+        if (Math.Abs(_nodeScrollViewer.VerticalOffset - value) > .5)
+            _nodeScrollViewer.ChangeView(null, value, null, true);
     }
 
     private int ComputeCols(double avail)
     {
-        var compact = AppState.State.CompactLayout;
-        var minW = compact ? 150.0 : 176.0;
-        var gap = 8.0;
-        var maxCols = compact ? 6 : 5;
-
-        var cols = (int)Math.Floor((avail - 4 + gap) / (minW + gap));
-        if (cols < 2) cols = 2;
-        if (cols > maxCols) cols = maxCols;
-        return cols;
+        // Seven columns on a wide desktop; keep readable cards in smaller windows.
+        var viewportWidth = XamlRoot?.Size.Width ?? avail;
+        return viewportWidth <= 900 ? 2 : viewportWidth <= 1199 ? 3 : viewportWidth < 1600 ? 5 : 7;
     }
 
     private void UpdateLayoutWidth()
@@ -198,25 +343,30 @@ public sealed partial class NodesPage : UserControl
 
         var compact = AppState.State.CompactLayout;
         var cols = ComputeCols(avail);
-        _lastCols = cols;
 
         if (NodeList.ItemsPanelRoot is not ItemsWrapGrid wg) return;
 
-        var cellW = avail / cols - 2.0;
-        var cellH = (compact ? 58.0 : 66.0) + 10;
+        var cellW = avail / cols;
+        var cellH = (compact ? 63.0 : 72.0) * Ui.AdaptiveText.Scale + 10;
 
         if (double.IsNaN(wg.ItemWidth) || Math.Abs(wg.ItemWidth - cellW) >= 1.5) wg.ItemWidth = cellW;
         if (double.IsNaN(wg.ItemHeight) || Math.Abs(wg.ItemHeight - cellH) >= 0.5) wg.ItemHeight = cellH;
+        var count = (NodeList.ItemsSource as System.Collections.ICollection)?.Count ?? 0;
+        var availableHeight = NodesLayout.ActualHeight - NodeToolbar.ActualHeight - NodeFooter.ActualHeight - NodesLayout.RowSpacing * 2;
+        if (availableHeight > 1)
+        {
+            var extent = count == 0 ? 180 : Math.Ceiling((double)count / cols) * cellH + NodeList.Padding.Top + NodeList.Padding.Bottom;
+            var height = Math.Max(0, Math.Min(availableHeight, extent));
+            if (NodesLayout.RowDefinitions[1].Height.IsStar || Math.Abs(NodesLayout.RowDefinitions[1].Height.Value - height) >= .5)
+                NodesLayout.RowDefinitions[1].Height = new GridLength(height);
+        }
     }
 
     private void OnScrollSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) < 0.5) return;
+        if (Math.Abs(e.NewSize.Width - e.PreviousSize.Width) < 0.5 && Math.Abs(e.NewSize.Height - e.PreviousSize.Height) < 0.5) return;
         var avail = NodeList.ActualWidth;
         if (avail <= 0) return;
-        var cols = ComputeCols(avail);
-        if (cols == _lastCols && cols < 5) return;
-
         if ((DateTime.Now - _lastLayoutWidthApply).TotalMilliseconds >= 150)
         {
             _lastLayoutWidthApply = DateTime.Now;
@@ -227,6 +377,17 @@ public sealed partial class NodesPage : UserControl
             _resizeTrailTimer?.Stop();
             _resizeTrailTimer?.Start();
         }
+    }
+
+    private void OnNodeListKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is not (Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space)) return;
+        if (e.OriginalSource is not GridViewItem { Content: NodeTile tile }) return;
+        userPickedDuringTest = true;
+        foreach (var t in _tiles) t.SetSelected(ReferenceEquals(t, tile));
+        _selected = tile;
+        AppState.SetCurrentNode(tile.Node);
+        e.Handled = true;
     }
 
     private void OnTileTapped(object sender, TappedRoutedEventArgs e)
@@ -240,7 +401,7 @@ public sealed partial class NodesPage : UserControl
                 t.SetSelected(ReferenceEquals(t, tile));
         _selected = tile;
         AppState.SetCurrentNode(tile.Node);
-        PopCard(fe);
+        // Selection is the original colour/edge change; it does not enlarge neighbouring cards.
     }
 
     private void OnTileTestTapped(object sender, TappedRoutedEventArgs e)
@@ -250,112 +411,38 @@ public sealed partial class NodesPage : UserControl
         _ = RunSingleTestAsync(tile);
     }
 
+    // A latency action never bubbles into card selection, including the selected card.
+    private void OnDelayTapHandled(object sender, TappedRoutedEventArgs e) => e.Handled = true;
+
+    private void OnTileTestClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: NodeTile tile })
+            _ = RunSingleTestAsync(tile);
+    }
+
     private async Task RunSingleTestAsync(NodeTile tile)
     {
         await tile.TestAsync();
         _lastRealTestAt = DateTime.Now;
+        RefreshLatencyOrder(tile);
         UpdateFooter();
     }
 
     private void OnTileEnter(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is Border b && b.DataContext is NodeTile t && !t.IsSelected)
-        {
-            b.Background = ThemeUtil.Get("NeoGlass", Color.FromArgb(0xB8, 0xFF, 0xFF, 0xFF));
-            AnimateCard(b, "TranslateY", b, -2.0, 110);
-        }
+        if (sender is not Border { DataContext: NodeTile tile } border) return;
+        Ui.SurfaceEdge.SetNodeHovered(border, true);
+        border.Background = tile.IsSelected ? tile.CardBg : ThemeUtil.Get("NeoNodeHover", Microsoft.UI.Colors.Transparent);
+        border.BorderBrush = new SolidColorBrush(Color.FromArgb(tile.IsSelected ? (byte)166 : (byte)26, tile.IsSelected ? (byte)90 : (byte)255, tile.IsSelected ? (byte)169 : (byte)255, 255));
+        if (NodeList.ContainerFromItem(tile) is UIElement container) Canvas.SetZIndex(container, 2);
     }
 
     private void OnTileLeave(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is Border b && b.DataContext is NodeTile t && !t.IsSelected)
-        {
-            b.Background = t.CardBg;
-            AnimateCard(b, "TranslateY", b, 0.0, 150);
-        }
-    }
-
-    private static Microsoft.UI.Xaml.Media.CompositeTransform CardTransform(FrameworkElement el)
-    {
-        if (el.RenderTransform is Microsoft.UI.Xaml.Media.CompositeTransform c)
-            return c;
-        c = new Microsoft.UI.Xaml.Media.CompositeTransform();
-        el.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
-        el.RenderTransform = c;
-        return c;
-    }
-
-    private static void AnimateCard(FrameworkElement el, string prop, object target, double to, int ms)
-    {
-        try
-        {
-            var ct = CardTransform(el);
-            var sb = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
-            var da = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-            {
-                To = to,
-                Duration = TimeSpan.FromMilliseconds(ms),
-                EasingFunction = new Microsoft.UI.Xaml.Media.Animation.CubicEase
-                {
-                    EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut,
-                },
-            };
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(da, ct);
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(da, prop);
-            sb.Children.Add(da);
-            sb.Begin();
-        }
-        catch { }
-    }
-
-    private static void PopCard(FrameworkElement el)
-    {
-        try
-        {
-            var ct = CardTransform(el);
-            var sb = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
-            foreach (var prop in new[] { "ScaleX", "ScaleY" })
-            {
-                var da = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-                {
-                    To = 1.04,
-                    Duration = TimeSpan.FromMilliseconds(110),
-                    EasingFunction = new Microsoft.UI.Xaml.Media.Animation.CubicEase
-                    {
-                        EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut,
-                    },
-                };
-                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(da, ct);
-                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(da, prop);
-                sb.Children.Add(da);
-            }
-            sb.Completed += (_, _) =>
-            {
-                try
-                {
-                    var sb2 = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
-                    foreach (var prop in new[] { "ScaleX", "ScaleY" })
-                    {
-                        var da = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-                        {
-                            To = 1.0,
-                            Duration = TimeSpan.FromMilliseconds(150),
-                            EasingFunction = new Microsoft.UI.Xaml.Media.Animation.CubicEase
-                            {
-                                EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseIn,
-                            },
-                        };
-                        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(da, ct);
-                        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(da, prop);
-                        sb2.Children.Add(da);
-                    }
-                    sb2.Begin();
-                }
-                catch { }
-            };
-            sb.Begin();
-        }
-        catch { }
+        if (sender is not Border { DataContext: NodeTile tile } border) return;
+        Ui.SurfaceEdge.SetNodeHovered(border, false);
+        border.Background = tile.CardBg; border.BorderBrush = tile.CardBorder;
+        if (NodeList.ContainerFromItem(tile) is UIElement container) Canvas.SetZIndex(container, tile.IsSelected ? 1 : 0);
     }
 
     private void OnFlagDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
@@ -369,12 +456,6 @@ public sealed partial class NodesPage : UserControl
         SearchPlaceholder.Visibility = string.IsNullOrEmpty(SearchBox.Text)
             ? Visibility.Visible
             : Visibility.Collapsed;
-        ApplyFilter();
-    }
-
-    private void OnSortClick(object sender, RoutedEventArgs e)
-    {
-        _tiles = _tiles.OrderBy(t => t.RealValue <= 0 ? int.MaxValue : t.RealValue).ToList();
         ApplyFilter();
     }
 
@@ -393,38 +474,51 @@ public sealed partial class NodesPage : UserControl
     }
 
     /// 筛选菜单：全部 / 只看可用 / 只看未测 / 按地区。
+    private void OnNodePageSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (NodeHeader == null) return;
+        var compact = e.NewSize.Width < 800;
+        NodeHeader.RowSpacing = compact ? 8 : 0;
+        Grid.SetRow(NodeSearch, compact ? 1 : 0);
+        Grid.SetColumn(NodeSearch, compact ? 0 : 1);
+        Grid.SetColumnSpan(NodeSearch, compact ? 2 : 1);
+        Grid.SetRow(NodeActions, compact ? 1 : 0);
+        Grid.SetColumnSpan(NodeTitle, compact ? 3 : 1);
+        if (compact) { Ui.AdaptiveText.SetBaseWidth(NodeSearch, double.NaN); NodeSearch.Width = double.NaN; }
+        else Ui.AdaptiveText.SetBaseWidth(NodeSearch, 240);
+        NodeActionHint.Visibility = e.NewSize.Width < 1100 ? Visibility.Collapsed : Visibility.Visible;
+        UpdateLayoutWidth();
+    }
+
+    private void OnStatusFilterClick(object sender, RoutedEventArgs e)
+    {
+        var status = (sender as FrameworkElement)?.Tag as string ?? "all";
+        _onlyAvailable = status == "available";
+        _onlyUntested = status == "untested";
+        _onlyTimeout = status == "timeout";
+        foreach (var button in NodeStatusFilters.Children.OfType<Button>())
+        {
+            var active = button.Tag as string == status;
+            button.Background = active ? ThemeUtil.Get("NeoAccent", Microsoft.UI.Colors.Transparent) : null;
+            button.Foreground = active ? new SolidColorBrush(Microsoft.UI.Colors.White) : ThemeUtil.Get("NeoText2", Microsoft.UI.Colors.Gray);
+        }
+        ApplyFilter();
+    }
+
     private void OnFilterTapped(object sender, RoutedEventArgs e)
     {
-        _filterList ??= new Neo.App.Ui.PopupList();
+        _filterList ??= new Ui.PopupList();
         _filterList.ClearItems();
-        _filterList.AddItem("全部节点", null, () =>
+        _filterList.AddItem("全部地区", null, () => { _regionFilter = ""; FilterBtnText.Text = "全部地区"; ApplyFilter(); });
+        foreach (var region in _tiles.Select(t => NodeGrouper.RegionOf(t.Node.Name)).Distinct())
         {
-            _onlyAvailable = false; _onlyUntested = false; _regionFilter = "";
-            FilterBtnText.Text = "筛选"; ApplyFilter();
-        });
-        _filterList.AddItem("只看可用（延迟 > 0）", null, () =>
-        {
-            _onlyAvailable = true; _onlyUntested = false;
-            FilterBtnText.Text = "只看可用"; ApplyFilter();
-        });
-        _filterList.AddItem("只看未测/失败", null, () =>
-        {
-            _onlyUntested = true; _onlyAvailable = false;
-            FilterBtnText.Text = "只看未测"; ApplyFilter();
-        });
-        _filterList.AddSeparator();
-        var regions = AppState.Nodes.Select(n => NodeGrouper.RegionOf(n.Name)).Distinct().OrderBy(r => r).ToList();
-        foreach (var r in regions)
-        {
-            var region = r;
-            _filterList.AddItem("地区：" + NodeGrouper.RegionDisplay(region), null, () =>
-            {
-                _regionFilter = region; _onlyAvailable = false; _onlyUntested = false;
-                FilterBtnText.Text = NodeGrouper.RegionDisplay(region); ApplyFilter();
+            var value = region;
+            _filterList.AddItem(NodeGrouper.RegionDisplay(region), null, () => {
+                _regionFilter = value; FilterBtnText.Text = NodeGrouper.RegionDisplay(value); ApplyFilter();
             });
         }
         _filterList.AddDisabled("筛选只影响显示，不影响连接");
-        Neo.App.Ui.PopupList.ShowBelow(_filterList, FilterBtn, 220);
+        Ui.PopupList.ShowBelow(_filterList, FilterBtn, 220);
     }
 
     /// 卡片右键：复制常用信息（名称 / 服务器 / 实测出口 IP）。
@@ -466,7 +560,7 @@ public sealed partial class NodesPage : UserControl
         // 优化：只测当前列表里实际显示的节点（搜索/筛选后测得更快），
         // 没筛选时等于测全部。
         var list = (NodeList.ItemsSource as IEnumerable<NodeTile>)?.ToList() ?? _tiles.ToList();
-        await RunBatchAsync(list, autoSelect: true);
+        await RunBatchAsync(list, autoSelect: false);
     }
 
     /// <summary>
@@ -500,7 +594,7 @@ public sealed partial class NodesPage : UserControl
                 onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                 {
                     if (App.IsShuttingDown) return;
-                    if (tileByNode.TryGetValue(node, out var tile)) tile.SetTcpResult(ms);
+                    if (tileByNode.TryGetValue(node, out var tile)) ApplyLatencyResult(tile, ms, tcp: true);
                     done++;
                     FootTime.Text = $"TCP 延迟测试中 {done}/{list.Count}…";
                 }));
@@ -509,7 +603,7 @@ public sealed partial class NodesPage : UserControl
             foreach (var kv in result)
             {
                 if (tileByNode.TryGetValue(kv.Key, out var tile) && tile.Node.TcpDelay != kv.Value)
-                    tile.SetTcpResult(kv.Value);
+                    ApplyLatencyResult(tile, kv.Value, tcp: true);
             }
 
             //   原实现于是「快速测延迟」永远测不到这些节点（v2rayN 能测是因为它一律走真实代理请求），
@@ -518,7 +612,7 @@ public sealed partial class NodesPage : UserControl
             //   卡片与连接页下拉通过 NodeItem.DisplayDelay 回退显示。
             var udpNodes = list.Select(t => t.Node)
                 .Where(n => n.IsValid
-                    && !n.IsClashPassthrough && !n.IsCustomConfig && !n.IsNaive
+                    && !n.IsClashPassthrough && !n.IsCustomConfig
                     && n.TcpDelay == 0
                     && DelayTestPlanner.RequiresRealConnection(n))
                 .Distinct()
@@ -534,7 +628,7 @@ public sealed partial class NodesPage : UserControl
                         onResult: (node, ms) => _ = DispatcherQueue.TryEnqueue(() =>
                         {
                             if (App.IsShuttingDown) return;
-                            if (tileByNode.TryGetValue(node, out var tile)) tile.SetResult(ms);
+                            if (tileByNode.TryGetValue(node, out var tile)) ApplyLatencyResult(tile, ms);
                             udpDone++;
                             FootTime.Text = $"UDP 协议补测真连 {udpDone}/{udpNodes.Count}…";
                         }));
@@ -547,9 +641,7 @@ public sealed partial class NodesPage : UserControl
                 LogBus.App($"UDP 协议节点真连补测完成：{udpDone}/{udpNodes.Count}");
             }
 
-            // 按「当前显示口径」重排卡片：>0 升序，0/-1 统一放最后（999999）。
-            _tiles = _tiles.OrderBy(t => t.RealValue > 0 ? t.RealValue : 999999).ToList();
-            ApplyFilter();
+            RefreshLatencyOrder();
 
             var tested = list.Count(t => t.Node.TcpDelay != 0 || t.Node.RealDelay != 0);
             var okCount = list.Count(t => t.RealValue > 0);
@@ -573,149 +665,57 @@ public sealed partial class NodesPage : UserControl
         {
             _tcpTesting = false;
             try { TcpTestBtn.IsEnabled = true; } catch { }
+            if (_pendingRebuild) RebuildList();
         }
     }
 
-    /// 把「节点对象 → (国家, IP)」的检测结果按稳定 NodeKey 回填到当前节点列表，
-    /// 避免订阅刷新重建对象后结果丢失。返回是否有任何变更。
-    private static void ApplyLocations(IReadOnlyDictionary<NodeItem, (string Country, string Ip)> map)
+    // Location belongs to the committed connection. Visiting this page must not
+    // spawn a second kernel to scan every subscription node.
+    private void TryAutoDetectLocations()
     {
-        if (map.Count == 0) return;
-        var byKey = new Dictionary<string, (string Country, string Ip)>();
-        foreach (var kv in map) byKey[AppState.NodeKey(kv.Key)] = kv.Value;
-        foreach (var n in AppState.Nodes)
-            if (byKey.TryGetValue(AppState.NodeKey(n), out var loc))
-            {
-                n.ExitCountry = loc.Country;
-                n.ExitIp = loc.Ip;
-                if (!string.IsNullOrEmpty(loc.Country)) LocationCache.Set(n, loc.Country, loc.Ip);
-            }
-    }
-
-    // 「真实 IP 显示」打开后自动跑一次检测（静默，不弹结果框），让卡片直接显示真实出口。
-    private bool _geoAutoTried;
-    private async void TryAutoDetectLocations()
-    {
-        if (_geoAutoTried || _geoTesting) return;
-        // 开关没开时**不能**把已尝试标记置上，否则用户之后打开开关就再也不会自动检测。
         if (!AppState.State.ShowRealIp) return;
-        _geoAutoTried = true;
-        try
-        {
-            var all = AppState.Nodes.ToList();
-            if (all.Count == 0) return;
-            // 12 小时内的检测结果直接复用；只补测「没有新鲜缓存、也没在本次进程测过」的节点。
-            var nodes = all.Where(n =>
-                string.IsNullOrEmpty(n.ExitCountry) && !LocationCache.TryGet(n, out _, out _)).ToList();
-            if (nodes.Count == 0) return;
+        ApplyCurrentExit();
+        _ = CurrentExitService.RunAsync();
+    }
 
-            LogBus.App($"真实 IP 显示：后台检测 {nodes.Count} 个节点的出口位置（缓存 12 小时内跳过）…");
-            var map = await RealDelayTester.DetectExitLocationsAsync(
-                nodes, NeoPaths.RuntimeDir,
-                onResult: (node, country, ip) => _ = DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (App.IsShuttingDown) return;
-                    node.ExitCountry = country;
-                    node.ExitIp = ip;
-                    _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
-                }));
+    private void OnCurrentExitChanged()
+    {
+        if (App.IsShuttingDown) return;
+        DispatcherQueue.TryEnqueue(() => { if (!App.IsShuttingDown) ApplyCurrentExit(); });
+    }
 
-            // 检测期间订阅刷新可能重建了节点对象：按稳定 NodeKey 回填到**当前**列表，
-            // 否则结果全落在旧对象上、界面永远不显示（实测踩到过）。
-            ApplyLocations(map);
-            var detected = map.Values.Count(v => !string.IsNullOrEmpty(v.Country));
-            var known = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
-            RebuildList();
-            LogBus.App($"真实 IP 显示：本次检测 {nodes.Count} 个（成功 {detected}）；当前已显示 {known}/{AppState.Nodes.Count}");
-        }
-        catch (Exception ex)
+    private void ApplyCurrentExit()
+    {
+        var exit = CurrentExitService.Current;
+        var connected = ConnectionService.ConnectedNode;
+        if (!ConnectionService.IsConnected || exit.Epoch != ConnectionService.SessionEpoch || !exit.Result.Confirmed
+            || connected == null || ConnectionService.FixedExitActive || AppState.State.ProxyMode == "direct") return;
+        var key = AppState.NodeKey(connected);
+        foreach (var node in AppState.Nodes.Where(n => AppState.NodeKey(n) == key))
         {
-            LogBus.App($"真实 IP 显示：出口检测失败（不影响使用）：[{ex.GetType().Name}] {ex.Message}", "Warning");
+            node.ExitCountry = exit.Result.Country; node.ExitIp = exit.Result.Ip;
+            _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
         }
     }
 
-    // ---- 位置检测（真实出口国家）----
-    //   名称里的国旗/地区是订阅方写的，可能与实际出口不符（例如标日本、实际在美国）。
-    //   这里经每个节点自己的 socks 入口访问 Cloudflare trace，读出真实 loc，
-    //   与名称标记不一致的节点在卡片上标红「实际 XX」，并弹窗列出清单。
     private bool _geoTesting;
-    private CancellationTokenSource? _geoCts;
-
     private async void OnGeoTestClick(object sender, RoutedEventArgs e)
     {
-        if (_geoTesting) { _geoCts?.Cancel(); return; }
-
-        var nodes = AppState.Nodes.ToList();
-        if (nodes.Count == 0) return;
-
-        _geoTesting = true;
-        GeoTestBtnText.Text = "停止";
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        LogBus.App($"位置检测开始（{nodes.Count} 个节点 · 经各节点访问 Cloudflare trace）");
-        var mismatches = new List<string>();
-        var ok = 0;
+        if (_geoTesting) { CurrentExitService.Cancel(); return; }
+        if (!ConnectionService.IsConnected) { FootTime.Text = "连接节点后检测当前出口"; return; }
+        _geoTesting = true; GeoTestBtnText.Text = "停止出口检测";
         try
         {
-            _geoCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            var map = await RealDelayTester.DetectExitLocationsAsync(
-                nodes, NeoPaths.RuntimeDir,
-                onResult: (node, country, ip) => _ = DispatcherQueue.TryEnqueue(() =>
-                {
-                    if (App.IsShuttingDown) return;
-                    node.ExitCountry = country;
-                    node.ExitIp = ip;
-                    _tiles.FirstOrDefault(t => ReferenceEquals(t.Node, node))?.RefreshLocation();
-                }),
-                ct: _geoCts.Token);
-
-            ApplyLocations(map);
-            ok = AppState.Nodes.Count(n => !string.IsNullOrEmpty(n.ExitCountry));
-            foreach (var n in AppState.Nodes)
-            {
-                var actual = n.ExitCountry ?? "";
-                if (string.IsNullOrEmpty(actual)) continue;
-                var claimed = AppState.GuessFlag(n.Name);
-                if (claimed != "other" && !string.Equals(claimed, actual, StringComparison.OrdinalIgnoreCase))
-                    mismatches.Add($"• {n.Name}：标记 {NodeGrouper.RegionDisplay(claimed)} → 实际 {NodeGrouper.RegionDisplay(actual)}");
-            }
-            foreach (var t in _tiles) t.RefreshLocation();
-            RebuildList();
-
-            LogBus.App($"位置检测完成：{ok}/{nodes.Count} 个节点有结果 · 标记与实际不符 {mismatches.Count} 个 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
-            FootTime.Text = $"位置检测：{mismatches.Count} 个标记不符（{DateTime.Now:HH:mm:ss}）";
+            await CurrentExitService.RunAsync(refresh: true);
+            if (App.IsShuttingDown) return;
+            ApplyCurrentExit();
+            var exit = CurrentExitService.Current;
+            FootTime.Text = exit.Epoch == ConnectionService.SessionEpoch && exit.Result.Confirmed
+                ? "当前出口：" + Ui.CurrentExitDisplay.Region(exit.Result.Country) + " · " + exit.Result.Ip : "当前出口未确认";
             FootAvg.Text = "";
-
-            var unresolved = nodes.Count - ok;
-            var head = $"已检测 {ok}/{nodes.Count} 个节点"
-                + (unresolved > 0 ? $"（{unresolved} 个无响应/超时，未能判定）" : "") + "。";
-            var body = mismatches.Count == 0
-                ? head + "\n\n出口国家与名称标记全部一致。"
-                : head + $"\n\n{mismatches.Count} 个标记与实际出口不符：\n\n" + string.Join("\n", mismatches.Take(20))
-                  + (mismatches.Count > 20 ? $"\n… 其余 {mismatches.Count - 20} 个见日志" : "");
-            var dlg = new ContentDialog
-            {
-                Title = "位置检测结果",
-                Content = new TextBlock { Text = body, TextWrapping = TextWrapping.Wrap, FontSize = 12.5, MaxWidth = 560 },
-                CloseButtonText = "知道了",
-                XamlRoot = XamlRoot,
-            };
-            await Neo.App.Ui.DialogGuard.ShowAsync(dlg);
         }
-        catch (OperationCanceledException)
-        {
-            LogBus.App("位置检测已取消", "Warning");
-        }
-        catch (Exception ex)
-        {
-            LogBus.Exception("位置检测", ex);
-        }
-        finally
-        {
-            _geoTesting = false;
-            GeoTestBtnText.Text = "位置检测";
-            _geoCts?.Dispose();
-            _geoCts = null;
-        }
+        catch (Exception ex) { LogBus.Exception("当前出口检测", ex); }
+        finally { _geoTesting = false; if (!App.IsShuttingDown) GeoTestBtnText.Text = "检测当前出口"; }
     }
 
     /// <summary>底部居中的进度文本：阶段/已测数、重试轮次，完成消息停留 3 秒后清空。</summary>
@@ -735,7 +735,7 @@ public sealed partial class NodesPage : UserControl
         }
         if (p.Phase == DelayTestPhase.Retry)
         {
-            FootCenter.Text = $"失败重试 {p.RetryRound}/4 · 剩余 {p.Remaining} 个";
+            FootCenter.Text = $"失败重试 {p.RetryRound}/{p.RetryLimit} · 剩余 {p.Remaining} 个";
             FootTime.Text = $"真连测速中 {p.Done}/{p.Total}…";
             return;
         }
@@ -779,7 +779,7 @@ public sealed partial class NodesPage : UserControl
                     if (App.IsShuttingDown) return;
                     if (tileMap.TryGetValue(node, out var tile))
                     {
-                        tile.SetResult(ms);
+                        ApplyLatencyResult(tile, ms);
                         done++;
                         // 每个节点都刷新页脚进度（原先每 10 个刷一次，用户以为卡住）。
                         FootAvg.Text = "";
@@ -833,9 +833,16 @@ public sealed partial class NodesPage : UserControl
 
         var ok = all.Count(t => t.RealValue > 0);
         LogBus.App($"真连测速完成：{ok}/{all.Count} 可达 · 耗时 {sw.Elapsed.TotalSeconds:F1}s");
-        // 结束时不重建卡片（重建会整页闪一下）：只按新延迟排序后重新绑定现有卡片对象。
-        _tiles = _tiles.OrderBy(t => t.RealValue <= 0 ? int.MaxValue : t.RealValue).ToList();
-        ApplyFilter();
+        // 测速期间若卡片树被释放（旧版本）或收到过重建请求，这里必须补建；
+        // 否则 _tiles 为空时 ApplyFilter 只会把空列表绑上去，节点页永久空白。
+        if (_pendingRebuild || _tiles.Count == 0)
+        {
+            RebuildList();
+        }
+        else
+        {
+            RefreshLatencyOrder();
+        }
 
         // 自动优选：测速结束后把「延迟最低的可达节点」设为当前节点。
         //   只改当前选中节点 —— AppState.SetCurrentNode 只改选择、不重连；连接中的静默切换由 ConnectionPage 负责。
@@ -932,11 +939,9 @@ public sealed partial class NodesPage : UserControl
     private void UpdateFooter()
     {
         var preferReal = AppState.State.RealDelayTestEnabled;
-        NodeCountRun.Text = preferReal
-            ? $"共 {AppState.Nodes.Count} 个节点 · 按真连延迟排序"
-            : $"共 {AppState.Nodes.Count} 个节点 · 按 TCP 延迟排序";
-
         var ok = AppState.Nodes.Where(n => n.DisplayDelay(preferReal) > 0).ToList();
+        NodeCountRun.Text = $"{AppState.Nodes.Count} 个节点 · {ok.Count} 可用"
+            + (ok.Count > 0 ? $" · 平均 {ok.Average(n => n.DisplayDelay(preferReal)):F0} ms" : "");
         if (ok.Count > 0)
         {
             var avg = ok.Average(n => n.DisplayDelay(preferReal));
@@ -988,7 +993,7 @@ public sealed partial class NodesPage : UserControl
 
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
             panel.Children.Add(new ProgressRing { IsActive = true, Width = 18, Height = 18 });
-            panel.Children.Add(new TextBlock { Text = "正在向 Cloudflare 注册…", FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center });
+            panel.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = "正在向 Cloudflare 注册…", VerticalAlignment = VerticalAlignment.Center }, 12.5));
             var busy = new ContentDialog { Title = "WARP", Content = panel, XamlRoot = XamlRoot };
             var showTask = Neo.App.Ui.DialogGuard.ShowAsync(busy);
             var (ok, msg, link) = await WarpService.RegisterAsync();
@@ -1045,12 +1050,11 @@ public sealed partial class NodesPage : UserControl
             FontSize = 12,
             Height = 110,
         };
-        var status = new TextBlock
+        var status = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
         {
-            FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
             Foreground = ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80)),
-        };
+        }, 11);
         var manualList = new StackPanel { Spacing = 6 };
 
         void RefreshManualList()
@@ -1058,12 +1062,11 @@ public sealed partial class NodesPage : UserControl
             manualList.Children.Clear();
             if (AppState.ManualLinks.Count == 0)
             {
-                manualList.Children.Add(new TextBlock
+                manualList.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
                 {
                     Text = "暂无手动节点",
-                    FontSize = 11,
                     Foreground = ThemeUtil.Get("NeoText3", Color.FromArgb(255, 0x98, 0xA0, 0xAA)),
-                });
+                }, 11));
                 return;
             }
 
@@ -1076,16 +1079,15 @@ public sealed partial class NodesPage : UserControl
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-                var label = new TextBlock
+                var label = Neo.App.Ui.AdaptiveText.WithSize(new TextBlock
                 {
-                    FontSize = 11.5,
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     VerticalAlignment = VerticalAlignment.Center,
                     Foreground = ThemeUtil.Get("NeoText1", Color.FromArgb(255, 0x23, 0x28, 0x2E)),
                     Text = node == null
                         ? "（无法解析的链接）"
                         : $"{(string.IsNullOrWhiteSpace(node.Name) ? node.Server : node.Name)} · {AppState.ProtocolName(node.Protocol)} · {node.Server}:{node.Port}",
-                };
+                }, 11.5);
                 Grid.SetColumn(label, 0);
                 row.Children.Add(label);
 
@@ -1113,7 +1115,7 @@ public sealed partial class NodesPage : UserControl
         }
 
         var content = new StackPanel { Spacing = 10, MinWidth = 460 };
-        content.Children.Add(new TextBlock { Text = "粘贴分享链接（可一次多行）：", FontSize = 12 });
+        content.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = "粘贴分享链接（可一次多行）：", }, 12));
         content.Children.Add(input);
         content.Children.Add(status);
         content.Children.Add(new Border
@@ -1121,7 +1123,7 @@ public sealed partial class NodesPage : UserControl
             Height = 1,
             Background = ThemeUtil.Get("NeoHairline2", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21)),
         });
-        content.Children.Add(new TextBlock { Text = "已有手动节点：", FontSize = 12 });
+        content.Children.Add(Neo.App.Ui.AdaptiveText.WithSize(new TextBlock { Text = "已有手动节点：", }, 12));
         content.Children.Add(manualList);
         RefreshManualList();
 

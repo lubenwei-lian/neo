@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using Microsoft.UI;
 using Microsoft.UI.Text;
@@ -20,12 +20,7 @@ public sealed partial class MainWindow : Window
     private readonly (Button button, string key)[] _navItems;
     private string _currentPage = "conn";
 
-    /// 导航方向：+1 = 向右（目标页在右侧），-1 = 向左。
-    /// 供 AnimatePageIn 决定新页从哪一侧滑入；空间方向与导航条顺序一致，
-    /// 用户才能「跟着元素走」（Fluent motion 的 Connected 原则）。
-    private int _navDir = 1;
-
-    private static readonly string[] _navOrder = { "conn", "nodes", "subs", "sublog", "settings", "rule", "log" };
+    private static readonly string[] _navOrder = { "conn", "nodes", "subs", "sublog", "settings", "network", "rule", "log" };
 
     /// 上一次做「切入动效」的那个页面元素。
     ///   否则它停在半路（偏移 20px、透明度 0.4）——用户再切回来看到的就是一页残缺界面。
@@ -75,6 +70,9 @@ public sealed partial class MainWindow : Window
         //（此时窗口尚未绘制过，Hide 不会产生可见的闪烁）。
         try { AppWindow.Hide(); } catch { }
 
+        try { AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "neo.ico")); }
+        catch (Exception ex) { App.StartupMark("窗口图标加载失败：" + ex.Message); }
+
         App.StartupMark("MainWindow 构造函数：已隐藏窗口");
         _navItems = new[]
         {
@@ -83,9 +81,13 @@ public sealed partial class MainWindow : Window
             (NavSubs, "subs"),
             (NavSubLog, "sublog"),
             (NavSettings, "settings"),
-            (NavRule, "rule"),
             (NavLog, "log"),
         };
+
+        if (Ui.NativeUiReview.Enabled && Environment.GetCommandLineArgs().Contains("--html-shell"))
+        { if(Environment.GetCommandLineArgs().Contains("--desktop-lifecycle"))InitializeHtmlDesktop();else InitializeHtmlReview(); return; }
+        if (Ui.NativeUiReview.Enabled) { InitializeReviewWindow(); return; }
+        if (!Environment.GetCommandLineArgs().Contains("--legacy-ui")) { InitializeHtmlDesktop(); return; }
 
         // `.nav:hover{background:var(--track);color:var(--text1)}`。
         // 为什么用 Storyboard 而不是 XAML 的 PointerOver 视觉态：
@@ -110,6 +112,7 @@ public sealed partial class MainWindow : Window
 
         SetupWindow();
         SetupTray();
+        FloatingTrafficService.Initialize(DispatcherQueue, ShowMainWindow);
         // 亮色主题已移除：启动即固定暗色。
         // 原先这里读 AppState.PeekThemeMode() 决定亮/暗/跟随系统，
         // 但旧的 state.json 里可能存着 "light" 或 "system"，会把界面切到亮色 —— 现在不再允许。
@@ -144,6 +147,9 @@ public sealed partial class MainWindow : Window
         App.ExitRequested = ExitForRelaunch;
         // 交给后台线程按 1 秒节奏采样，UI 线程只读缓存，界面不再被同步子进程调用冻结。
         StatsSampler.Start();
+        NetworkDiagnosticsService.Init();
+        CurrentExitService.Init();
+        _ = ConnectionService.WarmVersionCacheAsync();
         FailoverService.Init(a => DispatcherQueue.TryEnqueue(() =>
         {
             // 退出中：不要再执行投递过来的 UI 动作（队列/控件正在销毁）。
@@ -157,7 +163,7 @@ public sealed partial class MainWindow : Window
             // 最小化到托盘时状态条看不见，必须另发系统通知，否则用户仍然不知道节点已切换
             try { TrayIcon.ShowNotification("neo 自动故障转移", msg); } catch { }
         });
-        _coreTimer.Tick += (_, _) => { if (App.IsShuttingDown) return; UpdateCoreCard(); UpdateUsageCard(); };
+        _coreTimer.Tick += (_, _) => { if (App.IsShuttingDown) return; UpdateUsageCard(); };
         _coreTimer.Start();
         _autoTimer.Tick += async (_, _) =>
         {
@@ -190,6 +196,7 @@ public sealed partial class MainWindow : Window
     //   这里在切走 45 秒后把非当前页从可视树移除并置空（页面自己退订静态事件），
     //   再点回去时重新创建（惰性创建机制本来就在，代价 <100ms）。
     private Microsoft.UI.Xaml.DispatcherTimer? _pageIdleTimer;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _backgroundReleaseTimer;
 
     private void SetupWindow()
     {
@@ -232,6 +239,7 @@ public sealed partial class MainWindow : Window
 
             AppWindow.Closing += OnAppWindowClosing;
             AppWindow.Changed += OnAppWindowChanged;
+            Activated += (_, _) => SchedulePresentationVisibilitySync();
 
             var tb = AppWindow.TitleBar;
             tb.ButtonBackgroundColor = Colors.Transparent;
@@ -321,8 +329,19 @@ public sealed partial class MainWindow : Window
             catch { }
         }
 
-        if (args.DidVisibilityChange || args.DidPresenterChange)
-            SyncConnPageWindowVisibility();
+        SchedulePresentationVisibilitySync();
+    }
+
+    private bool _presentationVisibilitySyncQueued;
+    private void SchedulePresentationVisibilitySync()
+    {
+        SyncConnPageWindowVisibility();
+        // AppWindow can publish a restore event before IsVisible/presenter state
+        // reflects the new window state. Recheck once after that native event unwinds.
+        if (_presentationVisibilitySyncQueued || App.IsShuttingDown) return;
+        _presentationVisibilitySyncQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() => { _presentationVisibilitySyncQueued = false; if (!App.IsShuttingDown) SyncConnPageWindowVisibility(); }))
+            _presentationVisibilitySyncQueued = false;
     }
 
     /// 把「窗口确实可见（非最小化）」同步给连接页。
@@ -340,9 +359,44 @@ public sealed partial class MainWindow : Window
         catch { visible = true; }
 
         if (visible == _connPageVisible) return;
+        ApplyPresentationVisibility(visible);
+    }
+
+    private void ApplyPresentationVisibility(bool visible)
+    {
+        UiActivity.SetVisible(visible);
         _connPageVisible = visible;
         try { _pageConn?.OnWindowVisibilityChanged(visible); } catch { }
+        if (visible)
+        {
+            _backgroundReleaseTimer?.Stop();
+            if (App.IsShuttingDown) return;
+            // Background disposal also includes the formerly selected page. Rebuild its shell
+            // on return; retaining a page key must never leave an empty content host.
+            if (CreatedPage(_currentPage) == null) NavigateTo(_currentPage);
+            else if (_currentPage == "nodes") _pageNodes?.EnsureTiles();
+            _coreTimer.Start();
+            _pageIdleTimer?.Start();
+        }
+        else
+        {
+            _coreTimer.Stop(); _pageIdleTimer?.Stop();
+            StopPageAnim(_pageInTarget); _pageInTarget = null;
+            _backgroundReleaseTimer ??= DispatcherQueue.CreateTimer();
+            _backgroundReleaseTimer.Interval = TimeSpan.FromSeconds(3);
+            _backgroundReleaseTimer.IsRepeating = false;
+            if (!_backgroundReleaseHooked)
+            {
+                _backgroundReleaseHooked = true;
+                _backgroundReleaseTimer.Tick += (_, _) =>
+                {
+                    if (!_connPageVisible && !App.IsShuttingDown) ReleaseIdlePages(force: true);
+                };
+            }
+            _backgroundReleaseTimer.Start();
+        }
     }
+    private bool _backgroundReleaseHooked;
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {
@@ -353,6 +407,7 @@ public sealed partial class MainWindow : Window
             // 真正退出：同样先立标志再停后台活动。此处是同步回调，不能 await，
             // 用不阻塞的 Stop()（门控已保证迟到的投递会放弃）。
             App.IsShuttingDown = true;
+            try { StartupSpeedTest.Stop(); } catch { }
             try { StatsSampler.Stop(); } catch { }
             try { FailoverService.Stop(); } catch { }
             try { StopOwnTimersAndDisconnect(); } catch { }
@@ -365,6 +420,7 @@ public sealed partial class MainWindow : Window
             //（hWnd 类名 Microsoft.UI.Content.PopupWindowSiteBridge，"主机弹出窗口"），
             // 它会让「最后一个窗口关闭 → 退出消息循环」的默认行为不成立，从而留下僵尸进程。
             // 这里显式要求退出，语义也更明确：这个分支的意图就是「关掉窗口 = 结束程序」。
+            try { LogBus.Flush(TimeSpan.FromSeconds(2)); } catch { }
             try { Application.Current.Exit(); } catch { }
             return;
         }
@@ -379,14 +435,14 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void HideToTray()
     {
+        if(_htmlDesktop){_htmlWindow?.Hide();return;}
         try { AppWindow.Hide(); } catch { }
 
         // 隐藏到托盘后用户看不到任何页面：立刻释放全部页面（含当前页），
         // 把节点页那 30MB+ 的卡片树还给系统；再点托盘图标会重新惰性创建。
         try { ReleaseIdlePages(force: true); } catch { }
 
-        _connPageVisible = false;
-        try { _pageConn?.OnWindowVisibilityChanged(false); } catch { }
+        ApplyPresentationVisibility(false);
 
         // 窗口隐藏后这些 UI 谁看不见，但 _coreTimer 仍每 2 秒跑：
         // UpdateCoreCard()（内含 Process.GetProcessById + 读 WorkingSet64）、
@@ -400,6 +456,7 @@ public sealed partial class MainWindow : Window
 
     private void SaveWindowBounds()
     {
+        if(_htmlDesktop){SaveHtmlBounds();return;}
         try
         {
             // 最大化时不要把「铺满屏幕的边界」写成还原态，否则用户点还原会得到一个和屏幕
@@ -558,11 +615,18 @@ public sealed partial class MainWindow : Window
 
     private void ShowMainWindow()
     {
-        try { AppWindow.Show(); } catch { }
-        Activate();
+        if (App.IsShuttingDown) return;
+        if(_htmlDesktop){if(_htmlWindow?.Core==null)_=RestoreHtmlContentAsync();else _htmlWindow.Show();_htmlBridge?.Publish();return;}
+        try
+        {
+            AppWindow.Show(!Ui.NativeUiReview.Enabled);
+            if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+                presenter.Restore(!Ui.NativeUiReview.Enabled);
+        }
+        catch { }
+        if (!Ui.NativeUiReview.Enabled) Activate();
 
-        _connPageVisible = true;
-        try { _pageConn?.OnWindowVisibilityChanged(true); } catch { }
+        ApplyPresentationVisibility(true);
 
         //   隐藏分支里的 Stop 一一对应）。不放在这里的话，最小化到托盘再唤回后
         //   内核卡片内存与用量卡片就再也不会刷新了。
@@ -973,6 +1037,7 @@ public sealed partial class MainWindow : Window
     private RulePage? _pageRule;
     private LogPage? _pageLog;
     private SubLogPage? _pageSubLog;
+    private NetworkDiagnosticsPage? _pageNetwork;
 
     private FrameworkElement EnsurePage(string key) => key switch
     {
@@ -982,6 +1047,7 @@ public sealed partial class MainWindow : Window
         "settings" => EnsureSettingsPage(),
         "rule" => EnsureRulePage(),
         "log" => EnsureLogPage(),
+        "network" => EnsureNetworkPage(),
         _ => EnsureConnPage(),
     };
 
@@ -993,6 +1059,7 @@ public sealed partial class MainWindow : Window
         "settings" => _pageSettings,
         "rule" => _pageRule,
         "log" => _pageLog,
+        "network" => _pageNetwork,
         _ => _pageConn,
     };
 
@@ -1001,11 +1068,23 @@ public sealed partial class MainWindow : Window
         if (_pageConn != null) return _pageConn;
         var p = new ConnectionPage { Visibility = Visibility.Collapsed };
         p.OpenNodesRequested += (_, _) => NavigateTo("nodes");
+        p.OpenNetworkDiagnosticsRequested += run => { if (run) _ = NetworkDiagnosticsService.RunAsync(); else _ = ShowNetworkDetailsAsync(); };
+        p.OpenLogRequested += (_, _) => NavigateTo("log");
         p.ConnectionFailed += (_, msg) => ShowStatusText(msg);
         PageHost.Children.Add(p);
         _pageConn = p;
         // 首屏页在窗口可见性变化之前创建，建完同步一次（默认可见 = true）。
         try { p.OnWindowVisibilityChanged(_connPageVisible); } catch { }
+        return p;
+    }
+
+    private NetworkDiagnosticsPage EnsureNetworkPage()
+    {
+        if (_pageNetwork != null) return _pageNetwork;
+        var p = new NetworkDiagnosticsPage { Visibility = Visibility.Collapsed };
+        p.BackRequested += (_, _) => NavigateTo("conn");
+        PageHost.Children.Add(p);
+        _pageNetwork = p;
         return p;
     }
 
@@ -1042,6 +1121,8 @@ public sealed partial class MainWindow : Window
         var p = new SettingsPage { Visibility = Visibility.Collapsed };
         // 订阅点从 MainWindow 构造里挪到创建点（页面不再于启动时创建）。
         p.OpenRulesRequested += (_, _) => NavigateTo("rule");
+        p.OpenNetworkDiagnosticsRequested += (_, _) => _ = ShowNetworkDetailsAsync();
+        p.GroupChanged += UpdateSettingsGroupVisuals;
         PageHost.Children.Add(p);
         _pageSettings = p;
         // Loaded 里还会再刷一次（幂等）；先刷一次，保证首帧状态正确。
@@ -1070,29 +1151,35 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// 空闲释放：把「已创建、但当前不在看」的页从可视树移除并置空（连接页永不释放）。
-    /// 触发点：① 切页 45 秒后；② 窗口隐藏到托盘时（force）。释放后再次导航会重新创建。
+    /// Other pages expire after 45 seconds. The virtualized node page stays warm
+    /// while the window is in use; tray/minimize releases its native containers.
     /// </summary>
     private void ReleaseIdlePages(bool force = false)
     {
         try { _pageIdleTimer?.Stop(); } catch { }
+        if (force) { try { _pageConn?.ReleaseChartSurface(); } catch { } }
         try { LogBus.App($"内存优化：开始释放空闲页面（force={force}，当前页={_currentPage}）", "Debug"); } catch { }
-        foreach (var key in new[] { "nodes", "subs", "sublog", "settings", "rule", "log" })
+        foreach (var key in new[] { "nodes", "subs", "sublog", "settings", "network", "rule", "log" })
         {
             if (key == _currentPage)
             {
                 // force（隐藏到托盘）时当前页也可以释放——用户看不到它；回来导航会重建。
                 if (!force || key == "conn") continue;
             }
-            // 节点页：先只丢卡片树（实测整页移除对工作集无效，卡片才是大头），
-            // 只有隐藏到托盘（force）时才整页释放。
-            if (key == "nodes" && !force)
+            // Node view models are small; retain them even at the tray boundary.
+            if (key == "nodes")
             {
-                try { _pageNodes?.ReleaseTiles(); } catch { }
+                // Keep the virtualized list warm while the window is in use. Recreating
+                // its containers every 45 seconds moves idle savings onto the next click.
+                // Tray/minimize remains the real visual-resource disposal boundary.
+                if (force) { try { _pageNodes?.ReleaseTiles(); } catch { } }
                 continue;
             }
             ReleasePage(key);
         }
-
+        // Releasing native XAML trees leaves managed wrappers for finalization. Request one
+        // nonblocking, optimized collection at this real disposal boundary, never on navigation.
+        if (force) GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false, compacting: false);
     }
 
     private void ReleasePage(string key)
@@ -1109,6 +1196,7 @@ public sealed partial class MainWindow : Window
                 case "settings": _pageSettings?.Release(); break;
                 case "rule": _pageRule?.Release(); break;
                 case "log": _pageLog?.Release(); break;
+                case "network": _pageNetwork?.Release(); break;
             }
         }
         catch { }
@@ -1120,7 +1208,6 @@ public sealed partial class MainWindow : Window
         // 清空 Content 让 XAML 树立即断开（重新导航时会重新构造）。
         try { if (page is Microsoft.UI.Xaml.Controls.ContentControl cc) cc.Content = null; } catch { }
         try { LogBus.App($"内存优化：已释放页面 {key}（PageHost 剩余 {PageHost.Children.Count} 个）", "Debug"); } catch { }
-        try { LogBus.App($"内存优化：已释放页面 {key}（PageHost 剩余 {PageHost.Children.Count} 个）", "Info"); } catch { }
         switch (key)
         {
             case "nodes": _pageNodes = null; break;
@@ -1129,7 +1216,79 @@ public sealed partial class MainWindow : Window
             case "settings": _pageSettings = null; break;
             case "rule": _pageRule = null; break;
             case "log": _pageLog = null; break;
+            case "network": _pageNetwork = null; break;
         }
+    }
+
+    private bool _settingsExpanded;
+    private string _settingsGroup = "general";
+    private Ui.SidebarReveal? _settingsRevealMotion;
+    private Action? _pendingSettingsOpen;
+
+    private void OnRootLayoutSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        Ui.AdaptiveText.UpdateViewport(e.NewSize.Width, e.NewSize.Height);
+        var scale = Ui.AdaptiveText.Scale;
+        SidebarColumn.Width = new GridLength(e.NewSize.Width <= 1060 ? 196 : 236);
+        for (var i = 0; i < SettingsRevealContent.RowDefinitions.Count; i++)
+            SettingsRevealContent.RowDefinitions[i].Height = new GridLength(Math.Ceiling(i == 0 ? 18 * scale : Math.Max(36, 11.5 * scale * 1.35 + 14)));
+        UpdateSettingsGroupVisuals();
+        if (_settingsExpanded) SetSettingsExpanded(true, false);
+        var compactSidebar = e.NewSize.Height < 740;
+        SidebarUsageDetail.Visibility = compactSidebar ? Visibility.Collapsed : Visibility.Visible;
+        if (UsageTodayText.Parent is StackPanel number)
+        {
+            Grid.SetRow(number, compactSidebar ? 0 : 1);
+            number.HorizontalAlignment = compactSidebar ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+            Ui.AdaptiveText.SetBaseSize(UsageTodayText, compactSidebar ? 14 : 18);
+        }
+    }
+
+    private void SetSettingsExpanded(bool expanded, bool animate = true, Action? opened = null)
+    {
+        if (!expanded) _pendingSettingsOpen = null;
+        else if (opened != null) _pendingSettingsOpen = opened;
+        _settingsExpanded = expanded;
+        UpdateSettingsGroupVisuals();
+        SettingsReveal.Visibility = Visibility.Visible;
+        SettingsReveal.IsHitTestVisible = expanded;
+        foreach (var child in SettingsRevealContent.Children.OfType<Button>()) child.IsTabStop = expanded;
+        SettingsRevealContent.Measure(new Windows.Foundation.Size(Math.Max(1, SettingsReveal.ActualWidth), double.PositiveInfinity));
+        var extent = SettingsRevealContent.DesiredSize.Height + 8;
+        _settingsRevealMotion ??= new Ui.SidebarReveal(SettingsReveal, SettingsRevealContent, SidebarUsageCard);
+        _settingsRevealMotion.Set(expanded, extent, animate, () => CompleteSettingsReveal(expanded));
+    }
+
+    private void CompleteSettingsReveal(bool expanded)
+    {
+        if (!expanded) return;
+        var opened = _pendingSettingsOpen;
+        _pendingSettingsOpen = null;
+        // A resize may settle the reveal while the layout pass is still active.
+        // Keep the pending group instead of dropping the open callback.
+        if (opened != null) DispatcherQueue.TryEnqueue(() => { if (_settingsExpanded && _currentPage == "settings") opened(); });
+    }
+
+    private void OpenLastSettingsGroup()
+    {
+        if (!_settingsExpanded || _currentPage != "settings") return;
+        var button = SettingsRevealContent.Children.OfType<Button>().FirstOrDefault(b => b.Tag as string == _settingsGroup);
+        if (button != null) OnSettingsGroupClick(button, null!);
+    }
+
+    private void OnSettingsGroupClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string group } button) return;
+        var settings = EnsureSettingsPage();
+        if (_currentPage == "settings" && settings.OpenGroup == group)
+        {
+            settings.HideDetails(); UpdateSettingsGroupVisuals(); return;
+        }
+        _settingsGroup = group;
+        if (_currentPage != "settings") NavigateTo("settings");
+        settings.ShowGroup(group, button, true);
+        Ui.PillFeedback.Play(button);
+        UpdateSettingsGroupVisuals();
     }
 
     private void OnNavClick(object sender, RoutedEventArgs e)
@@ -1137,19 +1296,25 @@ public sealed partial class MainWindow : Window
         if (sender is Button b && b.Tag is string key &&
             key is "conn" or "nodes" or "subs" or "sublog" or "settings" or "rule" or "log")
         {
-            NavigateTo(key);
+            if (key == "settings")
+            {
+                var expanded = _currentPage != "settings" || !_settingsExpanded;
+                if (_currentPage != "settings") NavigateTo("settings");
+                if (!expanded) _pageSettings?.HideDetails(false);
+                SetSettingsExpanded(expanded, true, expanded ? OpenLastSettingsGroup : null);
+            }
+            else NavigateTo(key);
         }
     }
 
     private void NavigateTo(string page)
     {
-        //   用户报「点首页→节点直接一帧出现」。除了时长/曲线不到位，
-        //   「方向感」缺失也是主因：旧实现只做 translateY(10px)、X 不动，
-        //   换页语意本就是左右换，不体现方向就只剩「淡一下」的观感。
-        var from = Array.IndexOf(_navOrder, _currentPage);
-        var to = Array.IndexOf(_navOrder, page);
-        if (from >= 0 && to >= 0 && to != from) _navDir = to > from ? 1 : -1;
-
+        if (page != "settings" && _settingsExpanded) { _pageSettings?.HideDetails(false); SetSettingsExpanded(false); }
+        if (_currentPage == page && CreatedPage(page) is { Visibility: Visibility.Visible })
+        {
+            if (page == "nodes") _pageNodes?.EnsureTiles();
+            return;
+        }
         _currentPage = page;
 
         // 切页就把「空闲释放」倒计时重置（回访的页面立即重新计时）。
@@ -1160,7 +1325,10 @@ public sealed partial class MainWindow : Window
         foreach (var key in _navOrder)
         {
             if (CreatedPage(key) is { } created)
+            {
+                if (key != page && created is SubsPage subscriptions) subscriptions.OnPageHidden();
                 created.Visibility = key == page ? Visibility.Visible : Visibility.Collapsed;
+            }
         }
 
         PageTitleText.Text = page switch
@@ -1170,6 +1338,7 @@ public sealed partial class MainWindow : Window
             "subs" => "订阅",
             "sublog" => "订阅日志",
             "settings" => "设置",
+            "network" => "网络检测详情",
             "rule" => "规则",
             "log" => "日志",
             _ => "连接",
@@ -1190,7 +1359,8 @@ public sealed partial class MainWindow : Window
         }
         catch { }
 
-        AnimatePageIn(target, _navDir);
+        AnimatePageIn(target);
+        if (target is SubsPage subscriptionsPage) subscriptionsPage.OnPageShown();
     }
 
     private static Color C_Hover(bool dark)
@@ -1248,72 +1418,26 @@ public sealed partial class MainWindow : Window
         catch { }
     }
 
-    /// 起因：用户「软件动画效果不是很好，点击首页--节点，没有弹出动画，直接一帧出现」。
-    /// 旧实现为什么看起来"根本没有动画"——三条叠在一起：
-    ///   ① 只做**垂直**位移 10px、X 方向不动。但本应用 6 个页面在内容区是**横向**排列的
-    ///      纵向 10px 又正好和"内容比视口高、本来就要滚"混在一起，观感上等于没动。
-    ///   ② 曲线用 ExponentialEase(Exponent=3, EaseOut) 去近似 cubic-bezier(.2,.8,.2,1)。
-    ///      该指数曲线在头 30% 的时间里已经走完约 70% 路程，剩余位移几乎全挤进头两帧 ——
-    ///      人眼只捕捉到"已经到位"，中间过程被压缩没了。
-    ///      首帧与后续帧之间容易出现可感知的断裂。
-    /// 现在改为：**方向由导航次序决定**（向右切页从右侧滑入，向左则从左侧）+
-    /// 更贴合换页语意的时长 + 官方曲线 + Composition。
-    ///   · 时长 260 ms：WinUI 标准档为 ControlFastAnimationDuration 167 ms、
-    ///     整页切换取 250 ms 档稍加一点，既不拖沓也不抢。
-    ///   · 曲线 cubic-bezier(0, 0, 0, 1) = Fluent「Fast Out, Slow In」，同一页面明确写给
-    ///     "objects or UI entering the scene, either navigating or spawning"。
-    ///     WinUI 的 Storyboard 缓动类都只有单一控制点，**表达不了这条曲线**；
-    ///     改用 Composition 的 CreateCubicBezierEasingFunction —— 参数与 CSS 的
-    ///     cubic-bezier(p1x,p1y,p2x,p2y) 完全同构，两个控制点都能给。
-    ///   · 位移 22 px：Fluent 的 drill-in 用 22% 视口位移（1920 屏 ≈ 422 px，对本应用过多），
-    ///     Material 3 的共享轴最大 30%；本应用是"同一窗口换标签页"而非钻入新层级，
-    ///     故取其下限量级的 22 px（260 ms 内可辨认，且不会把内容甩出可视区）。
-    /// 为什么用 Composition 而不是 Storyboard：
-    ///   合成器线程驱动，不占 UI 线程；且同一个视觉对象上 StartAnimation 同名属性会
-    ///   **覆盖**上一条动画，不存在 Storyboard 越叠越多、永不回收的问题。
-    /// 为什么用 "Translation" 而不是 visual.Offset：
-    ///   XAML 元素的 Offset 由布局系统在每次布局时回写，动画期间父容器一旦重新布局
-    ///   （切页时 Visibility 变化必然触发），动画会被布局结果顶掉。
-    ///   ElementCompositionPreview.SetIsTranslationEnabled + Properties["Translation"] 是
-    private void AnimatePageIn(FrameworkElement? el, int dir)
+    // neo-all.html / js/app-router.js: 8px upward, 180ms, (.22,.7,.3,1).
+    // Settings has a 140ms fade only; its own surface owns the growth motion.
+    private void AnimatePageIn(FrameworkElement? el)
     {
-        if (el == null || !_rootLoaded) return;
-        try
-        {
-            // 上一页若还有动画在跑，先停掉并复位。
-            // 不这么做：连点导航时上一页会停在半路（位移未归零、透明度 0.4），
-            // 再切回来就是一页残缺界面 —— 改造前因每次都新建 Storyboard 反而不存在此问题，
-            // 属于"改成 Composition 后必须一并补上"的配套项。
-            StopPageAnim(_pageInTarget);
-            _pageInTarget = el;
-
-            Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(el, true);
-            var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(el);
-            var compositor = visual.Compositor;
-
-            // Fluent「Fast Out, Slow In」cubic-bezier(0,0,0,1)
-            var ease = compositor.CreateCubicBezierEasingFunction(
-                new System.Numerics.Vector2(0f, 0f), new System.Numerics.Vector2(0f, 1f));
-
-            var dur = TimeSpan.FromMilliseconds(260);
-            var dx = 22f * (dir >= 0 ? 1f : -1f);
-
-            visual.Properties.InsertVector3("Translation", new System.Numerics.Vector3(dx, 0f, 0f));
-            visual.Opacity = 0f;
-
-            var slide = compositor.CreateVector3KeyFrameAnimation();
-            slide.Duration = dur;
-            slide.InsertKeyFrame(1f, System.Numerics.Vector3.Zero, ease);
-            visual.StartAnimation("Translation", slide);
-
-            // 移位与淡入用**同一条**曲线、同一时长：起步处位移最快、透明度也涨得最快，
-            // 二者速度同步，观感是"滑进来"而不是"先淡后滑"（那会显得分两步）。
-            var fade = compositor.CreateScalarKeyFrameAnimation();
-            fade.Duration = dur;
-            fade.InsertKeyFrame(1f, 1f, ease);
-            visual.StartAnimation("Opacity", fade);
-        }
-        catch { }
+        StopPageAnim(_pageInTarget);
+        _pageInTarget = el;
+        if (el == null || !_rootLoaded || !Ui.PrototypeMotion.Enabled) return;
+        Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.SetIsTranslationEnabled(el, true);
+        var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(el);
+        var compositor = visual.Compositor;
+        var ease = compositor.CreateCubicBezierEasingFunction(
+            new System.Numerics.Vector2(.22f, .7f), new System.Numerics.Vector2(.3f, 1f));
+        var duration = TimeSpan.FromMilliseconds(_currentPage == "settings" ? 140 : 180);
+        visual.Properties.InsertVector3("Translation", new System.Numerics.Vector3(0, _currentPage == "settings" ? 0 : 8, 0));
+        visual.Opacity = 0;
+        var move = compositor.CreateVector3KeyFrameAnimation(); move.Duration = duration;
+        move.InsertKeyFrame(1, System.Numerics.Vector3.Zero, ease);
+        var fade = compositor.CreateScalarKeyFrameAnimation(); fade.Duration = duration;
+        fade.InsertKeyFrame(1, 1, ease);
+        visual.StartAnimation("Translation", move); visual.StartAnimation("Opacity", fade);
     }
 
     /// <summary>停掉某页残留的切入动画并把位移/透明度复位（配合 AnimatePageIn 使用）。</summary>
@@ -1338,7 +1462,7 @@ public sealed partial class MainWindow : Window
 
         foreach (var (btn, key) in _navItems)
         {
-            bool on = key == _currentPage;
+            bool on = key == _currentPage || (key == "settings" && _currentPage == "network");
 
             // 原先这里是 `var clear = new SolidColorBrush(...)` 建一次，
             // 然后 `btn.Background = on ? selBg : clear` 把它赋给所有未选中项 ——
@@ -1350,6 +1474,17 @@ public sealed partial class MainWindow : Window
                 on ? (_dark ? C_DarkAccentSoft : C_LightAccentSoft) : Colors.Transparent);
             btn.Foreground = on ? accent : text2;
             btn.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+            // The labels are siblings over the native button so its own
+            // Foreground does not reach them. Color the left overlay explicitly.
+            if (btn.Parent is Grid row)
+                foreach (var overlay in row.Children.OfType<Grid>())
+                    foreach (var labelGroup in overlay.Children.OfType<StackPanel>().Where(g => Grid.GetColumn(g) == 0))
+                        foreach (var label in labelGroup.Children.OfType<TextBlock>())
+                        {
+                            label.Foreground = on ? accent : text2;
+                            if (label.FontFamily.Source != "Segoe Fluent Icons")
+                                label.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                        }
         }
     }
 
@@ -1376,15 +1511,6 @@ public sealed partial class MainWindow : Window
                 ConnectionService.NotifyUser("上次异常退出留下 TUN 残留待清理：设置 → 通用 → 清理内核残留");
         }
         catch { }
-        try
-        {
-            BrandMarkBox.Background = new Microsoft.UI.Xaml.Media.ImageBrush
-            {
-                ImageSource = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri("ms-appx:///Assets/neo-mark.png")),
-                Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
-            };
-        }
-        catch { }
         UpdateSidebar();
         UpdateUsageCard();
         GlassTuner.ApplyFixed();
@@ -1397,12 +1523,6 @@ public sealed partial class MainWindow : Window
         }
         catch { }
 
-        try
-        {
-            foreach (var (btn, _) in _navItems)
-                Ui.Ripple.Attach(btn, RippleLayer);
-        }
-        catch { }
         App.StartupMark("同步初始化全部完成");
 
         // 消除「启动黑壳」的最终方案：窗口一步到位放在目标位置，先用**分层窗口全透明**
@@ -1581,7 +1701,7 @@ public sealed partial class MainWindow : Window
         {
             if (!AppState.State.AutoUpdate) return;
             if (string.IsNullOrWhiteSpace(AppState.State.SubscriptionUrl)) return;
-            var hours = Math.Clamp(AppState.State.AutoUpdateHours, 1, 24);
+            var hours = Math.Clamp(AppState.State.AutoUpdateHours, 1, 720);
             if (AppState.LastFetchLocal is { } t && DateTime.Now - t < TimeSpan.FromHours(hours)) return;
             await AppState.RefreshSubscriptionAsync();
             LogBus.App($"订阅已自动更新（{hours} 小时计划）");
@@ -1613,7 +1733,7 @@ public sealed partial class MainWindow : Window
 
             // 不弹窗、不强制跳转：设置页显示「发现新版本」与下载按钮，托盘气泡提示一次。
             // （用户在玩游戏 / 全屏 / TUN 下也不会被打断；详情等他主动点设置页。）
-            try { EnsureSettingsPage().NotifyUpdateAvailable(r); }
+            try { if(!_htmlDesktop)EnsureSettingsPage().NotifyUpdateAvailable(r); }
             catch (Exception ex) { LogBus.App($"更新提示写入设置页失败：{ex.GetType().Name}", "Warning"); }
             ShowStatusText($"发现新版本 {r.LatestTag}（设置 → 通用 可更新）");
             try { TrayIcon.ShowNotification("neo 发现新版本", $"neo {r.LatestTag} 已发布，可在「设置 → 通用」更新"); } catch { }
@@ -1692,32 +1812,7 @@ public sealed partial class MainWindow : Window
         UpdateTrayMenu();
     }
 
-    private void UpdateCoreCard()
-    {
-        bool running = ConnectionService.IsConnected;
-        CoreStatusText.Text = running ? "运行中" : "未运行";
-        CoreStatusText.Foreground = running
-            ? ThemeUtil.Get("NeoGreen", Color.FromArgb(255, 0x16, 0xA3, 0x4A))
-            : ThemeUtil.Get("NeoText2", Color.FromArgb(255, 0x6B, 0x72, 0x80));
-        CoreStatusBadge.Background = running
-            ? ThemeUtil.Get("NeoGreenSoft", Color.FromArgb(0x1A, 0x16, 0xA3, 0x4A))
-            : ThemeUtil.Get("NeoChipBg", Color.FromArgb(0x0C, 0x1A, 0x1D, 0x21));
-        int? mem = ConnectionService.CoreMemoryMb;
-        CoreMemText.Text = mem is { } m ? $"{m} MB" : "—";
-
-        if (ConnectionService.CoreKind == "sing-box")
-        {
-            SideCoreVersion.Text = ConnectionService.SingBoxVersion is { } sv ? "sing-box " + sv : "sing-box —";
-        }
-        else
-        {
-            // 内核被一键更新替换后（ResetXrayVersion）下一次探测会拿到新版本，这里必须随之刷新；
-            // 旧守卫只在占位符状态写入一次，导致更新后侧栏永远显示旧版本。
-            var ver = ConnectionService.XrayVersion;
-            if (ver != null && SideCoreVersion.Text != "xray " + ver)
-                SideCoreVersion.Text = "xray " + ver;
-        }
-    }
+    private void UpdateCoreCard() { /* Core telemetry is rendered once on the connection page. */ }
 
     public void ExitForUpdate()
     {
@@ -1748,12 +1843,14 @@ public sealed partial class MainWindow : Window
         // 而不是去碰正在销毁的 DispatcherQueue（那会以不可捕获的 fail-fast 终止进程）。
         App.IsShuttingDown = true;
 
+        try { StartupSpeedTest.Stop(); } catch { }
         try { StatsSampler.Stop(); } catch { }
         try { FailoverService.Stop(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
         try { DisposeTrayIcon(); } catch { }
         try { RunStateMarker.Clear(); } catch { }
 
+        try { LogBus.Flush(TimeSpan.FromSeconds(2)); } catch { }
         try { Application.Current.Exit(); } catch { }
     }
 
@@ -1766,6 +1863,7 @@ public sealed partial class MainWindow : Window
         App.IsShuttingDown = true;
         try { LogBus.App("neo exit（托盘退出）", "Info"); } catch { }
 
+        try { StartupSpeedTest.Stop(); } catch { }
         try { StatsSampler.Stop(); } catch { }
         try { await FailoverService.StopAsync(); } catch { }
         try { StopOwnTimersAndDisconnect(); } catch { }
@@ -1773,12 +1871,16 @@ public sealed partial class MainWindow : Window
         try { SaveWindowBounds(); } catch { }
         try { RunStateMarker.Clear(); } catch { }
 
+        try { await LogBus.FlushAsync(TimeSpan.FromSeconds(2)); } catch { }
         try { Application.Current.Exit(); } catch { }
     }
 
     /// <summary>停掉本窗口自己的计时器、断开连接、落盘用量。</summary>
     private void StopOwnTimersAndDisconnect()
     {
+        try{_htmlEvictionTimer?.Stop();if(_htmlDesktop)SaveHtmlBounds();_htmlBridge?.Dispose();_htmlWindow?.Dispose();}catch{}
+        try { FloatingTrafficService.Shutdown(); } catch { }
+        try { _backgroundReleaseTimer?.Stop(); _pageIdleTimer?.Stop(); } catch { }
         try { _traySpinTimer?.Stop(); } catch { }
         try { _coreTimer.Stop(); } catch { }
         try { _autoTimer.Stop(); } catch { }
@@ -1795,6 +1897,8 @@ public sealed partial class MainWindow : Window
         try { _pageNodes?.StopTimers(); } catch { }
         try { _pageRule?.StopTimers(); } catch { }
         try { _pageSettings?.StopTimers(); } catch { }
+        try { _pageNetwork?.Release(); } catch { }
+        try { NetworkDiagnosticsService.Cancel(); } catch { }
 
         try { ConnectionService.Disconnect("程序退出"); } catch { }
         try { UsageTracker.Flush(); } catch { }
@@ -1817,15 +1921,15 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    ///         时长 .3s，曲线 cubic-bezier(.2,.8,.2,1)
-    ///   这里：位移 **20px** 从下往上滑入 + 淡入，时长 **300ms**，ExponentialEase 近似原曲线
-    ///         （起步快、尾部缓 —— WinUI 的 CubicEase 只有一个控制点，无法完整复刻）。
+    /// Notifications occupy their own row; fade in without translating into page content.
     private void ShowStatusText(string s)
     {
+        if(_htmlDesktop){_htmlBridge?.Notify(s);return;}
         StatusMain.Text = s;
         StatusDot.Fill = new SolidColorBrush(Color.FromArgb(255, 0x98, 0xA0, 0xAA));
         StatusToast.Visibility = Visibility.Visible;
         _toastTimer.Stop();
+        _toastTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(s.Length / 8.0, 4, 12));
         _toastTimer.Start();
         AnimateToastIn();
     }
@@ -1834,8 +1938,6 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var tt = StatusToast.RenderTransform as TranslateTransform ?? new TranslateTransform();
-            StatusToast.RenderTransform = tt;
             StatusToast.Opacity = 0;
 
             var sb = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
@@ -1849,18 +1951,7 @@ public sealed partial class MainWindow : Window
             Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fade, StatusToast);
             Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fade, "Opacity");
 
-            var slide = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
-            {
-                From = 20, To = 0,
-                Duration = TimeSpan.FromMilliseconds(300),
-                EasingFunction = new Microsoft.UI.Xaml.Media.Animation.ExponentialEase
-                { Exponent = 3, EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut },
-            };
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(slide, tt);
-            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(slide, "Y");
-
             sb.Children.Add(fade);
-            sb.Children.Add(slide);
             sb.Begin();
         }
         catch { }

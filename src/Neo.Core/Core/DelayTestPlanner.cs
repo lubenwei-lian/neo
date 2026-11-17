@@ -16,8 +16,7 @@ public enum DelayScheme { TcpHandshake, RealConnection }
 ///   · UDP 类（TUIC/Hysteria2/WireGuard/mKCP）→ 方案 2：起临时内核真连；
 ///   · Clash 直通 / 自定义配置 / 无效节点 → 不测。
 ///
-/// 方案 2 里再分两层：先按节点声明的 allow_insecure 严格校验证书；只有内核明确报
-/// 「证书不受信」且节点本身没要求跳过时，才放宽一次并记录原因（不静默降级）。
+/// 两类自动测速均遵守节点声明的证书策略；证书不受信时只报告失败，不自动放宽。
 /// </summary>
 public sealed record DelayPlan(
     DelayScheme Scheme,
@@ -31,6 +30,7 @@ public static class DelayTestPlanner
 {
     public static DelayTransport TransportOf(NodeItem n) =>
         n.Protocol is NodeProtocol.Hysteria2 or NodeProtocol.TUIC or NodeProtocol.WireGuard
+            || n.IsNaive && n.Extras.TryGetValue("naive_transport", out var naiveTransport) && naiveTransport == "quic"
             || (n.Network ?? "").Trim().ToLowerInvariant() is "kcp" or "mkcp"
             ? DelayTransport.Udp
             : DelayTransport.Tcp;
@@ -54,11 +54,11 @@ public static class DelayTestPlanner
             return new DelayPlan(DelayScheme.RealConnection, TransportOf(n), false, "直通配置不支持单点测速");
 
         var t = TransportOf(n);
-        // 自动测速统一走「真连」：TCP 类严格校验证书；UDP 类允许在内核明确报证书不受信时放宽一次。
+        // 自动测速遵守显式证书策略；快速 TCP 握手由独立按钮提供。
         // 「TCP 握手」只服务于显式的快速测延迟按钮，不参与自动方案选择。
         return t == DelayTransport.Udp
-            ? new DelayPlan(DelayScheme.RealConnection, t, RelaxTlsOnCertFailure: true,
-                Reason: "UDP 协议没有 TCP 端口，走真连；证书不受信时自动放宽一次",
+            ? new DelayPlan(DelayScheme.RealConnection, t, RelaxTlsOnCertFailure: false,
+                Reason: "UDP real connection obeys the explicit certificate policy",
                 TimeoutMs: 15000, Attempts: 2)
             : new DelayPlan(DelayScheme.RealConnection, t, RelaxTlsOnCertFailure: false,
                 Reason: "TCP 协议，走真连并严格校验证书",

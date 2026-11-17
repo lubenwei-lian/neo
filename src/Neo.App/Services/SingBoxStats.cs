@@ -14,7 +14,7 @@ public static class SingBoxStats
     private static DateTime _lastWarnAt;
     private static string? _lastWarnReason;
 
-    private static void WarnRateLimited(string reason)
+    private static void WarnRateLimited(string reason, int port)
     {
         try
         {
@@ -22,24 +22,25 @@ public static class SingBoxStats
             if ((now - _lastWarnAt).TotalSeconds < 20 && string.Equals(reason, _lastWarnReason, StringComparison.Ordinal)) return;
             _lastWarnAt = now;
             _lastWarnReason = reason;
-            LogBus.App($"统计接口不可用（127.0.0.1:{LocalPorts.CoreClashApi}）：{reason}", "Warning");
+            LogBus.App($"统计接口不可用（127.0.0.1:{port}）：{reason}", "Warning");
         }
         catch { }
     }
 
-    public static Snapshot? Query()
+    public static Snapshot? Query(int? apiPort = null)
     {
+        var port = apiPort ?? LocalPorts.CoreClashApi;
         try
         {
             using var req = new HttpRequestMessage(
                 HttpMethod.Get,
-                $"http://127.0.0.1:{LocalPorts.CoreClashApi}/connections");
+                $"http://127.0.0.1:{port}/connections");
             req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + SingBoxConfigBuilder.ClashApiSecret);
 
             using var resp = Http.Send(req);
             if (!resp.IsSuccessStatusCode)
             {
-                WarnRateLimited("HTTP " + (int)resp.StatusCode);
+                WarnRateLimited("HTTP " + (int)resp.StatusCode, port);
                 return null;
             }
 
@@ -58,7 +59,7 @@ public static class SingBoxStats
         }
         catch (Exception ex)
         {
-            WarnRateLimited(ex.GetType().Name + ": " + ex.Message);
+            WarnRateLimited(ex.GetType().Name + ": " + ex.Message, port);
             return null;
         }
     }

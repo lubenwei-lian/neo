@@ -1,0 +1,69 @@
+/* 连接页三版：覆盖与新增（加载在 pages2.css 之后） */
+
+/* 变体容器 */
+.cv{flex:1;min-height:0;display:none;flex-direction:column;gap:12px}
+.cv.on{display:flex}
+
+/* V1 / V3 列宽 */
+.conn{grid-template-columns:minmax(280px,.78fr) minmax(0,1.4fr)}
+.split{flex:1;min-height:0;display:grid;grid-template-columns:minmax(280px,.72fr) minmax(0,1.45fr);gap:12px}
+.rightcol{min-height:0;display:grid;grid-template-rows:minmax(0,1fr) minmax(0,.6fr);gap:12px}
+
+/* 环尺寸与小环 */
+.ring{width:184px;height:184px;flex:none}
+.ring.small{width:64px;height:64px}
+.ring.small .track,.ring.small .prog{stroke-width:7}
+.hero .btn.connect{height:34px;width:126px;border-radius:17px}
+
+/* 三数值条 */
+.triple{display:flex;gap:16px;width:100%;justify-content:space-between;padding:9px 12px;border-radius:18px;
+  background:rgba(255,255,255,.028);border:1px solid rgba(255,255,255,.04)}
+
+/* V2 横幅 */
+.banner{flex:none;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:18px;align-items:center;
+  padding:13px 18px;border-radius:26px;background:var(--panel);border:1px solid var(--NeoRim);box-shadow:var(--shadow)}
+.bring{position:relative;width:64px;height:64px;flex:none}
+.bmain{min-width:0;display:flex;flex-direction:column;gap:5px}
+.bt1{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:600}
+.bt2{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--NeoText3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot5{width:3px;height:3px;border-radius:50%;background:rgba(255,255,255,.22);flex:none}
+.bstats{display:flex;gap:26px}
+.bstats .kv .v{font-size:14px}
+
+.matrix{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  grid-template-rows:repeat(2,minmax(0,1fr));gap:12px}
+.matrix > .panel{min-height:0}
+
+/* 六项小表 */
+.hex{display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;align-content:start}
+.hx{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--NeoText3);
+  padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.hx b{font-weight:600;color:var(--NeoText1);font-variant-numeric:tabular-nums}
+.hx b.ok{color:var(--NeoGreen)} .hx b.warn{color:var(--NeoYellow)} .hx b.dim{color:var(--NeoText3)}
+
+/* V3 日志流 */
+.logpanel{min-height:0;display:flex;flex-direction:column}
+.logstream{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:2px;
+  font-size:10.5px;color:var(--NeoText3)}
+.logstream .l{display:grid;grid-template-columns:50px 32px minmax(0,1fr);gap:8px;align-items:baseline;
+  padding:5px 8px;border-radius:10px;white-space:nowrap;overflow:hidden}
+.logstream .l:nth-child(odd){background:rgba(255,255,255,.02)}
+.logstream .t{font-family:var(--mono);font-size:9.5px}
+.logstream .lv{font-size:9px;text-align:center;border-radius:6px;padding:1px 0}
+.logstream .lv.info{color:var(--NeoText2);background:rgba(255,255,255,.06)}
+.logstream .lv.warn{color:var(--NeoYellow);background:rgba(240,169,59,.12)}
+.logstream .lv.debug{color:var(--NeoAccent);background:var(--NeoAccentSoft)}
+
+@media (max-width:1180px){
+  .split{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  .matrix{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(3,minmax(0,1fr))}
+  .banner{grid-template-columns:auto minmax(0,1fr) auto;row-gap:12px}
+  .bstats{grid-column:1/-1;justify-content:space-between}
+  .rightcol{grid-template-rows:minmax(0,1fr) minmax(0,.7fr)}
+}
+@media (max-width:900px){
+  .matrix{grid-template-columns:1fr;grid-template-rows:none}
+  .banner{grid-template-columns:auto minmax(0,1fr);row-gap:10px}
+  .banner .cBtn{grid-column:1/-1}
+  .hex{grid-template-columns:1fr}
+}

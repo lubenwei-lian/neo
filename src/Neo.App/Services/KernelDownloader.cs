@@ -38,7 +38,8 @@ public sealed record DownloadProgress(long Received, long Total, double BytesPer
 ///   · 下载完成后没有统一的哈希校验入口（xray 有 .dgst、sing-box/mihomo 只有 API digest）。
 /// 设计：
 ///   · 落盘用 <target>.part，Range 请求续传；服务端忽略 Range（200）时自动从头写；
-///   · 每条连接读取 90 秒无数据视为卡死 → 换下一条通道（socks → 直连 → 系统代理），.part 保留；
+///   · 已连接时只在本机 SOCKS/HTTP 代理间重试，绝不静默回退直连；未连接时允许直连/系统代理；
+///   · 每条连接读取 90 秒无数据视为卡死，换下一条通道，.part 保留；
 ///   · 取消（用户点取消）**不删 .part**，下次点更新继续；
 ///   · 完成后由 <see cref="VerifySha256Async"/> 校验，再交给安装流程。
 /// </summary>
@@ -60,16 +61,22 @@ public static class KernelDownloader
     /// 失败/取消时 .part 保留，返回消息里带已下载字节数。
     /// </summary>
     public static async Task<(bool Ok, string Message)> DownloadAsync(
-        string url, string targetFile, Action<DownloadProgress>? onProgress, CancellationToken ct)
+        string url, string targetFile, Action<DownloadProgress>? onProgress, CancellationToken ct,
+        Action<string>? onChannel = null)
     {
         var part = PartPath(targetFile);
         var dir = Path.GetDirectoryName(targetFile);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
         var lastError = "";
-        foreach (var kind in new[] { "socks", "direct", "sys" })
+        var requireProxy = ConnectionService.IsConnected;
+        foreach (var kind in requireProxy ? new[] { "socks", "http", "socks", "http" } : new[] { "socks", "direct", "sys" })
         {
             ct.ThrowIfCancellationRequested();
+            // A connection established after this download began must also be respected.
+            requireProxy |= ConnectionService.IsConnected;
+            if (requireProxy && kind is "direct" or "sys") continue;
+            onChannel?.Invoke(kind switch { "socks" => "通过本机 SOCKS5 代理下载…", "http" => "通过本机 HTTP 代理下载…", "sys" => "通过系统代理下载…", _ => "当前未连接，使用直连下载…" });
             try
             {
                 var ok = await TryOnceAsync(url, part, kind, onProgress, ct);
@@ -104,10 +111,11 @@ public static class KernelDownloader
             {
                 lastError = $"通道 {kind} 失败：{ex.GetType().Name} {ex.Message}";
             }
+            LogBus.App("内核下载重试：" + lastError, "Warning");
         }
 
         var keep = SafeLength(part);
-        return (false, $"下载失败（{lastError}）。"
+        return (false, $"下载失败（{lastError}）。" + (requireProxy ? "已保持代理下载，未回退直连。" : "")
                        + (keep > 0 ? $" 已保留断点 {DownloadProgress.FormatBytes(keep)}，网络恢复后点更新会续传。" : ""));
     }
 
@@ -119,6 +127,10 @@ public static class KernelDownloader
         {
             case "socks":
                 handler.Proxy = new WebProxy($"socks5://127.0.0.1:{Neo.Core.LocalPorts.Socks}");
+                handler.UseProxy = true;
+                break;
+            case "http":
+                handler.Proxy = new WebProxy($"http://127.0.0.1:{Neo.Core.LocalPorts.Http}");
                 handler.UseProxy = true;
                 break;
             case "sys":
@@ -136,18 +148,34 @@ public static class KernelDownloader
         var have = SafeLength(part);
         if (have > 0) req.Headers.Range = new RangeHeaderValue(have, null);
 
-        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        headerCts.CancelAfter(TimeSpan.FromSeconds(30));
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, headerCts.Token);
 
         if (resp.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && have > 0)
-            return true;   // 已经下完（服务端认为 Range 越界）
+        {
+            // 416 also means a stale/oversized partial file. Only exact length
+            // equality proves that this is the complete representation.
+            if (resp.Content.Headers.ContentRange?.Length == have) return true;
+            File.Delete(part);
+            throw new IOException("断点长度与服务器不符，已丢弃断点并重试");
+        }
 
-        if (!resp.IsSuccessStatusCode) return false;
+        resp.EnsureSuccessStatusCode();
 
         var contentLen = resp.Content.Headers.ContentLength;
         long total;
         if (resp.StatusCode == HttpStatusCode.PartialContent)
         {
-            total = have + (contentLen ?? 0);
+            var range = resp.Content.Headers.ContentRange;
+            if (range?.From != have || range.To == null || range.To < range.From
+                || (contentLen.HasValue && range.To - range.From + 1 != contentLen)
+                || (range.Length.HasValue && range.To >= range.Length))
+            {
+                if (File.Exists(part)) File.Delete(part);
+                throw new IOException("服务器返回了不匹配的续传范围，已重置断点");
+            }
+            total = range.Length ?? (have + (contentLen ?? 0));
         }
         else
         {
@@ -234,6 +262,7 @@ public static class KernelDownloader
             var expected = (expectedHex ?? "").Trim().ToLowerInvariant();
             return (expected.Length == 0 || expected == actual, actual);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             return (false, "哈希计算失败：" + ex.Message);
